@@ -231,7 +231,7 @@
 {#snippet sidebar()}
   <aside>
     <div class="eyebrow">Sources</div>
-    <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
+    <button class="add" onclick={addFolder} disabled={scanning}>+ Add photos</button>
     {#each sources as s (s.id)}
       <div class="src">
         <div>

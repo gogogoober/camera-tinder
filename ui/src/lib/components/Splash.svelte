@@ -26,7 +26,7 @@
 
   <h2>Camera Tinder</h2>
   <p>Triage your shoots. Pick the days, swipe through the photos, keep the best.</p>
-  <button class="primary" onclick={onAdd} disabled={busy}>+ Add folder or SD card</button>
+  <button class="primary" onclick={onAdd} disabled={busy}>+ Add photos</button>
 </div>
 
 <style>
