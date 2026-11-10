@@ -40,7 +40,7 @@ fn calendar_id(e: &CalendarEvent) -> String {
     if e.start_day == e.end_day { format!("cal|{}|{}|{}", e.start_day, e.end_day, e.title) } else { format!("cal|{}|{}", e.start_day, e.end_day) }
 }
 
-pub fn from_gaps(days: &[DaySummary], existing: &[Tag], dismissed: &[String]) -> Vec<TagSuggestion> {
+pub fn from_gaps(days: &[DaySummary], dismissed: &[String]) -> Vec<TagSuggestion> {
     let mut dated: Vec<(NaiveDate, u64)> = days
         .iter()
         .filter_map(|d| Some((parse(d.day.as_deref()?)?, d.stats.total)))
@@ -86,7 +86,7 @@ pub fn from_gaps(days: &[DaySummary], existing: &[Tag], dismissed: &[String]) ->
         });
         i = j + 1;
     }
-    out.retain(|s| !dismissed.contains(&s.id) && !existing.iter().any(|t| t.start_day == s.start_day && t.end_day == s.end_day));
+    out.retain(|s| !dismissed.contains(&s.id));
     out
 }
 
@@ -99,7 +99,7 @@ pub fn from_gaps(days: &[DaySummary], existing: &[Tag], dismissed: &[String]) ->
 ///
 /// `dismissed` row ids are left out *before* grouping, so dismissing a parent regroups what's left
 /// (its children may land under another row).
-pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], existing: &[Tag], dismissed: &[String]) -> Vec<TagSuggestion> {
+pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], dismissed: &[String]) -> Vec<TagSuggestion> {
     let counts: Vec<(&str, u64)> = days.iter().filter_map(|d| Some((d.day.as_deref()?, d.stats.total))).collect();
     let mut rows: Vec<TagSuggestion> = Vec::new();
     for e in events {
@@ -147,21 +147,7 @@ pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], existing: &[
         }
     }
 
-    // Drop rows already tagged. A tagged parent's children move up so they stay available.
-    let tagged = |s: &TagSuggestion| existing.iter().any(|t| t.name == s.name && t.start_day == s.start_day);
-    let mut out: Vec<TagSuggestion> = Vec::new();
-    for mut r in roots {
-        r.children.retain(|c| !tagged(c));
-        if tagged(&r) {
-            for c in std::mem::take(&mut r.children) {
-                if !out.iter().any(|o| o.name == c.name && o.start_day == c.start_day && o.end_day == c.end_day) {
-                    out.push(c);
-                }
-            }
-        } else {
-            out.push(r);
-        }
-    }
+    let mut out = roots;
     out.sort_by(|a, b| (&a.start_day, &a.name).cmp(&(&b.start_day, &b.name)));
     out
 }
@@ -184,7 +170,7 @@ mod tests {
             day("2026-08-20", 12),
             day("2026-09-19", 300),
         ];
-        let s = from_gaps(&days, &[], &[]);
+        let s = from_gaps(&days, &[]);
         assert_eq!(s.len(), 2);
         assert_eq!((s[0].start_day.as_str(), s[0].end_day.as_str()), ("2026-08-01", "2026-08-03"));
         assert_eq!(s[0].photo_count, 270);
@@ -192,10 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn skips_already_tagged_runs() {
+    fn skips_dismissed_runs() {
         let days = [day("2026-08-01", 50), day("2026-08-02", 50)];
-        let tag = Tag { id: 1, name: "Hike".into(), start_day: "2026-08-01".into(), end_day: "2026-08-02".into(), source: TagSource::Manual };
-        assert!(from_gaps(&days, &[tag], &[]).is_empty());
+        assert_eq!(from_gaps(&days, &[]).len(), 1);
+        assert!(from_gaps(&days, &["gap|2026-08-01|2026-08-02".into()]).is_empty());
     }
 
     #[test]
@@ -205,7 +191,7 @@ mod tests {
             CalendarEvent { title: "Maya's wedding".into(), start_day: "2026-09-19".into(), end_day: "2026-09-19".into() },
             CalendarEvent { title: "Dentist".into(), start_day: "2026-09-21".into(), end_day: "2026-09-21".into() },
         ];
-        let s = from_calendar(&days, &ev, &[], &[]);
+        let s = from_calendar(&days, &ev, &[]);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].name, "Maya's wedding");
     }
@@ -227,7 +213,7 @@ mod tests {
             ev("Lunch", "2026-11-08", "2026-11-08"),
             ev("Dinner", "2026-11-08", "2026-11-08"),
         ];
-        let s = from_calendar(&busy(), &e, &[], &[]);
+        let s = from_calendar(&busy(), &e, &[]);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].name, "Mom Visiting");
         let kids: Vec<&str> = s[0].children.iter().map(|c| c.name.as_str()).collect();
@@ -239,19 +225,17 @@ mod tests {
     #[test]
     fn overlapping_parents_both_hold_the_child() {
         let e = [ev("A", "2026-11-05", "2026-11-08"), ev("B", "2026-11-06", "2026-11-09"), ev("Seven", "2026-11-07", "2026-11-07")];
-        let s = from_calendar(&busy(), &e, &[], &[]);
+        let s = from_calendar(&busy(), &e, &[]);
         assert_eq!(s.len(), 2);
         assert!(s.iter().all(|p| p.children.len() == 1 && p.children[0].name == "Seven"));
     }
 
     #[test]
-    fn same_day_events_stay_separate_and_tagged_parent_promotes_children() {
+    fn same_day_events_stay_separate() {
         let e = [ev("One", "2026-11-03", "2026-11-03"), ev("Two", "2026-11-03", "2026-11-03"), ev("Trip", "2026-11-01", "2026-11-02"), ev("Walk", "2026-11-01", "2026-11-01")];
-        let s = from_calendar(&busy(), &e, &[], &[]);
+        let s = from_calendar(&busy(), &e, &[]);
         assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["Trip", "One", "Two"]);
-        let tag = Tag { id: 1, name: "Trip".into(), start_day: "2026-11-01".into(), end_day: "2026-11-02".into(), source: TagSource::Manual };
-        let s = from_calendar(&busy(), &e, &[tag], &[]);
-        assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["Walk", "One", "Two"]);
+        assert_eq!(s[0].children[0].name, "Walk");
     }
 
     #[test]
@@ -261,10 +245,10 @@ mod tests {
             ev("Wedding", "2026-11-05", "2026-11-08"),
             ev("Train", "2026-11-05", "2026-11-05"),
         ];
-        let s = from_calendar(&busy(), &e, &[], &[]);
+        let s = from_calendar(&busy(), &e, &[]);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].id, "cal|2026-11-01|2026-11-10");
-        let s = from_calendar(&busy(), &e, &[], &[s[0].id.clone()]);
+        let s = from_calendar(&busy(), &e, &[s[0].id.clone()]);
         assert_eq!(s.len(), 1);
         assert_eq!(s[0].name, "Wedding");
         assert_eq!(s[0].children[0].id, "cal|2026-11-05|2026-11-05|Train");

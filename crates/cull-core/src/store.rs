@@ -62,14 +62,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     decided_at TEXT NOT NULL
 );
 
--- Named runs of days ("Lisbon").
-CREATE TABLE IF NOT EXISTS tags (
-    id        INTEGER PRIMARY KEY,
-    name      TEXT NOT NULL,
-    start_day TEXT NOT NULL,
-    end_day   TEXT NOT NULL,
-    source    TEXT NOT NULL
-);
+-- Older databases also have a `tags` table (saved day ranges, removed Nov 2026). Unused; left alone.
 
 -- Photo analysis results, one row per photo and kind (see analysis/mod.rs).
 -- `implementation` names the engine; when it changes the row is stale and recomputed.
@@ -466,36 +459,6 @@ impl Store {
         }
         Ok(out)
     }
-
-    // ---- tags ---------------------------------------------------------
-
-    pub fn tags(&self) -> Result<Vec<Tag>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, start_day, end_day, source FROM tags ORDER BY start_day, end_day, id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(Tag {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                start_day: r.get(2)?,
-                end_day: r.get(3)?,
-                source: TagSource::parse(&r.get::<_, String>(4)?),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn add_tag(&self, name: &str, start_day: &str, end_day: &str, source: TagSource) -> Result<Tag> {
-        let id: i64 = self.conn.query_row(
-            "INSERT INTO tags (name, start_day, end_day, source) VALUES (?1, ?2, ?3, ?4) RETURNING id",
-            params![name, start_day, end_day, source.as_str()],
-            |r| r.get(0),
-        )?;
-        Ok(Tag { id, name: name.into(), start_day: start_day.into(), end_day: end_day.into(), source })
-    }
-
-    pub fn remove_tag(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -635,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn bulk_decisions_and_tags() {
+    fn bulk_decisions() {
         let mut s = Store::open_in_memory().unwrap();
         let a = photo(&s, "1", "a", "x/1.jpg", Some("2026-07-01T10:00:00"));
         let b = photo(&s, "2", "a", "x/2.jpg", Some("2026-07-01T10:00:01"));
@@ -643,10 +606,5 @@ mod tests {
         let prev = s.set_many(&[(a, Some(Decision::Dislike)), (b, Some(Decision::Dislike))]).unwrap();
         assert_eq!(prev, vec![Some(Decision::Like), None]);
         assert_eq!(s.decision(b).unwrap(), Some(Decision::Dislike));
-
-        let t = s.add_tag("Hike", "2026-07-01", "2026-07-03", TagSource::Manual).unwrap();
-        assert_eq!(s.tags().unwrap().len(), 1);
-        s.remove_tag(t.id).unwrap();
-        assert!(s.tags().unwrap().is_empty());
     }
 }

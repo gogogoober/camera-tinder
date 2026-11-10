@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
@@ -14,7 +14,6 @@
   let sources = $state<SourceInfo[]>([]);
   let stats = $state<Stats | null>(null);
   let days = $state<DaySummary[]>([]);
-  let tags = $state<Tag[]>([]);
   let suggestions = $state<TagSuggestion[]>([]);
   let calendar = $state<CalendarStatus>('unavailable');
   let connecting = $state(false);
@@ -28,7 +27,6 @@
   let dismissed = $state<string[]>([]);
   let budget = $state(15);
   let order = $state<'oldest' | 'newest'>('oldest');
-  let tagName = $state('');
   let report = $state<ScanReport | null>(null);
   let scanning = $state(false);
   let progress = $state({ done: 0, total: 0 });
@@ -43,7 +41,6 @@
   const range = $derived<Range | null>(pickedDays.length ? { from: pickedDays[0], to: pickedDays[pickedDays.length - 1] } : null);
   const left = $derived(picked.reduce((n, d) => n + d.stats.undecided, 0));
   const total = $derived(picked.reduce((n, d) => n + d.stats.total, 0));
-  const tagsInRange = $derived(tags.filter((t) => pickedDays.some((d) => d >= t.startDay && d <= t.endDay)));
   const compact = $derived(viewport.compact);
 
   onMount(() => {
@@ -90,11 +87,10 @@
   }
 
   async function refresh() {
-    [sources, stats, days, tags, suggestions, calendar] = await Promise.all([
+    [sources, stats, days, suggestions, calendar] = await Promise.all([
       api.listSources(),
       api.stats(),
       api.days(),
-      api.tags(),
       api.suggestTags(dismissed),
       api.calendarStatus(),
     ]);
@@ -129,13 +125,13 @@
     return days.filter((d) => d.day && d.day >= from && d.day <= to && d.stats.total > 0).map((d) => d.day as string);
   }
   type Span = { startDay: string; endDay: string };
-  /** How much of a tag's days are selected, read straight from the calendar. */
+  /** How much of a suggestion's days are selected, read straight from the calendar. */
   function pickState(t: Span): 'none' | 'some' | 'all' {
     const ds = daysWithPhotos(t.startDay, t.endDay);
     const n = ds.filter((d) => selected.has(d)).length;
     return n === 0 ? 'none' : n === ds.length ? 'all' : 'some';
   }
-  /** Adds a tag's days to the selection, or removes them when they're all selected already. */
+  /** Adds a suggestion's days to the selection, or removes them when they're all selected already. */
   function togglePick(t: Span) {
     const all = pickState(t) === 'all';
     const next = new Set(selected);
@@ -147,10 +143,6 @@
   }
   const PICK_LABEL = { none: 'Select', some: 'Some', all: 'Selected' } as const;
 
-  async function acceptSuggestion(s: TagSuggestion) {
-    await api.addTag(s.name, s.startDay, s.endDay, s.source);
-    await refresh();
-  }
   /** Hides the row everywhere and regroups the rest (its children may move under another row).
    *  The selection is untouched. */
   async function dismissSuggestion(s: TagSuggestion) {
@@ -163,16 +155,6 @@
     const next = new Set(expanded);
     if (!next.delete(k)) next.add(k);
     expanded = next;
-  }
-  async function addTag() {
-    if (!range) return;
-    await api.addTag(tagName.trim() || 'Untitled', range.from, range.to, 'manual');
-    tagName = '';
-    await refresh();
-  }
-  async function removeTag(id: number) {
-    await api.removeTag(id);
-    await refresh();
   }
 
   // At most one refresh in flight, and at most one every LIVE_REFRESH_MS, while a scan saves photos.
@@ -261,7 +243,7 @@
     <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
     {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (photos already scanned aren't read again)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
 
-    <div class="eyebrow">Auto-tags</div>
+    <div class="eyebrow">Suggestions from</div>
     <ul class="how muted small">
       <li><span>⋯</span> Runs of shooting days</li>
       <li><span>▦</span> Calendar (when connected)</li>
@@ -283,7 +265,7 @@
         <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
           <b id="clear-q">Clear {size} of preview copies?</b>
           <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
-          <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions and tags.</p>
+          <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
           <p class="muted">Previews are made again the next time you scan a card.</p>
           <div class="row">
             <button class="small primary" disabled={clearing || scanning} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
@@ -299,7 +281,7 @@
             so making previews again can't read from them.
           </p>
         {:else if cleared !== null}
-          <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos, decisions and tags are unchanged.</p>
+          <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos and decisions are unchanged.</p>
         {/if}
       {/if}
     {/if}
@@ -348,14 +330,6 @@
         </div>
       </div>
 
-      {#if compact && tags.length}
-        <div class="chips scroll">
-          {#each tags as t (t.id)}
-            <button class="chip" class:on={pickState(t) === 'all'} onclick={() => togglePick(t)}>{t.name}</button>
-          {/each}
-        </div>
-      {/if}
-
       <div class="group heat">
         <span class="eyebrow">Calendar · click or drag to pick days</span>
         <Heatmap {days} {selected} onChange={(next) => (selected = next)} />
@@ -378,7 +352,7 @@
 
       {#if suggestions.length}
         <div class="group">
-          <span class="eyebrow">Suggested tags · {suggestions.length}</span>
+          <span class="eyebrow">Suggestions · {suggestions.length}</span>
           {#snippet sugRow(s: TagSuggestion, child: boolean)}
             {@const open = expanded.has(s.id)}
             {@const pick = pickState(s)}
@@ -400,7 +374,6 @@
               <span class="muted small why">{s.reason}</span>
               <span class="btns">
                 <button class="small pick {pick}" aria-pressed={pick === 'all'} onclick={() => togglePick(s)}>{pick === 'all' ? '✓ ' : ''}{PICK_LABEL[pick]}</button>
-                <button class="small primary" onclick={() => acceptSuggestion(s)}>Add</button>
                 <button class="small ghost" onclick={() => dismissSuggestion(s)} aria-label="Dismiss">✕</button>
               </span>
             </div>
@@ -416,19 +389,6 @@
         </div>
       {/if}
 
-      {#if tags.length && !compact}
-        <div class="group">
-          <span class="eyebrow">Your tags</span>
-          <div class="chips">
-            {#each tags as t (t.id)}
-              <span class="chip tag">
-                <button class="plain" class:on={pickState(t) === 'all'} onclick={() => togglePick(t)}>{t.name}</button>
-                <button class="plain x" onclick={() => removeTag(t.id)} aria-label="Remove tag {t.name}">✕</button>
-              </span>
-            {/each}
-          </div>
-        </div>
-      {/if}
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
     {#if report && !scanning && report.cancelled}
@@ -456,14 +416,7 @@
       <div class="big">{formatCount(left)} <span class="muted">photos to cull</span></div>
       <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{shortRange(range.from, range.to)}</b></div>
       {#if total - left > 0}<div class="kv"><span>Already culled</span><b>{formatCount(total - left)}</b></div>{/if}
-      {#if tagsInRange.length}<div class="kv"><span>Tags</span><b>{tagsInRange.map((t) => t.name).join(', ')}</b></div>{/if}
       <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
-      {#if !compact}
-        <div class="tagform">
-          <input placeholder="Name these days, e.g. Grandma's 80th" bind:value={tagName} onkeydown={(e) => e.key === 'Enter' && addTag()} />
-          <button onclick={addTag}>Tag</button>
-        </div>
-      {/if}
       <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
     {:else}
       <div class="muted">Pick days on the calendar to begin.</div>
@@ -519,7 +472,6 @@
   button.pick { min-width: 78px; }
   button.pick.some { border-style: dashed; }
   button.pick.all { background: var(--text); color: var(--bg); border-color: var(--text); }
-  .plain.on { text-decoration: underline; text-underline-offset: 3px; }
   .sel-h { display: flex; justify-content: space-between; align-items: center; }
   .chev { width: 1.4em; flex: none; color: var(--muted); font-size: 1.1em; text-align: left; }
   .count { flex: none; }
@@ -528,15 +480,11 @@
   .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btns { display: flex; gap: 6px; }
   button.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
-  .chip.tag { display: inline-flex; padding: 0; gap: 0; }
   .plain { background: transparent; border: 0; padding: 4px 6px 4px 11px; }
-  .plain.x { padding: 4px 9px 4px 4px; color: var(--muted); }
 
   .summary { display: flex; flex-direction: column; gap: 11px; }
   .big { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .big .muted { font-size: 14px; font-weight: 500; letter-spacing: 0; }
-  .tagform { display: flex; gap: 6px; margin-top: 4px; }
-  .tagform input { flex: 1; min-width: 0; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .go { margin-top: auto; padding: 12px; font-size: 16px; }
 
   /* Phones: AppShell hides the sidebar and turns the summary into a bottom sheet. */
@@ -545,5 +493,4 @@
   :global(.shell.compact) .go { margin-top: 4px; }
   :global(.shell.compact) .sug { grid-template-columns: 1fr auto; }
   :global(.shell.compact) .sug .why, :global(.shell.compact) .sug .mono { display: none; }
-  .chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
 </style>

@@ -245,19 +245,7 @@ impl TagSource {
     }
 }
 
-/// A named run of days ("Lisbon", "Maya's wedding").
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tag {
-    pub id: i64,
-    pub name: String,
-    /// `YYYY-MM-DD`, inclusive.
-    pub start_day: String,
-    pub end_day: String,
-    pub source: TagSource,
-}
-
-/// A guess at a tag the user can accept or dismiss.
+/// A suggested group of days (calendar event or run of shooting days) the user can select or dismiss.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagSuggestion {

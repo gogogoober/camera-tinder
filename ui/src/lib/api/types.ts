@@ -94,14 +94,6 @@ export interface Plan {
 
 export type TagSource = 'manual' | 'calendar' | 'place' | 'gap' | 'image';
 
-export interface Tag {
-  id: number;
-  name: string;
-  startDay: string;
-  endDay: string;
-  source: TagSource;
-}
-
 export interface TagSuggestion {
   /** Stable row id; pass it to `suggestTags(dismissed)` to leave the row out. */
   id: string;

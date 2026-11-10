@@ -1,12 +1,12 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, TagSuggestion } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
 
 /**
  * In-memory fake backend so the UI can be built and tested in a plain browser
  * (`npm run dev:mock`), with no Rust build in the loop. It mimics cull-core:
- * capture-ordered queues, moments/bursts, tags and suggestions.
+ * capture-ordered queues, moments/bursts and suggestions.
  */
 
 /** Shape of a photo nobody has analysed yet. */
@@ -23,10 +23,6 @@ let cancelRequested = false;
 /** Folders whose photos are all saved, and the photos a stopped scan hasn't saved yet. */
 const scannedSources = new Set<string>();
 const unsaved = new Map<string, Photo[]>();
-let tags: Tag[] = [
-  { id: 1, name: 'Lisbon', startDay: '2026-06-12', endDay: '2026-06-19', source: 'place' },
-];
-let tagId = 2;
 let calendar: CalendarStatus = 'notDetermined';
 let cacheBytes = 0;
 const undoStack: [number, Decision | null][][] = [];
@@ -252,17 +248,6 @@ export const mockApi: CullerApi = {
     });
   },
 
-  async tags() {
-    return tags.map((t) => ({ ...t }));
-  },
-  async addTag(name, startDay, endDay, source = 'manual') {
-    const t: Tag = { id: tagId++, name, startDay, endDay, source };
-    tags.push(t);
-    return t;
-  },
-  async removeTag(id) {
-    tags = tags.filter((t) => t.id !== id);
-  },
   async suggestTags(dismissed: string[] = []): Promise<TagSuggestion[]> {
     // Mirrors cull-core's suggest.rs grouping, simplified (no photo counts).
     const events: [string, string, string][] = [
@@ -292,19 +277,16 @@ export const mockApi: CullerApi = {
     }
     const inside = (c: TagSuggestion, p: TagSuggestion) =>
       p.startDay !== p.endDay && p.startDay <= c.startDay && c.endDay <= p.endDay && !(p.startDay === c.startDay && p.endDay === c.endDay);
-    const taken = (s: TagSuggestion) => tags.some((t) => t.name === s.name && t.startDay === s.startDay);
     const roots = rows.filter((c) => !rows.some((p) => inside(c, p)));
     const out: TagSuggestion[] = [];
     for (const r of roots) {
-      const kids = rows.filter((c) => !roots.includes(c) && inside(c, r) && !taken(c)).map((c) => ({ ...c, children: [] }));
-      if (taken(r)) kids.forEach((k) => out.some((o) => o.id === k.id) || out.push(k));
-      else out.push({ ...r, children: kids });
+      out.push({ ...r, children: rows.filter((c) => !roots.includes(c) && inside(c, r)).map((c) => ({ ...c, children: [] })) });
     }
     const gaps: TagSuggestion[] = [
       { id: 'gap|2026-08-01|2026-08-03', name: 'Hike', startDay: '2026-08-01', endDay: '2026-08-03', source: 'gap', reason: 'Shot 3 days in a row', photoCount: 0, names: [], children: [] },
       { id: 'gap|2026-11-01|2026-11-08', name: 'Nov 1 – Nov 8', startDay: '2026-11-01', endDay: '2026-11-08', source: 'gap', reason: 'Shot 8 days in a row', photoCount: 0, names: [], children: [] },
     ];
-    out.push(...gaps.filter((g) => !dismissed.includes(g.id) && !tags.some((t) => t.startDay === g.startDay && t.endDay === g.endDay)));
+    out.push(...gaps.filter((g) => !dismissed.includes(g.id)));
     return out.sort((x, y) => x.startDay.localeCompare(y.startDay));
   },
 

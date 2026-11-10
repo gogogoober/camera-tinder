@@ -20,8 +20,6 @@ import type {
   SimilarGroup,
   SourceInfo,
   Stats,
-  Tag,
-  TagSource,
   TagSuggestion,
 } from './types';
 
@@ -56,9 +54,6 @@ export interface CullerApi {
   /** Reverts the last action (one photo or a batch); returns the photos, now restored. Empty if nothing to undo. */
   undo(): Promise<Photo[]>;
 
-  tags(): Promise<Tag[]>;
-  addTag(name: string, startDay: string, endDay: string, source?: TagSource): Promise<Tag>;
-  removeTag(id: number): Promise<void>;
   /** Guesses from calendar events and runs of shooting days, grouped one level deep.
    *  `dismissed` row ids are left out and the rest is regrouped. */
   suggestTags(dismissed?: string[]): Promise<TagSuggestion[]>;

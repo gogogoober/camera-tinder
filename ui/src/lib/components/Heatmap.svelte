@@ -154,5 +154,6 @@
     text-align: center;
   }
 
-  .cell.sel { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); z-index: 1; }
+  /* Drawn inside the cell, so it never spills onto neighbouring days. */
+  .cell.sel { box-shadow: inset 0 0 0 2px var(--text), inset 0 0 0 3.5px var(--bg); }
 </style>
