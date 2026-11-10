@@ -47,6 +47,9 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   analysis/                Static photo analysis: one module per feature (trait + result + engines), the
                            Analyzers registry, pipeline.rs (independent per-photo steps), issues, near-duplicate grouping, ranking.
                            See docs/photo-analysis.md; the smart-triage build plan is docs/triage-build-plan.md
+  triage/                  Smart triage: which question each photo gets (Judge / Pick burst / Sweep set aside), computed on
+                           every plan() from stored analysis (pure functions, nothing stored). See docs/smart-triage.md
+  worker.rs                Background analysis thread: woken by the scan, Stop/Resume analysis. Reads cached previews only
   api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags, analyze…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
 crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
@@ -93,6 +96,7 @@ npm start                           # run the desktop app (loads ~/.cargo/env, t
 npm run dev:mock                    # UI only, in a browser, with the mock backend (ui-mock-alt: port 1421, alongside tauri dev)
 cargo test --workspace              # core + end-to-end tests
 npm run check                       # svelte-check / TypeScript
+npm run test:ui                     # unit tests for ui/src/lib/triage.ts (node's built-in runner)
 npm run build                       # frontend build → dist/
 cargo run -p cull-platform-fs --example make_samples -- <dir> [count]
 cargo run -p cull-platform-apple --example analyze -- test-photos [--rust-only|--calibrate|--pairs|--json]
@@ -153,7 +157,12 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
       issues ("eyes closed", "blurry"…), near-duplicate groups best-first. Commands + TS API + mock wired.
 - [x] Faster scan: ImageIO previews, no scan-time scoring, no re-reads of indexed files, batched saves with a live
       Pick screen, Stop button. Verified with tests + mock browser, not yet in the real Tauri app.
-- [ ] Photo analysis UX: when to run `analyzePhotos`, problem tabs, duplicate rows. Tune eyes/noise on real photos.
+- [x] Smart triage (docs/smart-triage.md, docs/triage-build-plan.md): analysis runs in the background as photos are scanned
+      (pipeline of independent steps, Stop/Resume), `plan()` returns triage per photo, Cull shows burst stacks + a frame
+      strip + red set-aside slivers, Rescue screen for the rest, outcomes logged. Verified with tests + mock browser, not
+      yet in the real Tauri app.
+- [ ] Triage tuning: thresholds (`triage/route.rs`), eyes-closed as a sweep reason, all-bad bursts, from the `outcomes` table.
+- [ ] Photo analysis: tune eyes/noise on real photos.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
 - [ ] iOS (`tauri ios init`, SD-card MediaSource, share-sheet export). Later: cloud sync, Android, Lightroom.

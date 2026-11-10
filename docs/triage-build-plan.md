@@ -1,5 +1,11 @@
 # Smart triage: build plan (2026-11-10)
 
+**Status: built** (P1–P4 and B1–B7, one commit each, with a code review after each). Deviations from this plan:
+`hints` are all non-reason issues (no `HINT_KINDS`); the worker holds a `Weak` service and wakes every second to notice
+it was dropped; a "Rescue N" button sits in the Cull top bar (not only at the end); the mock backend analyses in the
+background too; UI helper tests run with `npm run test:ui` (Node's built-in runner, excluded from `svelte-check`).
+Timing: `plan()` for 2,000 fully analysed photos takes ~0.1 s (debug build), so nothing is stored or cached.
+
 How to build [smart-triage.md](smart-triage.md) (the agreed UX; read it first, and
 [photo-analysis.md](photo-analysis.md) for the analyzers). Written so each phase can be built on its own,
 in order, by someone who has not seen the design conversation.
