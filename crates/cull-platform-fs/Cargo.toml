@@ -1,0 +1,13 @@
+[package]
+name = "cull-platform-fs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cull-core = { version = "0.1.0", path = "../cull-core" }
+walkdir = "2.5.0"
+
+[dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
+tempfile = "3.27.0"

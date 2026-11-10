@@ -1,0 +1,21 @@
+[package]
+name = "camera-tinder"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+cull-core = { version = "0.1.0", path = "../crates/cull-core" }
+cull-platform-fs = { version = "0.1.0", path = "../crates/cull-platform-fs" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = { version = "2.12.5", features = [] }
+tauri-plugin-dialog = "2.8.4"
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+# lib + mobile entry point: required later for `tauri ios init`.
+[lib]
+name = "camera_tinder_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]

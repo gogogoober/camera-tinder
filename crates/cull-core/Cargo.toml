@@ -1,0 +1,18 @@
+[package]
+name = "cull-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+kamadak-exif = "0.6.2"
+rayon = "1.12.0"
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
