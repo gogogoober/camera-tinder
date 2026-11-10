@@ -13,6 +13,8 @@ pub struct FsSource {
     root: PathBuf,
     id: String,
     name: String,
+    /// Folders never listed (the app's own data and preview cache, if they're inside `root`).
+    excluded: Vec<PathBuf>,
 }
 
 impl FsSource {
@@ -23,7 +25,19 @@ impl FsSource {
         }
         let id = root.to_string_lossy().into_owned();
         let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| id.clone());
-        Ok(Self { root, id, name })
+        Ok(Self { root, id, name, excluded: Vec::new() })
+    }
+
+    /// Never list anything in these folders. Pass the app's own folders
+    /// (`CullerService::app_dirs`), so a picked folder that contains them (a home folder, a
+    /// whole disk) doesn't index the app's previews as photos.
+    pub fn excluding<I, P>(mut self, dirs: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.excluded.extend(dirs.into_iter().map(|d| fs::canonicalize(d.as_ref()).unwrap_or_else(|_| d.as_ref().to_path_buf())));
+        self
     }
 
     /// The canonical folder this source reads from.
@@ -82,7 +96,10 @@ impl MediaSource for FsSource {
 
     fn list(&self) -> Result<Vec<MediaEntry>> {
         let mut out = Vec::new();
-        let walker = WalkDir::new(&self.root).follow_links(false).into_iter().filter_entry(|e| e.depth() == 0 || !is_hidden(e.file_name()));
+        let walker = WalkDir::new(&self.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || (!is_hidden(e.file_name()) && !self.excluded.iter().any(|x| e.path().starts_with(x))));
         for entry in walker {
             let Ok(entry) = entry else { continue }; // unreadable dirs: skip, don't abort the scan
             if !entry.file_type().is_file() {
@@ -106,8 +123,9 @@ impl MediaSource for FsSource {
 /// v1 export: copy keepers into a folder. Never moves, renames or deletes originals.
 ///
 /// Safety rules (each one has a test in `tests/source_safety.rs`):
-/// - Refuses a destination inside any protected folder (the sources being culled),
-///   so nothing is ever written onto the card / source tree.
+/// - Refuses a destination inside any protected folder (the sources being culled), and any
+///   destination on the same card or external drive as a connected source, so nothing is ever
+///   written onto a card (even outside the folder that was added, e.g. `SD/Keepers` next to `SD/DCIM`).
 /// - Never overwrites an existing file: data goes to a uniquely named temp file
 ///   (`create_new`) and is only linked into place if the final name is still free.
 /// - Verifies every copy before it counts: a full-content hash of the bytes read from the
@@ -138,7 +156,7 @@ impl CopyToDir {
     /// Resolve `p` as far as it exists (it may not exist yet), so symlinks and `..`
     /// can't hide that the destination is really inside a protected folder.
     fn resolve_existing_prefix(p: &Path) -> io::Result<PathBuf> {
-        let abs = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir()?.join(p) };
+        let abs = p.to_path_buf();
         let mut rest = Vec::new();
         let mut cur = abs.as_path();
         loop {
@@ -160,6 +178,9 @@ impl CopyToDir {
     }
 
     fn check_destination(&self) -> Result<PathBuf> {
+        if !self.dest.is_absolute() {
+            return Err(CoreError::Other(format!("export folder must be a full path: '{}'", self.dest.display())));
+        }
         if self.dest.components().any(|c| matches!(c, Component::ParentDir)) {
             return Err(CoreError::Other(format!("export folder must not contain '..': {}", self.dest.display())));
         }
@@ -169,6 +190,19 @@ impl CopyToDir {
             if dest.starts_with(&root) {
                 return Err(CoreError::Other(format!(
                     "refusing to export into {}: it is inside a photo source ({}). Pick a folder outside your cards/source folders.",
+                    dest.display(),
+                    root.display()
+                )));
+            }
+        }
+        // Not on a card / external drive that holds a source either. (The Mac's own drive is fine.)
+        use std::os::unix::fs::MetadataExt;
+        let dest_dev = dest.ancestors().find_map(|a| fs::metadata(a).ok()).map(|m| m.dev());
+        for root in &self.protected {
+            let root_id = root.to_string_lossy();
+            if is_external_and_connected(&root_id) && fs::metadata(root).ok().map(|m| m.dev()) == dest_dev {
+                return Err(CoreError::Other(format!(
+                    "refusing to export to {}: it is on the same card or drive as a photo source ({}). Pick a folder on another drive.",
                     dest.display(),
                     root.display()
                 )));
@@ -224,12 +258,17 @@ impl CopyToDir {
             match fs::hard_link(&tmp, &target) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e.into()),
-                // Filesystems without hard links (exFAT/FAT drives): check-then-rename.
+                // Filesystems without hard links (exFAT/FAT drives; they don't support a no-overwrite
+                // rename either): claim the name with a new empty file (fails if anything is there),
+                // then move the verified copy onto our own claim.
                 Err(_) => {
-                    if fs::symlink_metadata(&target).is_ok() {
-                        return Err(CoreError::Other(format!("{} appeared during export", target.display())));
+                    OpenOptions::new().write(true).create_new(true).open(&target)?;
+                    if let Err(e) = fs::rename(&tmp, &target) {
+                        if fs::symlink_metadata(&target).is_ok_and(|m| m.is_file() && m.len() == 0) {
+                            let _ = fs::remove_file(&target); // our own empty claim, nothing else
+                        }
+                        return Err(e.into());
                     }
-                    fs::rename(&tmp, &target)?;
                     Ok(())
                 }
             }

@@ -6,8 +6,9 @@
 //! are made from the master on demand. Concurrent on-demand renders are capped to keep
 //! memory bounded (this matters a lot on iOS).
 
-use std::fs;
-use std::io::{Cursor, Read};
+use std::fs::{self, File, OpenOptions};
+use std::io::{Cursor, Read, Seek, SeekFrom, Write};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
@@ -17,6 +18,7 @@ use image::{DynamicImage, ImageDecoder, ImageReader};
 
 
 use crate::error::{CoreError, Result};
+use crate::identity::fingerprint;
 use crate::model::{MediaKind, Photo};
 use crate::ports::{MediaSource, PreviewMaker};
 
@@ -64,18 +66,35 @@ impl PreviewCache {
         self.dir.join(format!("{fingerprint}_{edge}.jpg"))
     }
 
-    /// Write into the cache dir only: temp file, then rename into place.
+    /// Write into the cache dir only: a new temp file (never an existing one), then rename into place.
     fn write_cached(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
         let tmp = self.dir.join(format!(".{}.{}.{n}.tmp", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
-        fs::write(&tmp, &bytes)?;
-        fs::rename(&tmp, &path)?;
+        let written = OpenOptions::new().write(true).create_new(true).open(&tmp).and_then(|mut f| f.write_all(bytes));
+        if let Err(e) = written.and_then(|()| fs::rename(&tmp, path)) {
+            let _ = fs::remove_file(&tmp); // our own temp file only
+            return Err(e.into());
+        }
         Ok(())
     }
 
-    /// True once this photo's previews exist, i.e. it never needs the original again to be viewed.
+    /// True once this photo has a complete master preview, i.e. it never needs the original again
+    /// to be viewed. A damaged one (e.g. cut short by a power loss) doesn't count, so it is rebuilt.
     pub fn has_master(&self, fingerprint: &str) -> bool {
-        self.path(fingerprint, MASTER_EDGE).is_file()
+        let Ok(mut f) = File::open(self.path(fingerprint, MASTER_EDGE)) else { return false };
+        let (mut head, mut tail) = ([0u8; 2], [0u8; 2]);
+        f.read_exact(&mut head).is_ok() && f.seek(SeekFrom::End(-2)).is_ok() && f.read_exact(&mut tail).is_ok() && is_complete_jpeg_ends(head, tail)
+    }
+
+    /// A cached preview, if it's there and complete.
+    fn read_cached(&self, path: &Path) -> Option<Vec<u8>> {
+        fs::read(path).ok().filter(|b| b.len() >= 4 && is_complete_jpeg_ends([b[0], b[1]], [b[b.len() - 2], b[b.len() - 1]]))
+    }
+
+    /// The maker's output, with a crash inside a decoder turned into an error for this one photo.
+    fn render(&self, jpeg: &[u8], edges: &[u32]) -> Result<Vec<Vec<u8>>> {
+        let maker = self.maker();
+        catch_unwind(AssertUnwindSafe(|| maker.render(jpeg, edges))).unwrap_or_else(|_| Err(CoreError::Other("the image decoder crashed on this file".into())))
     }
 
     /// Use a platform's (faster) preview maker instead of the pure-Rust one.
@@ -94,7 +113,7 @@ impl PreviewCache {
     /// Scan time: store the master and thumbnail made from the original's bytes (one decode).
     /// Returns false, storing nothing, when the original can't be decoded.
     pub fn store_from_original(&self, fingerprint: &str, original: &[u8]) -> Result<bool> {
-        let Ok(rendered) = self.maker().render(original, &[MASTER_EDGE, THUMB_EDGE]) else { return Ok(false) };
+        let Ok(rendered) = self.render(original, &[MASTER_EDGE, THUMB_EDGE]) else { return Ok(false) };
         let [master, thumb] = <[Vec<u8>; 2]>::try_from(rendered).map_err(|_| CoreError::Other("preview maker returned the wrong number of sizes".into()))?;
         self.write_cached(&self.path(fingerprint, MASTER_EDGE), &master)?;
         self.write_cached(&self.path(fingerprint, THUMB_EDGE), &thumb)?;
@@ -108,7 +127,7 @@ impl PreviewCache {
     pub fn get(&self, photo: &Photo, source: Option<&dyn MediaSource>, max_edge: u32) -> Result<Vec<u8>> {
         let edge = max_edge.clamp(MIN_EDGE, MAX_EDGE).min(MASTER_EDGE);
         let path = self.path(&photo.fingerprint, edge);
-        if let Ok(bytes) = fs::read(&path) {
+        if let Some(bytes) = self.read_cached(&path) {
             return Ok(bytes);
         }
         if photo.kind != MediaKind::Jpeg {
@@ -117,27 +136,39 @@ impl PreviewCache {
 
         let _permit = self.acquire();
         // Another request may have produced it while we waited.
-        if let Ok(bytes) = fs::read(&path) {
+        if let Some(bytes) = self.read_cached(&path) {
             return Ok(bytes);
         }
         if !self.has_master(&photo.fingerprint) {
             let Some(source) = source else {
                 return Err(CoreError::Other(format!("no preview cached for {} and its source is not connected", photo.file_name)));
             };
+            if photo.size > crate::scan::MAX_PHOTO_BYTES {
+                return Err(CoreError::Other(format!("{} is too large to preview", photo.file_name)));
+            }
             let mut bytes = Vec::with_capacity(photo.size as usize);
-            source.open(&photo.rel_path)?.read_to_end(&mut bytes)?;
+            source.open(&photo.rel_path)?.take(photo.size + 1).read_to_end(&mut bytes)?;
+            // Only from the very same photo: after a card swap another photo can sit at this path.
+            if bytes.len() as u64 != photo.size || fingerprint(&mut Cursor::new(&bytes[..]), photo.size)? != photo.fingerprint {
+                return Err(CoreError::Other(format!("{} has changed since it was scanned; rescan the folder", photo.file_name)));
+            }
             if !self.store_from_original(&photo.fingerprint, &bytes)? {
                 return Err(CoreError::Other(format!("can't decode {}", photo.file_name)));
             }
         }
-        let master = fs::read(self.path(&photo.fingerprint, MASTER_EDGE))?;
+        let master = self.read_cached(&self.path(&photo.fingerprint, MASTER_EDGE)).ok_or_else(|| CoreError::Other(format!("no preview for {}", photo.file_name)))?;
         if edge == MASTER_EDGE {
             return Ok(master);
         }
-        let bytes = self.maker().render(&master, &[edge])?.pop().ok_or_else(|| CoreError::Other("preview maker returned nothing".into()))?;
+        let bytes = self.render(&master, &[edge])?.pop().ok_or_else(|| CoreError::Other("preview maker returned nothing".into()))?;
         self.write_cached(&path, &bytes)?;
         Ok(bytes)
     }
+}
+
+/// JPEG start (FFD8) and end (FFD9) markers: a preview that was cut short has no end marker.
+fn is_complete_jpeg_ends(head: [u8; 2], tail: [u8; 2]) -> bool {
+    head == [0xFF, 0xD8] && tail == [0xFF, 0xD9]
 }
 
 fn is_digits(s: &str) -> bool {

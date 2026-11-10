@@ -32,7 +32,8 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> cull_core::Result<T> + 
 #[tauri::command]
 async fn add_folder(state: State<'_, AppState>, path: String) -> CmdResult<SourceInfo> {
     let svc = state.0.clone();
-    blocking(move || svc.add_source(Arc::new(FsSource::new(&path)?))).await
+    // A picked folder that contains the app's own folders (home folder, whole disk) never lists them.
+    blocking(move || svc.add_source(Arc::new(FsSource::new(&path)?.excluding(svc.app_dirs())))).await
 }
 
 #[tauri::command]

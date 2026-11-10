@@ -15,6 +15,7 @@
 //! scan runs, and a stopped scan keeps everything finished so far (the next scan resumes).
 
 use std::io::{Cursor, Read};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,6 +39,10 @@ pub const CULLABLE_KINDS: &[MediaKind] = &[MediaKind::Jpeg];
 const INGEST_THREADS: usize = 4;
 /// New photos saved per database transaction (and per "photos saved" event to the UI).
 const SAVE_BATCH: usize = 32;
+/// Bigger "photos" are reported as failed without being read: a whole file is held in memory while
+/// it is processed (4 at a time), so a huge misnamed file must not exhaust memory. Camera JPEGs are
+/// far below this (a 100 MP JPEG is ~60 MB).
+pub const MAX_PHOTO_BYTES: u64 = 512 * 1024 * 1024;
 /// Progress events: one every this many photos.
 const PROGRESS_EVERY: u64 = 8;
 
@@ -49,10 +54,20 @@ fn local_naive(t: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(t).naive_local()
 }
 
+/// `ingest`, with a crash anywhere inside (a decoder or EXIF bug on a damaged file) reported as a
+/// failure of that one file instead of ending the scan.
+fn ingest_guarded(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta)> {
+    catch_unwind(AssertUnwindSafe(|| ingest(source, rel_path, size, previews))).unwrap_or_else(|_| Err(CoreError::Other("crashed while reading this file".into())))
+}
+
 /// Read one file from the source, once, and derive everything from those bytes.
 fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta)> {
+    if size > MAX_PHOTO_BYTES {
+        return Err(CoreError::Other(format!("too large to be a photo ({} MB); not read", size / (1024 * 1024))));
+    }
     let mut bytes = Vec::with_capacity(size as usize);
-    source.open(rel_path)?.read_to_end(&mut bytes)?; // the only source read
+    // The only source read. Never more than one byte past the listed size, even if the file grew.
+    source.open(rel_path)?.take(size + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 != size {
         return Err(CoreError::Other(format!("file changed while reading ({} bytes, listed as {size})", bytes.len())));
     }
@@ -67,7 +82,8 @@ fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &Previe
 /// How a scan treats folders whose contents look unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FolderCheck {
-    /// Skip the folder when its file count and total size match its last complete scan.
+    /// Skip the folder when its file count and total size match its last complete scan, and the
+    /// photos it held then still point to it.
     SkipUnchanged,
     /// Look at every file anyway (already-indexed files are still not read).
     Force,
@@ -87,8 +103,9 @@ pub fn scan_source(
     let listed = source.list()?;
     let signature = FolderSignature { files: listed.len() as u64, bytes: listed.iter().map(|e| e.size).sum(), ..Default::default() };
     if check == FolderCheck::SkipUnchanged {
-        if let Some(last) = store.lock().unwrap().scan_signature(&src)? {
-            if last.files == signature.files && last.bytes == signature.bytes {
+        let store = store.lock().unwrap();
+        if let Some(last) = store.scan_signature(&src)? {
+            if last.files == signature.files && last.bytes == signature.bytes && store.source_photo_count(&src)? == last.indexed {
                 report.unchanged_sources = 1;
                 report.found = last.photos;
                 report.skipped_unsupported = last.raw;
@@ -163,7 +180,7 @@ pub fn scan_source(
                     if cancel.load(Ordering::Relaxed) {
                         return None; // photos already being read finish; the rest wait for the next scan
                     }
-                    let result = ingest(source, &e.rel_path, e.size, previews);
+                    let result = ingest_guarded(source, &e.rel_path, e.size, previews);
                     read_new.fetch_add(1, Ordering::Relaxed);
                     tick();
                     Some((e, *k, *mt, result))
@@ -207,14 +224,17 @@ pub fn scan_source(
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let mut bytes = Vec::with_capacity(*size as usize);
-                // Same photo as indexed only: a changed file is re-indexed on the next scan.
-                let ok = source.open(rel).and_then(|mut f| Ok(f.read_to_end(&mut bytes)?)).is_ok()
-                    && bytes.len() as u64 == *size
-                    && fingerprint(&mut Cursor::new(&bytes[..]), *size).is_ok_and(|f| &f == fp);
-                if ok {
-                    let _ = previews.store_from_original(fp, &bytes);
-                }
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    let mut bytes = Vec::with_capacity(*size as usize);
+                    // Same photo as indexed only: a changed file is re-indexed on the next scan.
+                    let ok = *size <= MAX_PHOTO_BYTES
+                        && source.open(rel).and_then(|f| Ok(f.take(*size + 1).read_to_end(&mut bytes)?)).is_ok()
+                        && bytes.len() as u64 == *size
+                        && fingerprint(&mut Cursor::new(&bytes[..]), *size).is_ok_and(|f| &f == fp);
+                    if ok {
+                        let _ = previews.store_from_original(fp, &bytes);
+                    }
+                }));
                 read_backfill.fetch_add(1, Ordering::Relaxed);
             });
         });
@@ -223,8 +243,9 @@ pub fn scan_source(
     report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;
     // Remember the folder only after a complete, clean scan, so anything missed is retried next time.
     if !report.cancelled && report.failed.is_empty() {
-        let signature = FolderSignature { photos: report.found, raw: report.skipped_unsupported, other: report.other_files, ..signature };
-        store.lock().unwrap().mark_scanned(&src, &signature)?;
+        let store = store.lock().unwrap();
+        let signature = FolderSignature { photos: report.found, raw: report.skipped_unsupported, other: report.other_files, indexed: store.source_photo_count(&src)?, ..signature };
+        store.mark_scanned(&src, &signature)?;
     }
     Ok(report)
 }

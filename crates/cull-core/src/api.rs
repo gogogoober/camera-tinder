@@ -2,7 +2,7 @@
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 
 use rayon::prelude::*;
 
@@ -28,6 +28,8 @@ const ANALYZE_BATCH: usize = 16;
 
 pub struct CullerService {
     store: Mutex<Store>,
+    /// The app's own folders (database folder, preview cache): never scanned as photos.
+    app_dirs: Vec<std::path::PathBuf>,
     /// Sources in the current session (the folders/cards being culled).
     sources: RwLock<Vec<Arc<dyn MediaSource>>>,
     previews: PreviewCache,
@@ -46,7 +48,9 @@ impl CullerService {
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        Self::with_store(Store::open(db_path)?, cache_dir)
+        let mut svc = Self::with_store(Store::open(db_path)?, cache_dir)?;
+        svc.app_dirs.extend(db_path.parent().map(Path::to_path_buf));
+        Ok(svc)
     }
 
     pub fn in_memory(cache_dir: &Path) -> Result<Self> {
@@ -56,6 +60,7 @@ impl CullerService {
     fn with_store(store: Store, cache_dir: &Path) -> Result<Self> {
         Ok(Self {
             store: Mutex::new(store),
+            app_dirs: vec![cache_dir.to_path_buf()],
             sources: RwLock::new(Vec::new()),
             previews: PreviewCache::new(cache_dir.to_path_buf())?,
             undo: Mutex::new(Vec::new()),
@@ -75,6 +80,11 @@ impl CullerService {
         sources.push(source.clone());
         drop(sources);
         self.source_info(source.as_ref())
+    }
+
+    /// The app's own folders (database, preview cache). Platforms keep sources from listing them.
+    pub fn app_dirs(&self) -> &[std::path::PathBuf] {
+        &self.app_dirs
     }
 
     pub fn remove_source(&self, id: &str) {
@@ -126,7 +136,8 @@ impl CullerService {
     /// unchanged folders and files are skipped and previous decisions are kept.
     /// New photos are saved (and `ScanSaved` emitted) in batches while it runs.
     pub fn scan(&self, req: &ScanRequest, sink: &dyn EventSink) -> Result<ScanReport> {
-        let _one_at_a_time = self.scanning.lock().unwrap();
+        // A scan that crashed must not block every later one.
+        let _one_at_a_time = self.scanning.lock().unwrap_or_else(PoisonError::into_inner);
         self.scan_cancel.store(false, Ordering::Relaxed);
         let sources: Vec<_> = self
             .sources
@@ -213,6 +224,12 @@ impl CullerService {
     /// the originals. Never touches photos, the database (decisions, tags, index) or any file
     /// the cache didn't create; a later scan rebuilds previews.
     pub fn clear_previews(&self, is_connected: &dyn Fn(&str) -> bool) -> Result<u64> {
+        // Not while a scan runs: it would record folders as done while their previews are being deleted.
+        let _no_scan: MutexGuard<()> = match self.scanning.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(p)) => p.into_inner(),
+            Err(TryLockError::WouldBlock) => return Err(CoreError::Other("a scan is running; stop it or let it finish first".into())),
+        };
         let status = self.preview_cache_status(is_connected)?;
         if !status.connected_sources.is_empty() {
             return Err(CoreError::Other(format!("disconnect these first: {}", status.connected_sources.join(", "))));

@@ -109,7 +109,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - The scan computes no quality scores. The old scan-time sharpness score, soft-photo triage and burst compare
   were removed (blur etc. live in photo analysis, to be rebuilt as triage). `photos.sharpness` stays in the
   schema, unused, so old databases need no migration.
-- Scan skipping: a folder whose file count + total size match its last *complete* scan (`sources.scan_*`) is not
+- Scan skipping: a folder whose file count + total size match its last *complete* scan (`sources.scan_*`), and
+  which still has as many photos pointing to it (`scan_indexed`; photos move when seen in another folder), is not
   looked into; a stopped or failed scan doesn't record that, so the next scan resumes. Adding a folder scans only
   that folder; ↻ next to a folder forces it (`ScanRequest.force`, still no re-reads of indexed files). Clearing
   previews forgets the signatures so the next scan rebuilds them. A same-size in-place edit is not noticed (use ↻).
@@ -163,23 +164,36 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
     folders only list them; unchanged files read nothing (path+size+mtime lookup). Older rows without previews
     are backfilled with one read.
   - Culling never opens the source: every preview size is derived from the cached master
-    (`PreviewCache::get`), so the card can be unplugged while you cull.
-  - Export reads each keeper once.
+    (`PreviewCache::get`), so the card can be unplugged while you cull. The one fallback read (no master yet)
+    checks size + fingerprint first: after a card swap another photo can sit at the same path.
+  - Cached previews must start FFD8 and end FFD9; a damaged one (power loss) counts as missing and is rebuilt.
+  - A crash (panic) while reading one file fails only that file; it never stops or blocks later scans.
+  - Files over `scan::MAX_PHOTO_BYTES` (512 MB) are reported as failed without being read; reads never go past
+    the listed size.
+  - `FsSource::excluding(svc.app_dirs())` (src-tauri `add_folder`): a picked folder that contains the app's own
+    database or preview cache (home folder, whole disk) never lists them.
+  - Export reads each keeper once, into a destination given as a full path only.
 - Nothing deletes, moves, renames or writes source files. Hate/Nope are rows in SQLite.
-- `CopyToDir` refuses destinations inside any source ever added (`known_source_ids`, symlinks resolved), never
-  overwrites (exclusive temp file + `hard_link`), and verifies each copy: full-content xxh3 of the bytes read vs
+- `CopyToDir` refuses destinations inside any source ever added (`known_source_ids`, symlinks resolved) and on
+  the same card/external drive as a connected source (so not `SD/Keepers` next to `SD/DCIM`), never overwrites
+  (exclusive temp file + `hard_link`; exFAT has neither hard links nor a no-overwrite rename, so there it claims the
+  name with an exclusive empty file and renames the verified copy onto it), and verifies each copy: full-content xxh3 of the bytes read vs
   the file on disk, plus fingerprint vs the culled photo.
 - Scan reports RAW (`skippedUnsupported`) and everything else ignored (`otherFiles`: videos…) so the UI can warn
   that those are not exported.
 - `crates/cull-platform-fs/tests/source_safety.rs` enforces all of this, including counting every source open
-  and a static scan that fails on any new filesystem-writing call outside the audited lines.
-- Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick sidebar → Storage):
+  and a static scan that fails on any new filesystem-writing call (incl. `fs::copy`, libc, Apple URL writers)
+  outside the audited lines. `tests/failure_cases.rs` covers card swaps, clearing mid-scan, photos moved to another
+  folder, crashing files and damaged previews; `cull-platform-apple/tests/source_safety.rs` runs the flow with ImageIO.
+- Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick sidebar → Storage), refused while a scan runs:
   - Locked while any known source is on a plugged-in **external** volume (`is_external_and_connected`: the folder
     exists and its filesystem device differs from `/`, the Data volume and $HOME). Internal folders never block.
     Core enforces this too, not only the UI.
   - Deletes only regular files directly in the cache folder named exactly like cache output (`is_cache_file`);
     never recursive, never follows symlinks, refuses if the cache folder itself is a symlink.
-  - Real-volume check: `cargo test -p cull-platform-fs --test source_safety -- --ignored` (mounts a disk image).
+  - Real-volume checks: `cargo test -p cull-platform-fs --test source_safety -- --ignored` (mounts exFAT disk
+    images: external detection, never exporting onto the card, no overwrites on exFAT, and every raw byte of an
+    exFAT and a FAT32 card unchanged after a whole session).
 
 ## Conventions
 

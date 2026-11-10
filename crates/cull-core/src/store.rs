@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS sources (
     scan_bytes   INTEGER,
     scan_photos  INTEGER,
     scan_raw     INTEGER,
-    scan_other   INTEGER
+    scan_other   INTEGER,
+    scan_indexed INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS photos (
@@ -119,6 +120,9 @@ pub struct FolderSignature {
     pub photos: u64,
     pub raw: u64,
     pub other: u64,
+    /// Photos whose location was this folder. Fewer now means some were last seen elsewhere
+    /// (e.g. a copy on the laptop), so the folder is looked into again to claim them back.
+    pub indexed: u64,
 }
 
 pub struct Store {
@@ -176,6 +180,9 @@ impl Store {
     }
 
     fn init(conn: Connection) -> Result<Self> {
+        // Another copy of the app (e.g. a dev build) may be writing: wait for it instead of failing.
+        // (rusqlite already defaults to 5 s; this states it, longer, for a big scan batch.)
+        conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(SCHEMA)?;
         // Databases created before these columns existed need them added.
         let columns = |table: &str| -> Result<Vec<String>> {
@@ -187,7 +194,7 @@ impl Store {
             conn.execute_batch("ALTER TABLE photos ADD COLUMN sharpness INTEGER")?;
         }
         let source_cols = columns("sources")?;
-        for col in ["scan_files", "scan_bytes", "scan_photos", "scan_raw", "scan_other"] {
+        for col in ["scan_files", "scan_bytes", "scan_photos", "scan_raw", "scan_other", "scan_indexed"] {
             if !source_cols.iter().any(|c| c == col) {
                 conn.execute_batch(&format!("ALTER TABLE sources ADD COLUMN {col} INTEGER"))?;
             }
@@ -221,8 +228,8 @@ impl Store {
     /// Record a complete scan of `source_id` and what the folder held at the time.
     pub fn mark_scanned(&self, source_id: &str, sig: &FolderSignature) -> Result<()> {
         self.conn.execute(
-            "UPDATE sources SET last_scan = ?2, scan_files = ?3, scan_bytes = ?4, scan_photos = ?5, scan_raw = ?6, scan_other = ?7 WHERE id = ?1",
-            params![source_id, now(), sig.files as i64, sig.bytes as i64, sig.photos as i64, sig.raw as i64, sig.other as i64],
+            "UPDATE sources SET last_scan = ?2, scan_files = ?3, scan_bytes = ?4, scan_photos = ?5, scan_raw = ?6, scan_other = ?7, scan_indexed = ?8 WHERE id = ?1",
+            params![source_id, now(), sig.files as i64, sig.bytes as i64, sig.photos as i64, sig.raw as i64, sig.other as i64, sig.indexed as i64],
         )?;
         Ok(())
     }
@@ -232,11 +239,12 @@ impl Store {
         let row = self
             .conn
             .query_row(
-                "SELECT scan_files, scan_bytes, scan_photos, scan_raw, scan_other FROM sources WHERE id = ?1 AND scan_files IS NOT NULL",
+                "SELECT scan_files, scan_bytes, scan_photos, scan_raw, scan_other, scan_indexed FROM sources
+                 WHERE id = ?1 AND scan_files IS NOT NULL AND scan_indexed IS NOT NULL",
                 [source_id],
                 |r| {
                     let n = |i: usize| r.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0) as u64);
-                    Ok(FolderSignature { files: n(0)?, bytes: n(1)?, photos: n(2)?, raw: n(3)?, other: n(4)? })
+                    Ok(FolderSignature { files: n(0)?, bytes: n(1)?, photos: n(2)?, raw: n(3)?, other: n(4)?, indexed: n(5)? })
                 },
             )
             .optional()?;
@@ -551,6 +559,28 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two copies of the app on one database: the second waits for the first's write instead of failing.
+    #[test]
+    fn a_busy_database_is_waited_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        let mut first = Store::open(&path).unwrap();
+        let second = Store::open(&path).unwrap();
+        let writer = std::thread::spawn(move || {
+            first
+                .transaction(|s| {
+                    s.upsert_source("/a", "a")?;
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        second.upsert_source("/b", "b").unwrap();
+        writer.join().unwrap();
+        assert_eq!(second.all_source_ids().unwrap().len(), 2);
+    }
 
     fn photo(store: &Store, fp: &str, src: &str, path: &str, when: Option<&str>) -> PhotoId {
         store

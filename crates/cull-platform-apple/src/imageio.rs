@@ -219,6 +219,8 @@ mod tests {
         let out = ImageIoPreviewMaker.render(&jpeg(3000, 2000), &[2048, 256]).unwrap();
         let dims: Vec<_> = out.iter().map(|b| image::load_from_memory(b).unwrap().dimensions()).collect();
         assert_eq!(dims, vec![(2048, 1365), (256, 171)]);
+        // The preview cache only trusts files with JPEG start and end markers (cut-short files are rebuilt).
+        assert!(out.iter().all(|b| b.starts_with(&[0xFF, 0xD8]) && b.ends_with(&[0xFF, 0xD9])));
 
         let small = ImageIoPreviewMaker.render(&jpeg(800, 600), &[2048, 256]).unwrap();
         assert_eq!(image::load_from_memory(&small[0]).unwrap().dimensions(), (800, 600));

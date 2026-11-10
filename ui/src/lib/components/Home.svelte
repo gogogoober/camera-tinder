@@ -253,12 +253,12 @@
           <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions and tags.</p>
           <p class="muted">Previews are made again the next time you scan a card.</p>
           <div class="row">
-            <button class="small primary" disabled={clearing} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
+            <button class="small primary" disabled={clearing || scanning} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
             <button class="small ghost" disabled={clearing} onclick={() => (confirmClear = false)}>Cancel</button>
           </div>
         </div>
       {:else}
-        <button class="small clear" disabled={blocked || cache.bytes === 0} onclick={clearPreviews}>Clear previews</button>
+        <button class="small clear" disabled={blocked || scanning || cache.bytes === 0} title={scanning ? "Wait for the scan to finish" : undefined} onclick={clearPreviews}>Clear previews</button>
         <p class="muted small note">Frees space the app used for its own preview copies. Never touches your photos.</p>
         {#if blocked}
           <p class="small note wait">

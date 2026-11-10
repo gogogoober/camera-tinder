@@ -237,14 +237,22 @@ fn only_audited_code_writes_to_disk() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let allowed: &[(&str, &[&str])] = &[
         // Export: writes only inside the (checked) destination; removes only its own temp file.
-        ("crates/cull-platform-fs/src/lib.rs", &["create_dir_all(&dest)", "OpenOptions::new().write(true).create_new(true)", "fs::hard_link(&tmp, &target)", "fs::rename(&tmp, &target)", "fs::remove_file(&tmp)"]),
-        // Preview cache: app cache dir only.
+        // The exFAT path claims the final name with a new empty file and removes only that empty claim.
+        ("crates/cull-platform-fs/src/lib.rs", &["create_dir_all(&dest)", "OpenOptions::new().write(true).create_new(true).open(&tmp)", "OpenOptions::new().write(true).create_new(true).open(&target)", "fs::hard_link(&tmp, &target)", "fs::rename(&tmp, &target)", "fs::remove_file(&tmp)", "fs::remove_file(&target); // our own empty claim"]),
+        // Preview cache: app cache dir only. Temp files are created new (never an existing file).
         // `clear` removes only cache-named regular files directly in the cache dir.
-        ("crates/cull-core/src/preview.rs", &["fs::create_dir_all(&dir)", "fs::write(&tmp, &bytes)", "fs::rename(&tmp, &path)", "fs::remove_file(&path)"]),
-        // Database folder: app data dir only.
+        ("crates/cull-core/src/preview.rs", &["fs::create_dir_all(&dir)", "OpenOptions::new().write(true).create_new(true).open(&tmp)", "fs::rename(&tmp, path)", "fs::remove_file(&tmp); // our own temp file only", "fs::remove_file(&path)"]),
+        // Database folder and file: app data dir only.
         ("crates/cull-core/src/api.rs", &["std::fs::create_dir_all(parent)"]),
+        ("crates/cull-core/src/store.rs", &["Connection::open(path)"]),
     ];
-    let needles = ["remove_file", "remove_dir", "fs::write", "File::create", "rename(", "hard_link", "create_dir", "set_permissions", "set_len", ".write(true)", ".append(true)", ".truncate(", "Command::new", "set_modified", "set_times"];
+    let needles = [
+        "remove_file", "remove_dir", "fs::write", "fs::copy", "File::create", "File::options", "rename(", "renamex", "hard_link", "symlink(", "create_dir",
+        "set_permissions", "set_len", ".write(true)", ".append(true)", ".truncate(", "Command::new", "set_modified", "set_times", "unlink", "libc::",
+        "Connection::open(", "OpenFlags",
+        // Apple APIs that write to a path or URL (previews/analysis must stay in memory).
+        "CreateWithURL", "CFURL", "NSURL", "writeTo", "removeItem", "moveItem", "copyItem", "createFile", "createDirectory",
+    ];
 
     let mut problems = Vec::new();
     for dir in ["crates/cull-core/src", "crates/cull-platform-fs/src", "crates/cull-platform-apple/src", "src-tauri/src"] {
@@ -597,4 +605,136 @@ fn a_mounted_volume_counts_as_external_until_ejected() {
     assert!(ok(Command::new("hdiutil").args(["detach", "-quiet", &mount])));
     assert!(mounted, "{id} should count as external while mounted");
     assert!(!cull_platform_fs::is_external_and_connected(&id), "ejected volume is not connected");
+}
+
+/// A mounted disk image, ejected when dropped (even if the test fails).
+struct Volume {
+    mount: String,
+    image: PathBuf,
+}
+impl Volume {
+    fn mount(dir: &Path, label: &str) -> Volume {
+        Self::mount_fs(dir, label, "ExFAT")
+    }
+    /// `fs`: "ExFAT" (most SD cards) or "MS-DOS" (FAT32: cards of 32 GB and less).
+    fn mount_fs(dir: &Path, label: &str, fs: &str) -> Volume {
+        use std::process::Command;
+        let image = dir.join(format!("{label}.dmg"));
+        // Unique across tests running in parallel (FAT names: 11 chars max).
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let name = format!("C{}{}{n}", &label[..1], std::process::id() % 100_000);
+        let size = if fs == "MS-DOS" { "40m" } else { "16m" };
+        assert!(Command::new("hdiutil").args(["create", "-quiet", "-size", size, "-fs", fs, "-volname", &name]).arg(&image).status().unwrap().success());
+        let v = Volume { mount: format!("/Volumes/{name}"), image };
+        v.attach();
+        v
+    }
+    fn attach(&self) {
+        assert!(std::process::Command::new("hdiutil").args(["attach", "-quiet", "-nobrowse"]).arg(&self.image).status().unwrap().success());
+    }
+    fn eject(&self) {
+        assert!(std::process::Command::new("hdiutil").args(["detach", "-quiet", &self.mount]).status().unwrap().success());
+    }
+    /// Hash of every byte of the whole volume (eject first): file data, folders, FAT, timestamps.
+    fn raw_hash(&self) -> u64 {
+        xxhash_rust::xxh3::xxh3_64(&fs::read(&self.image).unwrap())
+    }
+    fn path(&self) -> &Path {
+        Path::new(&self.mount)
+    }
+}
+impl Drop for Volume {
+    fn drop(&mut self) {
+        if Path::new(&self.mount).exists() {
+            let _ = std::process::Command::new("hdiutil").args(["detach", "-quiet", "-force", &self.mount]).status();
+        }
+    }
+}
+
+/// The strongest check: every raw byte of the card is the same after a whole session (scan,
+/// rescans, previews, decisions, export to another drive), on both card formats.
+/// `cargo test -p cull-platform-fs --test source_safety -- --ignored`
+#[test]
+#[ignore]
+fn a_whole_session_leaves_every_byte_of_a_real_card_unchanged() {
+    for fs_kind in ["ExFAT", "MS-DOS"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let card = Volume::mount_fs(tmp.path(), "card", fs_kind);
+        make_card(card.path());
+        card.eject();
+        let before = card.raw_hash();
+        card.attach();
+
+        let drive = Volume::mount(tmp.path(), "drive");
+        let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+        let src = svc.add_source(Arc::new(FsSource::new(card.path()).unwrap())).unwrap();
+        svc.scan(&Default::default(), &NullSink).unwrap();
+        svc.scan(&Default::default(), &NullSink).unwrap();
+        svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true }, &NullSink).unwrap();
+        let q = svc.queue(&Filter::default()).unwrap();
+        assert_eq!(q.len(), 4, "{fs_kind}");
+        for p in &q {
+            svc.preview(p.id, 512).unwrap();
+            svc.decide(p.id, Decision::Like).unwrap();
+        }
+        let protect = || svc.known_source_ids().unwrap();
+        assert!(svc.export(&CopyToDir::new(card.path().join("Keepers")).protecting(protect()), ExportOptions::default(), &NullSink).is_err());
+        let r = svc.export(&CopyToDir::new(drive.path().join("Keepers")).protecting(protect()), ExportOptions::default(), &NullSink).unwrap();
+        assert_eq!(r.copied, 4, "{fs_kind}");
+        assert!(svc.clear_previews(&cull_platform_fs::is_external_and_connected).is_err(), "locked while the card is in");
+
+        card.eject();
+        assert_eq!(card.raw_hash(), before, "{fs_kind}: bytes on the card changed");
+    }
+}
+
+/// Real exFAT volumes (what SD cards and most external SSDs use; no hard links, no
+/// no-overwrite rename): export never writes onto the card, even next to the added folder,
+/// and on an exFAT drive it still never overwrites and leaves no temp files or empty claims.
+/// `cargo test -p cull-platform-fs --test source_safety -- --ignored`
+#[test]
+#[ignore]
+fn export_on_real_exfat_volumes_never_touches_the_card_or_overwrites() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = Volume::mount(tmp.path(), "card");
+    let drive = Volume::mount(tmp.path(), "drive");
+    make_card(card.path());
+    let before = snapshot(card.path());
+
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(card.path().join("DCIM")).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    for p in svc.queue(&Filter::default()).unwrap() {
+        svc.decide(p.id, Decision::Like).unwrap();
+    }
+    let export = |dest: &Path| svc.export(&CopyToDir::new(dest).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink);
+
+    // Next to the added folder, but on the card: refused.
+    assert!(export(&card.path().join("Keepers")).is_err());
+    assert_eq!(snapshot(card.path()), before, "the card is untouched");
+
+    // Another exFAT drive: copies, then skips on a re-run.
+    let out = drive.path().join("Keepers");
+    assert_eq!(export(&out).unwrap().copied, 4);
+    assert_eq!(export(&out).unwrap().already_there, 4);
+
+    // A different file already using a keeper's name is kept; the keeper gets a suffix.
+    let other = drive.path().join("Other");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("DSC_0001.JPG"), b"someone else's file").unwrap();
+    let r = export(&other).unwrap();
+    assert_eq!((r.copied, r.failed.len()), (4, 0));
+    assert_eq!(fs::read(other.join("DSC_0001.JPG")).unwrap(), b"someone else's file");
+    assert!(other.join("DSC_0001-1.JPG").is_file());
+
+    // No temp files or empty name claims left behind.
+    for dir in [&out, &other] {
+        for e in fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            let name = e.file_name().to_string_lossy().into_owned();
+            assert!(!name.ends_with(".partial") && e.metadata().unwrap().len() > 0, "leftover {name}");
+        }
+    }
+    assert_eq!(snapshot(card.path()), before, "the card is untouched");
 }
