@@ -165,7 +165,7 @@
 
 {#snippet topBar()}
   <header class="top">
-    <button onclick={onBack}>{compact ? 'Cull' : '‹ Back to cull'}</button>
+    <button onclick={onBack}>{compact ? 'Triage' : '‹ Back to triage'}</button>
     <b>Rescue · {daysLabel(days)}</b>
     <span class="grow"></span>
     {#if !compact}<span class="muted">Click: ✓ Keep → ★ Favorite → ⊘ Hate → clear · <kbd>space</kbd> enlarge</span>{/if}
