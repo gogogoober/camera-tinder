@@ -343,7 +343,7 @@ Eyes closed is a hint, never a Sweep reason. A group whose frames are all bad st
 
 After the existing moments/bursts: `load_analyses(&ids, None)` (all kinds; grouping needs the similarity
 embeddings), `retain_current` on each, then `triage::build`. Set
-`triage_version = PLAN_VERSION`. Keep `bursts` in `Plan` for now (the UI stops using them in Part B).
+`triage_version = PLAN_VERSION`. (`Plan.bursts` was later removed: bursts come from triage groups.)
 
 ### 3.5 Tests (P3)
 
@@ -467,8 +467,9 @@ the photo, `SwipeCard`, side panel and badges all use `photos[shown]`.
 
 Props: `range`, `onBack` (to Cull), `onDone` (to Review). Loads `plan` for the range; shows the undecided set-aside
 photos. Renders through `AppShell` like every screen.
-- **Two rows of multi-select chips** (existing `.chips` / `.chip.on` styles): top = events/days (calendar tags
-  from `api.tags()` that overlap the range, else one chip per day), bottom = reasons present (labels from an
+- **Two rows of multi-select chips** (existing `.chips` / `.chip.on` styles): top = events/days (calendar events
+  from `api.suggestTags()` that touch the picked days, plus one chip per day no event covers; saved tags were
+  removed on main), bottom = reasons present (labels from an
   `ISSUE_LABELS: Record<IssueKind, string>` map added to `lib/triage.ts`: "blurry", "motion blur", "too dark"…;
   the same map feeds the banners and pills in B4). Each chip shows a count. **No chip selected in a row = no filter for that row.**
 - Grid of square thumbnails (`minmax(104px, 1fr)`), neutral, reason pill bottom-left. Click cycles

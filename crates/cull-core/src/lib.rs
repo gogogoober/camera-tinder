@@ -6,6 +6,7 @@
 
 pub mod analysis;
 pub mod api;
+pub mod errlog;
 pub mod error;
 pub mod identity;
 pub mod metadata;

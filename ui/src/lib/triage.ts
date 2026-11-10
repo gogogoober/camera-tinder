@@ -126,3 +126,44 @@ export function matchesChips<T>(selected: Set<T>, value: T | undefined): boolean
 export function sameOrder(photos: Pick<Photo, 'id'>[], triage: Pick<TriageItem, 'photoId'>[]): boolean {
   return photos.length === triage.length && photos.every((p, i) => triage[i].photoId === p.id);
 }
+
+// ---- Layout ------------------------------------------------------------------------------
+
+/** The photos the filmstrip draws, in order: singles, set-aside slivers, and each group once (its first member). */
+export function drawnItems(s: Structure, count: number): number[] {
+  return Array.from({ length: count }, (_, i) => i).filter((i) => s.setAside[i] || stopOf(s, i) === i);
+}
+
+/**
+ * The filmstrip window: `back` drawn items before the shown one and `forward` after, counted in drawn
+ * items (a 20-frame burst is one item). `undefined` = an empty slot, so the shown item stays centred.
+ * `shown` past the end (everything done) keeps the last items in view.
+ */
+export function stripWindow(s: Structure, drawn: number[], shown: number, back: number, forward: number): (number | undefined)[] {
+  const anchor = s.setAside[shown] ? shown : stopOf(s, shown);
+  const at = drawn.indexOf(anchor);
+  const pos = at >= 0 ? at : drawn.length;
+  return Array.from({ length: back + forward + 1 }, (_, k) => drawn[pos - back + k]);
+}
+
+/** Burst frame strip sizing (px). Up to `FIT` frames fit at full size; every `STEP` frames more add `GROW`. */
+/** PAD = the row's padding (8 + 8) and border (1 + 1) in BurstStrip.svelte. */
+export const BURST_STRIP = { FRAME_MAX: 54, FRAME_MIN: 28, GAP: 6, PAD: 18, FIT: 10, STEP: 5, GROW: 0.15 } as const;
+
+/**
+ * How wide the burst strip and each frame are, given `frames` and the `available` width.
+ * The strip starts as wide as `FIT` full-size frames; every `STEP` frames over `FIT` widen it by `GROW`
+ * (never past `available`). Frames share that width, between `FRAME_MIN` and `FRAME_MAX`; if even
+ * `FRAME_MIN` doesn't fit, the row scrolls instead of shrinking frames into slivers.
+ */
+export function burstStripLayout(frames: number, available: number): { frameWidth: number; rowWidth: number; scrolls: boolean } {
+  const { FRAME_MAX, FRAME_MIN, GAP, PAD, FIT, STEP, GROW } = BURST_STRIP;
+  const n = Math.max(1, frames);
+  const extent = (frame: number) => n * frame + (n - 1) * GAP + PAD;
+  const base = Math.min(available, FIT * FRAME_MAX + (FIT - 1) * GAP + PAD); // FIT full-size frames
+  const steps = Math.ceil(Math.max(0, n - FIT) / STEP);
+  const allowed = Math.min(available, base * (1 + GROW * steps));
+  const frameWidth = Math.floor(Math.min(FRAME_MAX, Math.max(FRAME_MIN, (allowed - PAD - (n - 1) * GAP) / n)));
+  const needed = extent(frameWidth);
+  return { frameWidth, rowWidth: Math.min(needed, allowed), scrolls: needed > allowed };
+}

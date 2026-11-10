@@ -268,8 +268,9 @@ pub struct TagSuggestion {
     pub children: Vec<TagSuggestion>,
 }
 
-/// Forget what was recorded for every photo taken on some days, so they can be culled (or analysed)
-/// again from scratch. Mainly for testing. Photos, previews, tags and the files themselves are kept.
+/// Forget what was recorded for the photos taken on some days (in the session's folders and cards), so
+/// they can be triaged (or analysed) again from scratch. Mainly for testing. Photos, previews and the
+/// files themselves are kept.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ResetRequest {
@@ -285,10 +286,20 @@ pub struct ResetRequest {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetReport {
-    /// Photos taken on those days (in the whole library, whichever folder they are in).
+    /// Photos taken on those days in the session's folders and cards.
     pub photos: u64,
     /// Decisions removed.
     pub decisions: u64,
     /// Analysis rows removed.
     pub analysis: u64,
+}
+
+/// The background error log, for a developer view.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorLogView {
+    /// The file, or `None` when the platform hasn't set one (errors go to stderr only).
+    pub path: Option<String>,
+    /// Last lines, oldest first.
+    pub lines: Vec<String>,
 }

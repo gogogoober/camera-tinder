@@ -244,6 +244,8 @@ fn only_audited_code_writes_to_disk() {
         // Database folder and file: app data dir only.
         ("crates/cull-core/src/api.rs", &["std::fs::create_dir_all(parent)"]),
         ("crates/cull-core/src/store.rs", &["Connection::open(path)"]),
+        // Error log: one file (and its single rotated copy) in the folder the platform gives it (app log dir).
+        ("crates/cull-core/src/errlog.rs", &["fs::create_dir_all(dir)", "fs::rename(&self.path, &rotated)", "OpenOptions::new().create(true).append(true).open(&self.path)"]),
     ];
     let needles = [
         "remove_file", "remove_dir", "fs::write", "fs::copy", "File::create", "File::options", "rename(", "renamex", "hard_link", "symlink(", "create_dir",

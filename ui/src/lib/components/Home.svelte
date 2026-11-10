@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
@@ -65,6 +65,19 @@
       clearInterval(poll);
       void off.then((f) => f());
     };
+  });
+
+  // Developer view of background errors, shown in the Advanced drawer.
+  let errors = $state<ErrorLogView | null>(null);
+  async function loadErrors() {
+    try {
+      errors = await api.errorLog(100);
+    } catch (e) {
+      errors = { path: null, lines: [String(e)] };
+    }
+  }
+  $effect(() => {
+    if (advancedOpen) void loadErrors();
   });
 
   async function loadCache() {
@@ -333,6 +346,15 @@
                 <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos and decisions are unchanged.</p>
               {/if}
             {/if}
+
+            <div class="kv"><span>Background errors</span><b>{errors ? errors.lines.length : '…'}</b></div>
+            {#if errors?.lines.length}
+              <pre class="errlog">{errors.lines.join('\n')}</pre>
+            {:else if errors}
+              <p class="muted small note">No errors logged.</p>
+            {/if}
+            {#if errors?.path}<p class="muted small note path" title={errors.path}>{errors.path}</p>{/if}
+            <button class="small" onclick={loadErrors}>Refresh</button>
           </div>
         {/if}
         <button class="plain adv-toggle" aria-expanded={advancedOpen} aria-controls="adv-panel" onclick={() => (advancedOpen = !advancedOpen)}>
@@ -514,6 +536,8 @@
   aside { display: flex; flex-direction: column; gap: 8px; }
   .advanced { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
   .adv-panel { display: flex; flex-direction: column; gap: 8px; padding-bottom: 4px; }
+  .errlog { margin: 0; max-height: 180px; overflow: auto; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); font: 10.5px/1.45 ui-monospace, 'SF Mono', monospace; white-space: pre-wrap; word-break: break-word; user-select: text; -webkit-user-select: text; }
+  .path { font-family: ui-monospace, 'SF Mono', monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; user-select: text; -webkit-user-select: text; }
   .adv-toggle { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; padding: 8px 0 0; border-top: 1px solid var(--border); border-radius: 0; font-size: 12.5px; color: var(--muted); text-align: left; }
   .adv-toggle:hover { color: var(--text); background: transparent; }
   .advanced.open .adv-toggle { color: var(--text); }

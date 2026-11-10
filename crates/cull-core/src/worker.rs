@@ -65,13 +65,13 @@ impl CullerService {
                 // Whatever goes wrong in a pass, the thread must survive for the next wake.
                 match std::panic::catch_unwind(AssertUnwindSafe(|| svc.analyze_pending(sink.as_ref()))) {
                     Ok(Ok(_)) => {}
-                    Ok(Err(e)) => eprintln!("background analysis failed: {e}"),
-                    Err(_) => eprintln!("background analysis crashed; will retry on the next wake"),
+                    Ok(Err(e)) => svc.log_error("analysis", &format!("background pass failed: {e}")),
+                    Err(_) => svc.log_error("analysis", "background pass crashed; will retry on the next wake"),
                 }
             }
         });
         if let Err(e) = spawned {
-            eprintln!("could not start the analysis thread: {e}");
+            self.log_error("analysis", &format!("could not start the analysis thread: {e}"));
         }
     }
 

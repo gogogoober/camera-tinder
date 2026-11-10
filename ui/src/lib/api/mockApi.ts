@@ -352,12 +352,15 @@ export const mockApi: CullerApi = {
     analysisStopped = false;
     void backgroundAnalysis();
   },
+  async errorLog() {
+    return { path: null, lines: [] };
+  },
   async analysisStopped() {
     return analysisStopped;
   },
   async logOutcomes() {},
   async resetDays({ days, decisions, analysis }) {
-    const hit = photos.filter((p) => days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown'));
+    const hit = active().filter((p) => days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown')); // session sources only
     let d = 0;
     let a = 0;
     for (const p of hit) {

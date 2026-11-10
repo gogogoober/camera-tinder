@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { firstUndecidedFrame, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { burstStripLayout, drawnItems, firstUndecidedFrame, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -80,4 +80,33 @@ test('with no triage at all the screen behaves like plain swiping (feature off, 
   assert.deepEqual([0, 1, 2].map((i) => isStop(none, i)), [true, true, true]);
   assert.equal(nextStop(none, three, 0), 2, 'skips the decided one');
   assert.deepEqual(setAsideLeft(none, three), []);
+});
+
+test('the filmstrip window counts drawn items, so a long burst is one slot, not twenty', () => {
+  // 0 single · 1..20 a 20-frame burst · 21 sweep · 22 single
+  const items: TriageItem[] = [judge(0), ...Array.from({ length: 20 }, (_, k) => pick(1 + k, 1, k)), sweep(21), judge(22)];
+  const st = structure(items);
+  const drawn = drawnItems(st, items.length);
+  assert.deepEqual(drawn, [0, 1, 21, 22]);
+  assert.deepEqual(stripWindow(st, drawn, 7, 1, 2), [0, 1, 21, 22], 'cursor on frame 7: the stack is centred, neighbours on both sides');
+  assert.deepEqual(stripWindow(st, drawn, 0, 2, 1), [undefined, undefined, 0, 1], 'empty slots keep the first item centred');
+  assert.deepEqual(stripWindow(st, drawn, items.length, 2, 1), [21, 22, undefined, undefined], 'past the end: last items stay in view');
+});
+
+test('burst strip: fits 10 frames, grows 15% per 5 more, then scrolls rather than shrinking to slivers', () => {
+  const wide = 2000;
+  const ten = burstStripLayout(10, wide);
+  assert.equal(ten.frameWidth, 54);
+  assert.equal(ten.scrolls, false);
+  const fifteen = burstStripLayout(15, wide);
+  assert.ok(fifteen.rowWidth > ten.rowWidth && fifteen.rowWidth <= ten.rowWidth * 1.15 + 1, 'grows by one step');
+  assert.ok(fifteen.frameWidth < 54 && fifteen.frameWidth >= 28, `${fifteen.frameWidth}`);
+  assert.equal(fifteen.scrolls, false);
+  assert.equal(burstStripLayout(20, wide).scrolls, false, '20 frames still fit without scrolling');
+  const many = burstStripLayout(60, 700);
+  assert.equal(many.frameWidth, 28, 'never thinner than the minimum');
+  assert.equal(many.scrolls, true);
+  assert.ok(many.rowWidth <= 700);
+  const narrow = burstStripLayout(4, 200);
+  assert.ok(narrow.rowWidth <= 200, 'a phone never overflows the available width');
 });

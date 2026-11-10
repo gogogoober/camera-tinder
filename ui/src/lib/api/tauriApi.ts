@@ -43,6 +43,7 @@ export const tauriApi: CullerApi = {
   stopAnalysis: () => invoke('stop_analysis'),
   resumeAnalysis: () => invoke('resume_analysis'),
   analysisStopped: () => invoke('analysis_stopped'),
+  errorLog: (maxLines) => invoke('error_log', { maxLines }),
   photoAnalysis: (id) => invoke('photo_analysis', { id }),
   photoAnalyses: (filter) => invoke('photo_analyses', { filter }),
   photoIssues: (filter) => invoke('photo_issues', { filter }),

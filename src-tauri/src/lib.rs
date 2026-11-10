@@ -206,6 +206,12 @@ fn resume_analysis(state: State<'_, AppState>) {
     state.0.resume_analysis();
 }
 
+/// The background error log's path and last lines (developer view in the Advanced drawer).
+#[tauri::command]
+fn error_log(state: State<'_, AppState>, max_lines: Option<usize>) -> ErrorLogView {
+    state.0.error_log(max_lines.unwrap_or(200))
+}
+
 #[tauri::command]
 fn analysis_stopped(state: State<'_, AppState>) -> bool {
     state.0.analysis_stopped()
@@ -278,6 +284,8 @@ pub fn run() {
             // ImageIO previews: decodes straight at preview size (several times faster than the portable path).
             #[cfg(target_os = "macos")]
             svc.set_preview_maker(Arc::new(cull_platform_apple::imageio::ImageIoPreviewMaker));
+            // Background errors (analysis) go to a rotating file in the app's log folder, for troubleshooting.
+            svc.set_error_log(app.path().app_log_dir()?.join("errors.log"));
             // Analyse every photo in the background as the scan saves it (and resume unfinished work now).
             svc.start_analysis_worker(Arc::new(TauriSink(app.handle().clone())));
             app.manage(AppState(svc));
@@ -314,6 +322,7 @@ pub fn run() {
             stop_analysis,
             resume_analysis,
             analysis_stopped,
+            error_log,
             photo_analysis,
             photo_analyses,
             photo_issues,

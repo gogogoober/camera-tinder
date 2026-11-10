@@ -114,9 +114,13 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
   the registered step (`PhotoAnalysis::retain_current`). Stop analysis is sticky until Resume or restart. A new
   analysis step = one `steps.push(...)` in `analysis/pipeline.rs`.
 - **Reset days (testing):** `CullerService::reset_days({ days, decisions, analysis })` forgets decisions (+ history and
-  outcomes) and/or analysis for every photo taken on those `YYYY-MM-DD` days, library-wide. Database only (photos,
-  previews, tags and files stay); an empty list does nothing; malformed days are rejected; it clears the undo stack.
-  UI: "Reset these days…" tucked under Start culling on the Pick screen.
+  outcomes) and/or analysis for the photos taken on those days (`YYYY-MM-DD` or `"unknown"`) **in the session's folders
+  and cards only**, exactly what the triage screen shows for them (shared `days_condition` SQL). Database only (photos,
+  previews and files stay); an empty list does nothing; malformed days are rejected; it clears the undo stack.
+  UI: "Reset these days…" tucked under Start triage on the Pick screen.
+- **Error log:** background errors (analysis passes, each photo that couldn't be analysed, once per photo per app
+  session) go to `errors.log` in the app log folder (`set_error_log` in `setup`) and stderr. It rotates at 50 MB to
+  `errors.1.log` (one kept). The Pick screen's Advanced drawer shows the path and the last 100 lines.
 - UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
   (month calendar, card stack, round buttons). All logic is shared.

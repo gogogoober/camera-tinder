@@ -56,6 +56,8 @@ pub struct CullerService {
     undo: Mutex<Vec<Vec<(PhotoId, Option<Decision>)>>>,
     calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
     analyzers: RwLock<Arc<Analyzers>>,
+    /// Where background errors go (see `errlog.rs`); stderr only until the platform sets a file.
+    error_log: RwLock<Option<Arc<crate::errlog::ErrorLog>>>,
     /// Background analysis: wake signal and the Stop flag (see `worker.rs`).
     pub(crate) analysis_control: Arc<crate::worker::AnalysisControl>,
     /// One scan at a time.
@@ -88,6 +90,7 @@ impl CullerService {
             calendar: RwLock::new(None),
             analyzers: RwLock::new(Arc::new(Analyzers::rust())),
             analysis_control: crate::worker::AnalysisControl::new(),
+            error_log: RwLock::new(None),
             scanning: Mutex::new(()),
             scan_cancel: AtomicBool::new(false),
         })
@@ -218,9 +221,10 @@ impl CullerService {
         })
     }
 
-    /// Forget decisions and/or analysis for every photo taken on `req.days`, so those days can be
-    /// culled or analysed again from scratch (mainly for testing). Database only: photos, previews,
-    /// tags and the original files are never touched. An empty `days` does nothing.
+    /// Forget decisions and/or analysis for the photos taken on `req.days` in this session's folders
+    /// and cards (another card with photos from the same days is left alone), so those days can be
+    /// triaged or analysed again from scratch (mainly for testing). Database only: photos, previews and
+    /// the original files are never touched. An empty `days` does nothing.
     pub fn reset_days(&self, req: &ResetRequest) -> Result<ResetReport> {
         for day in &req.days {
             // Exactly YYYY-MM-DD (chrono alone accepts "2026-7-1", which would silently match no photo).
@@ -233,7 +237,8 @@ impl CullerService {
             return Ok(ResetReport::default());
         }
         let mut store = self.store.lock().unwrap();
-        let ids = store.photo_ids_on_days(&req.days)?;
+        // Only the session's folders and cards: exactly the photos the triage screen shows for these days.
+        let ids = store.photo_ids_on_days(&self.source_ids(), &req.days)?;
         let report = store.transaction(|s| {
             Ok(ResetReport {
                 photos: ids.len() as u64,
@@ -371,6 +376,35 @@ impl CullerService {
         self.previews.set_maker(maker);
     }
 
+    /// Platforms point background error logging at a file in the app's own log folder.
+    pub fn set_error_log(&self, path: std::path::PathBuf) {
+        *self.error_log.write().unwrap() = Some(Arc::new(crate::errlog::ErrorLog::new(path)));
+    }
+
+    /// Log a background error (stderr, plus the error log file when one is set).
+    pub(crate) fn log_error(&self, area: &str, message: &str) {
+        match self.error_log.read().unwrap().as_ref() {
+            Some(log) => log.record(area, message),
+            None => eprintln!("[{area}] {message}"),
+        }
+    }
+
+    /// Like `log_error`, once per `key` per app session (a photo failing on every pass logs once).
+    pub(crate) fn log_error_once(&self, key: &str, area: &str, message: &str) {
+        match self.error_log.read().unwrap().as_ref() {
+            Some(log) => log.record_once(key, area, message),
+            None => eprintln!("[{area}] {message}"),
+        }
+    }
+
+    /// Where the error log is, and its last `max_lines` lines (oldest first). For a developer view.
+    pub fn error_log(&self, max_lines: usize) -> ErrorLogView {
+        match self.error_log.read().unwrap().as_ref() {
+            Some(log) => ErrorLogView { path: Some(log.path().display().to_string()), lines: log.recent(max_lines) },
+            None => ErrorLogView::default(),
+        }
+    }
+
     /// Platforms add engines here (e.g. `cull_platform_apple::vision::analyzers()`).
     /// Defaults to `Analyzers::rust()`.
     pub fn set_analyzers(&self, analyzers: Analyzers) {
@@ -455,10 +489,28 @@ impl CullerService {
                 Ok(())
             })?;
             drop(store);
+            self.log_photo_failures(batch, &results);
             done += batch.len() as u64;
             sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
         }
         Ok(report)
+    }
+
+    /// Log each photo that couldn't be analysed, and each engine error, once per app session.
+    fn log_photo_failures(&self, batch: &[(Photo, Vec<usize>)], results: &[PhotoSteps]) {
+        let name = |id: PhotoId| batch.iter().find(|(p, _)| p.id == id).map(|(p, _)| p.file_name.as_str()).unwrap_or("?");
+        for r in results {
+            match r {
+                Err((id, why)) => self.log_error_once(&format!("photo:{id}"), "analysis", &format!("photo {id} ({}) not analysed: {why}", name(*id))),
+                Ok((id, steps)) => {
+                    for s in steps {
+                        if let Err(why) = &s.result {
+                            self.log_error_once(&format!("photo:{id}:{}", s.kind), "analysis", &format!("photo {id} ({}): {} failed: {why}", name(*id), s.kind));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Everything stored for one photo, including its similarity embedding.
@@ -591,11 +643,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (svc, ids) = seeded(tmp.path(), &["2026-07-01", "2026-07-01", "2026-07-02"]);
         svc.decide_many(&ids, Decision::Favorite).unwrap();
+        // A second card with a photo from the same day, scanned earlier but not in this session.
+        let other = {
+            let store = svc.store.lock().unwrap();
+            store.upsert_source("other-card", "other").unwrap();
+            let when = NaiveDateTime::parse_from_str("2026-07-01T12:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+            let (id, _) = store.upsert_photo(&NewPhoto { fingerprint: "other", source_id: "other-card", rel_path: "o.jpg", kind: MediaKind::Jpeg, size: 1, captured_at: Some(when), camera: None }).unwrap();
+            id
+        };
+        svc.store.lock().unwrap().set_decision(other, Some(Decision::Like)).unwrap();
 
         let r = svc.reset_days(&ResetRequest { days: vec!["2026-07-01".into()], decisions: true, analysis: false }).unwrap();
         assert_eq!((r.photos, r.decisions, r.analysis), (2, 2, 0));
         let decided: Vec<_> = ids.iter().map(|id| svc.photo(*id).unwrap().decision).collect();
         assert_eq!(decided, [None, None, Some(Decision::Favorite)]);
+        assert_eq!(svc.photo(other).unwrap().decision, Some(Decision::Like), "a card not in the session is left alone");
         assert!(svc.undo().unwrap().is_empty(), "undo can't resurrect a reset");
         assert!(svc.photo_analysis(ids[0]).unwrap().blur.is_some(), "analysis kept unless asked");
 

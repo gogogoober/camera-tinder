@@ -2,7 +2,7 @@
   import { api, type Photo, type TriageItem } from '../api';
   import { formatTime } from '../format';
   import { dragSelect } from '../select';
-  import { ISSUE_LABELS, groupOf, stopOf, type Structure } from '../triage';
+  import { ISSUE_LABELS, drawnItems, groupOf, stopOf, stripWindow, type Structure } from '../triage';
   import Badge from './Badge.svelte';
 
   let {
@@ -35,16 +35,18 @@
 
   const SLICES = 5;
 
-  // One entry per thing on the strip: a photo, a burst/group stack (at its first member), or a
-  // thin red sliver for a set-aside photo. Other group members live inside their stack.
+  // Everything the strip draws, in capture order: a photo, a burst/group stack (at its first member), or
+  // a thin red sliver for a set-aside photo. Other group members live inside their stack, so the window
+  // is counted in drawn items, not photos: a 20-frame burst is one item, not 20 hidden slots.
+  const drawn = $derived(drawnItems(s, photos.length));
+  const kindOf = (i: number) => (s.setAside[i] ? ('sweep' as const) : s.groupAt[i] == null ? ('single' as const) : ('stack' as const));
+
   const items = $derived(
-    Array.from({ length: back + forward + 1 }, (_, k) => {
-      const i = idx - back + k;
-      const p = photos[i];
-      if (!p) return { i, p: null, kind: 'empty' as const, divider: false };
-      const kind = s.setAside[i] ? ('sweep' as const) : s.groupAt[i] == null ? ('single' as const) : stopOf(s, i) === i ? ('stack' as const) : ('hidden' as const);
-      return { i, p, kind, divider: k > 0 && photos[i - 1] != null && momentOf[i - 1] !== momentOf[i] };
-    }).filter((it) => it.kind !== 'hidden'),
+    stripWindow(s, drawn, idx, back, forward).map((i, k, all) => {
+      if (i === undefined) return { key: `empty${k}`, i: -1, p: null, kind: 'empty' as const, divider: false };
+      const prev = all[k - 1];
+      return { key: `p${i}`, i, p: photos[i], kind: kindOf(i), divider: prev !== undefined && momentOf[prev] !== momentOf[i] };
+    }),
   );
 
   const isCurrent = (i: number, kind: string) => (kind === 'stack' ? stopOf(s, idx) === i : i === idx);
@@ -54,7 +56,7 @@
 </script>
 
 <div class="strip" style:--ts="{size}px" role="group" aria-label="Filmstrip" use:dragSelect={{ onSelect, onClick: (i) => onJump(i) }}>
-  {#each items as it (it.i)}
+  {#each items as it (it.key)}
     {#if it.divider}<span class="div"></span>{/if}
     {#if it.kind === 'sweep'}
       <span

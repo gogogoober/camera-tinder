@@ -164,7 +164,15 @@ export interface PreviewCacheStatus {
 
 export * from './analysisTypes';
 
-/** Forget what was recorded for the photos of some days (testing). Files, previews and tags are kept. */
+/** The background error log (developer view). */
+export interface ErrorLogView {
+  /** The file, or null when errors only go to the terminal (e.g. the mock backend). */
+  path: string | null;
+  /** Last lines, oldest first. */
+  lines: string[];
+}
+
+/** Forget what was recorded for the photos of some days in this session's folders and cards (testing). Files and previews are kept. */
 export interface ResetRequest {
   /** YYYY-MM-DD capture days, or "unknown" for photos without a date. Empty = nothing. */
   days: string[];

@@ -10,6 +10,7 @@ import type {
   ExportReport,
   Filter,
   GroupingOptions,
+  ErrorLogView,
   OutcomeEntry,
   ResetReport,
   ResetRequest,
@@ -54,7 +55,7 @@ export interface CullerApi {
   decide(id: number, decision: Decision): Promise<void>;
   /** Record decisions made on suggested photos (call after `decide`). Used to tune the suggestions. */
   logOutcomes(entries: OutcomeEntry[]): Promise<void>;
-  /** Testing: forget decisions and/or analysis for every photo taken on these days. Never touches files. */
+  /** Testing: forget decisions and/or analysis for the photos of these days in this session's folders and cards. Never touches files. */
   resetDays(request: ResetRequest): Promise<ResetReport>;
   /** One decision for many photos, undone together by a single undo. */
   decideMany(ids: number[], decision: Decision): Promise<void>;
@@ -88,6 +89,8 @@ export interface CullerApi {
   stopAnalysis(): Promise<void>;
   resumeAnalysis(): Promise<void>;
   analysisStopped(): Promise<boolean>;
+  /** Background errors (analysis): the log file and its last lines. Rotates at 50 MB. */
+  errorLog(maxLines?: number): Promise<ErrorLogView>;
   /** Everything stored for one photo, including its similarity embedding. */
   photoAnalysis(id: number): Promise<PhotoAnalysis>;
   /** Stored results for a filter, queue order, without embeddings. */

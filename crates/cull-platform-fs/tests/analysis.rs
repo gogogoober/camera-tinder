@@ -245,3 +245,25 @@ fn adding_a_folder_wakes_the_worker_for_photos_scanned_in_an_earlier_session() {
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
     wait_until("analysis after add_source", || all_analysed(&svc));
 }
+
+#[test]
+fn failed_photos_go_to_the_error_log_once_not_on_every_retry() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    assert_eq!(svc.error_log(10), ErrorLogView::default(), "no file until the platform sets one");
+    svc.set_error_log(tmp.path().join("logs").join("errors.log"));
+    let mut broken = cull_core::analysis::Analyzers::rust();
+    broken.blur = Some(Arc::new(CrashingBlur));
+    svc.set_analyzers(broken);
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+
+    svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap();
+    svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap(); // a retry: nothing new is logged
+    let log = svc.error_log(100);
+    assert!(log.path.unwrap().ends_with("errors.log"));
+    assert_eq!(log.lines.len(), 4, "one line per failed photo: {:?}", log.lines);
+    assert!(log.lines.iter().all(|l| l.contains("[analysis]") && l.contains("analysis crashed on this photo") && l.contains(".jpg")), "{:?}", log.lines);
+}

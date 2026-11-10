@@ -81,7 +81,10 @@
   const momentNo = $derived(Math.min((momentOf[idx] ?? moments.length) + 1, moments.length));
   const leftInMoment = $derived.by(() => {
     const g = moments[momentOf[idx]];
-    return g ? photos.slice(g.start, g.end).filter((p) => !p.decision).length : 0;
+    if (!g) return 0;
+    let n = 0;
+    for (let i = g.start; i < g.end; i++) if (!photos[i].decision && !s.setAside[i]) n++; // Shift+arrow skips set-aside photos
+    return n;
   });
 
   // Decisions run strictly in order so the backend undo stack stays correct.
@@ -313,7 +316,7 @@
     <button onclick={onExit}>{compact ? 'Done' : '‹ Pick'}</button>
     <div class="title">
       <b>{rangeLabel}</b>
-      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min{setAsideCount && !compact ? ` · ${setAsideCount} set aside` : ''}</span>
+      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min</span>
     </div>
     {#if !compact}
       <div class="prog"><div style:width="{photos.length ? (100 * decided) / photos.length : 0}%"></div></div>

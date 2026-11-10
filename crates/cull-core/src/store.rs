@@ -119,8 +119,8 @@ fn now() -> String {
 }
 
 /// SQL condition (on `p.captured_at`) for "taken on one of `days`", with its arguments.
-/// `"unknown"` = no capture date; an empty list matches nothing. Shared by `Filter::days` and
-/// `reset_days`, so what can be reset is exactly what the triage screen shows for those days.
+/// `"unknown"` = no capture date; an empty list matches nothing. Shared by `query` and
+/// `photo_ids_on_days`, so a reset covers exactly what the triage screen shows for those days.
 fn days_condition(days: &[String]) -> (String, Vec<String>) {
     let dated: Vec<String> = days.iter().filter(|d| *d != "unknown").cloned().collect();
     let mut any = Vec::new();
@@ -286,11 +286,19 @@ impl Store {
         Ok(())
     }
 
-    /// Every photo taken on one of `days` (`YYYY-MM-DD`, or `"unknown"` for photos without a capture
-    /// date, as in `Filter::days`), in the whole library.
-    pub fn photo_ids_on_days(&self, days: &[String]) -> Result<Vec<PhotoId>> {
-        let (condition, args) = days_condition(days);
-        let mut stmt = self.conn.prepare(&format!("SELECT p.id FROM photos p WHERE {condition} ORDER BY p.id"))?;
+    /// Photos in the given sources taken on one of `days` (`YYYY-MM-DD`, or `"unknown"` for photos
+    /// without a capture date): exactly what `query` shows for that `Filter::days`.
+    pub fn photo_ids_on_days(&self, source_ids: &[String], days: &[String]) -> Result<Vec<PhotoId>> {
+        if source_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let (condition, day_args) = days_condition(days);
+        let mut args: Vec<String> = source_ids.to_vec();
+        args.extend(day_args);
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT p.id FROM photos p WHERE p.source_id IN ({}) AND {condition} ORDER BY p.id",
+            placeholders(source_ids.len())
+        ))?;
         let ids = stmt.query_map(params_from_iter(&args), |r| r.get::<_, PhotoId>(0))?;
         Ok(ids.collect::<rusqlite::Result<_>>()?)
     }
@@ -570,12 +578,17 @@ mod tests {
         photo(&store, "2", "/card", "2.JPG", Some("2026-07-02T23:59:59"));
         photo(&store, "3", "/card", "3.JPG", Some("2026-07-04T00:00:00"));
         photo(&store, "4", "/card", "4.JPG", None);
+        // Another card, same days, not in this session: never shown, never reset.
+        store.upsert_source("/other", "other").unwrap();
+        photo(&store, "5", "/other", "5.JPG", Some("2026-07-01T11:00:00"));
+        photo(&store, "6", "/other", "6.JPG", None);
         let src = vec!["/card".to_string()];
         for days in [vec![], vec!["2026-07-01"], vec!["2026-07-02", "2026-07-04"], vec!["unknown"], vec!["2026-07-03"], vec!["2026-07-01", "unknown"]] {
             let days: Vec<String> = days.into_iter().map(String::from).collect();
             let mut shown: Vec<PhotoId> = store.query(&src, &Filter { days: Some(days.clone()), status: StatusFilter::All }).unwrap().iter().map(|p| p.id).collect();
             shown.sort();
-            assert_eq!(store.photo_ids_on_days(&days).unwrap(), shown, "{days:?}");
+            assert_eq!(store.photo_ids_on_days(&src, &days).unwrap(), shown, "{days:?}");
+            assert!(store.photo_ids_on_days(&[], &days).unwrap().is_empty(), "no sources in the session: nothing");
         }
     }
 
@@ -588,6 +601,7 @@ mod tests {
         let a = photo(&store, "aaaa", "/card", "A.JPG", Some("2026-07-01T10:00:00"));
         let b = photo(&store, "bbbb", "/card", "B.JPG", Some("2026-07-02T10:00:00"));
         let nodate = photo(&store, "cccc", "/card", "C.JPG", None);
+        let src = vec!["/card".to_string()];
         for id in [a, b, nodate] {
             store.set_decision(id, Some(Decision::Like)).unwrap();
             store.save_results(id, &[StepResult { kind: "blur".into(), implementation: "x".into(), result: Ok(serde_json::json!({})) }]).unwrap();
@@ -596,7 +610,7 @@ mod tests {
         }
         let count = |table: &str, id: PhotoId| -> i64 { store.conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE photo_id = ?1"), [id], |r| r.get(0)).unwrap() };
 
-        let ids = store.photo_ids_on_days(&["2026-07-01".into()]).unwrap();
+        let ids = store.photo_ids_on_days(&src, &["2026-07-01".into()]).unwrap();
         assert_eq!(ids, vec![a]);
         assert_eq!(store.forget_decisions(&ids).unwrap(), 1);
         for table in ["decisions", "decision_log", "outcomes"] {
@@ -607,9 +621,9 @@ mod tests {
         assert_eq!(store.forget_analysis(&ids).unwrap(), 1);
         assert_eq!((count("analysis", a), count("analysis", b)), (0, 1));
         assert_eq!(store.photo(a).unwrap().decision, None, "the photo itself is kept");
-        assert!(store.photo_ids_on_days(&[]).unwrap().is_empty());
-        assert_eq!(store.photo_ids_on_days(&["unknown".into()]).unwrap(), vec![nodate], "'unknown' = no capture date, as in Filter");
-        let mut both = store.photo_ids_on_days(&["2026-07-02".into(), "unknown".into()]).unwrap();
+        assert!(store.photo_ids_on_days(&src, &[]).unwrap().is_empty());
+        assert_eq!(store.photo_ids_on_days(&src, &["unknown".into()]).unwrap(), vec![nodate], "'unknown' = no capture date, as in Filter");
+        let mut both = store.photo_ids_on_days(&src, &["2026-07-02".into(), "unknown".into()]).unwrap();
         both.sort();
         assert_eq!(both, vec![b, nodate]);
     }
