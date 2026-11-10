@@ -298,19 +298,19 @@ impl Store {
         Ok(())
     }
 
-    /// Forget photos of `source_id` whose file is no longer in `listed` (a complete listing of that source
-    /// just taken) and that can't be shown or exported anyway: no cached preview (`has_master`) and never
+    /// Forget photos of `source_id` that a complete scan of it did not find (`seen`: the file is gone, or a different
+    /// file now sits at its path) and that can't be shown or exported anyway: no cached preview (`has_master`) and never
     /// exported. Database only; files are never touched. Returns how many were removed.
-    pub fn forget_vanished(&self, source_id: &str, listed: &std::collections::HashSet<&str>, has_master: &dyn Fn(&str) -> bool) -> Result<u64> {
+    pub fn forget_vanished(&self, source_id: &str, seen: &std::collections::HashSet<PhotoId>, has_master: &dyn Fn(&str) -> bool) -> Result<u64> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, rel_path, fingerprint FROM photos WHERE source_id = ?1 AND id NOT IN (SELECT photo_id FROM exports)",
+            "SELECT id, fingerprint FROM photos WHERE source_id = ?1 AND id NOT IN (SELECT photo_id FROM exports)",
         )?;
         let gone: Vec<PhotoId> = stmt
-            .query_map([source_id], |r| Ok((r.get::<_, PhotoId>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?
+            .query_map([source_id], |r| Ok((r.get::<_, PhotoId>(0)?, r.get::<_, String>(1)?)))?
             .collect::<std::result::Result<Vec<_>, _>>()?
             .into_iter()
-            .filter(|(_, rel, fp)| !listed.contains(rel.as_str()) && !has_master(fp))
-            .map(|(id, _, _)| id)
+            .filter(|(id, fp)| !seen.contains(id) && !has_master(fp))
+            .map(|(id, _)| id)
             .collect();
         drop(stmt);
         for chunk in gone.chunks(500) {

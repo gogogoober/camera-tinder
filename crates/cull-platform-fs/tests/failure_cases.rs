@@ -459,14 +459,16 @@ fn photos_whose_files_vanished_and_have_no_preview_are_forgotten_by_the_next_sca
     // Two files vanish while their previews are still cached: they stay viewable, so they stay.
     fs::remove_file(root.join("DCIM/DSC_0004.JPG")).unwrap();
     fs::remove_file(root.join("DCIM/DSC_0005.JPG")).unwrap();
+    // A different photo now sits at DSC_0003's path (a regenerated set reuses file names).
+    write_jpeg(&root.join("DCIM/DSC_0003.JPG"), 400, 300, 200);
     svc.scan(&Default::default(), &NullSink).unwrap();
-    assert_eq!(all().len(), 6, "still viewable from the cache");
+    assert_eq!(all().len(), 7, "the old ones are still viewable from the cache");
 
     // Previews cleared: now they have nothing to show, and the next scan forgets them.
     svc.clear_previews(&|_| false).unwrap();
     svc.scan(&Default::default(), &NullSink).unwrap();
     let left = all();
-    assert_eq!(left.len(), 4);
+    assert_eq!(left.len(), 4, "0-2 and the new DSC_0003; the old DSC_0003 goes too, though its path is still listed");
     assert!(left.iter().all(|p| svc.preview(p.id, 256).is_ok()), "every photo left can be shown");
     assert!(left.iter().any(|p| p.decision == Some(Decision::Favorite)), "decisions of photos that remain are kept");
 }

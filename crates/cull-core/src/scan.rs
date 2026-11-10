@@ -25,7 +25,7 @@ use rayon::prelude::*;
 use crate::error::{CoreError, Result};
 use crate::identity::fingerprint;
 use crate::metadata::{PhotoMeta, read_meta};
-use crate::model::{MediaKind, ScanReport};
+use crate::model::{MediaKind, PhotoId, ScanReport};
 use crate::ports::{CoreEvent, EventSink, MediaEntry, MediaSource};
 use crate::preview::PreviewCache;
 use crate::store::{NewPhoto, Store};
@@ -116,8 +116,9 @@ pub fn scan_source(
             }
         })
         .collect();
-    // Every path the listing showed (any kind), to notice rows whose file has since vanished.
-    let listed_paths: std::collections::HashSet<String> = candidates.iter().map(|(e, _)| e.rel_path.clone()).collect();
+    let listed_any = !candidates.is_empty();
+    // Photos this scan actually found at their place (by identity, not path: a path can hold a different file now).
+    let mut seen: std::collections::HashSet<PhotoId> = std::collections::HashSet::new();
     let total = candidates.len() as u64;
     report.found = total;
 
@@ -131,6 +132,7 @@ pub fn scan_source(
             let mt = mtime_secs(e.modified);
             match s.lookup_file(&src, &e.rel_path, e.size, mt)? {
                 Some(id) => {
+                    seen.insert(id);
                     s.touch_photo(id, &src, &e.rel_path)?;
                     let fp = s.photo(id)?.fingerprint;
                     if !previews.has_master(&fp) {
@@ -192,6 +194,7 @@ pub fn scan_source(
                             camera: meta.camera.as_deref(),
                         })?;
                         s.record_file(&src, &e.rel_path, e.size, mt, id)?;
+                        seen.insert(id);
                         if is_new {
                             report.new += 1;
                         }
@@ -228,9 +231,8 @@ pub fn scan_source(
 
     // A complete scan of a non-empty listing: forget rows for files that are gone and have nothing left to
     // show (a regenerated test folder, deleted photos). An empty listing is never trusted (unmounted volume).
-    if !cancel.load(Ordering::Relaxed) && !listed_paths.is_empty() {
-        let set: std::collections::HashSet<&str> = listed_paths.iter().map(String::as_str).collect();
-        store.lock().unwrap().forget_vanished(&src, &set, &|fp| previews.has_master(fp))?;
+    if !cancel.load(Ordering::Relaxed) && listed_any {
+        store.lock().unwrap().forget_vanished(&src, &seen, &|fp| previews.has_master(fp))?;
     }
 
     report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;
