@@ -58,6 +58,9 @@ src-tauri/                 Thin adapter: commands → CullerService; `preview://
 ui/src/lib/api/            CullerApi.ts (interface) + tauriApi.ts + mockApi.ts; index.ts picks one
 ui/src/lib/components/     Home (Pick: heatmap + tags + time budget), Heatmap, Cull (loupe / card stack),
                            MomentsBar, Filmstrip, SwipeCard, Review (grid + drag-select), ExportPanel
+ui/src/lib/components/layout/AppShell.svelte
+                           Page frame for every screen: flat canvas + top/left/right/bottom regions,
+                           main content on one raised surface; phone layout collapses to one column
 ui/src/lib/select.ts       dragSelect action: drag across [data-i] items to multi-select
 ui/src/lib/days.ts         day math, heat levels, time-budget → day range
 ```
@@ -167,4 +170,9 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - Add backend features as `CullerService` methods, then a thin Tauri command, then `CullerApi`
   (+ both `tauriApi` and `mockApi`).
 - Rust types crossing to the UI use `#[serde(rename_all = "camelCase")]`; mirror them in `ui/src/lib/api/types.ts`.
+- Every screen renders through `AppShell` (pass `top`/`left`/`right`/`bottom` snippets; the main
+  content is its children, with one root element per region). Screens style their content only:
+  no page backgrounds, column dividers, gutters or column grids. Layout values live in the
+  "Layout" block of `ui/src/app.css` (`--canvas`, `--surface*`, `--gutter`, `--rail-*`).
+  Phone-only tweaks to a screen's own content use `:global(.shell.compact) .thing`.
 - Run `cargo test --workspace` and `npm run check` before calling work done.

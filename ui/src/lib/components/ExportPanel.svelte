@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { api, type ExportReport, type Stats } from '../api';
   import { formatCount } from '../format';
+  import AppShell from './layout/AppShell.svelte';
 
   let { onBack }: { onBack: () => void } = $props();
 
@@ -40,6 +41,7 @@
   }
 </script>
 
+<AppShell narrow>
 <main>
   <button class="ghost back" onclick={onBack} disabled={running}>← Back to swiping</button>
   <h1>Export keepers</h1>
@@ -83,9 +85,10 @@
 
   <p class="muted soon">Coming in v2: send to Lightroom and more.</p>
 </main>
+</AppShell>
 
 <style>
-  main { max-width: 640px; margin: 0 auto; padding: 32px 24px; height: 100%; overflow-y: auto; }
+  main { padding: 32px 24px; overflow-y: auto; }
   .back { color: var(--muted); margin-bottom: 16px; }
   h1 { margin: 0 0 6px; }
   .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-top: 20px; display: grid; gap: 14px; }

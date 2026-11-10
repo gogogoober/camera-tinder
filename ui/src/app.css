@@ -19,13 +19,18 @@
 
   --radius: 14px;
 
-  /* Page structure: a flat canvas with one raised surface for the main content. */
+  /* Layout — used only by components/layout/AppShell.svelte. A flat canvas
+     holds the rails; the main content sits on one raised surface. */
   --canvas: var(--bg);
   --surface: var(--panel);
   --surface-border: var(--border);
   --surface-radius: 12px;
   --surface-shadow: 0 1px 2px rgb(40 30 10 / 0.06), 0 10px 30px rgb(40 30 10 / 0.10);
+  --surface-narrow: 680px;
   --gutter: 10px;
+  --rail-left: 230px;
+  --rail-right: 260px;
+  --rail-pad: 8px 6px;
 
   color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;

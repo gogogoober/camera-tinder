@@ -7,6 +7,7 @@
   import { dragSelect } from '../select';
   import { viewport } from '../viewport.svelte';
   import Badge from './Badge.svelte';
+  import AppShell from './layout/AppShell.svelte';
 
   let {
     range,
@@ -126,16 +127,16 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="review" class:compact>
+{#snippet topBar()}
   <header class="top">
     <button onclick={onBack}>{compact ? 'Cull' : '‹ Back to cull'}</button>
     <b>Review{range ? ` · ${shortRange(range.from, range.to)}` : ''}</b>
     <span class="grow"></span>
     {#if !compact}<span class="muted">Drag to select · click to reopen</span>{/if}
   </header>
+{/snippet}
 
-  <div class="body">
-    {#if !compact}
+{#snippet days()}
       <aside>
         <div class="eyebrow">Days</div>
         <button class="d" class:on={day === null} onclick={() => setDay(null)}><b>All days</b><small class="muted">{formatCount(photos.length)} photos</small></button>
@@ -148,8 +149,9 @@
           </button>
         {/each}
       </aside>
-    {/if}
+{/snippet}
 
+<AppShell top={topBar} left={days}>
     <section class="main">
       <div class="bar">
         <div class="chips" class:scroll={compact}>
@@ -189,20 +191,17 @@
         <button class="primary" onclick={onExport} disabled={!keepers}>{compact ? 'Share' : 'Export'} {formatCount(keepers)}</button>
       </footer>
     </section>
-  </div>
-</div>
+</AppShell>
 
 <style>
-  .review { display: grid; grid-template-rows: auto 1fr; height: 100%; min-height: 0; }
-  .top { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--border); }
+  .top { display: flex; align-items: center; gap: 12px; padding: 0 4px; }
   .grow { flex: 1; min-width: 0; }
-  .body { display: flex; min-height: 0; }
-  aside { width: 230px; flex: none; border-right: 1px solid var(--border); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+  aside { display: flex; flex-direction: column; gap: 6px; }
   .d { display: grid; gap: 5px; text-align: left; background: transparent; border-color: transparent; padding: 7px 10px; }
   .d.on { background: var(--panel-2); border-color: var(--border); }
   .mix { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--panel-2); }
   .mix i { display: block; }
-  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .main { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
   .bar { padding: 10px 16px; border-bottom: 1px solid var(--border); display: grid; gap: 8px; }
   .chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
   .selbar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); font-size: 12.5px; flex-wrap: wrap; }
@@ -214,8 +213,9 @@
   .gi.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
   .empty { grid-column: 1 / -1; }
   .more { margin: 0 16px 8px; align-self: center; }
-  footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); background: var(--panel); }
+  footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); }
   footer button { white-space: nowrap; flex: none; }
-  .compact .grid { grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 6px 0 0; }
-  .compact .gi, .compact .gi img { border-radius: 0; }
+  :global(.shell.compact) .top { padding: max(8px, env(safe-area-inset-top, 0px)) 14px 8px; border-bottom: 1px solid var(--border); }
+  :global(.shell.compact) .grid { grid-template-columns: repeat(3, 1fr); gap: 3px; padding: 6px 0 0; }
+  :global(.shell.compact) .gi, :global(.shell.compact) .gi img { border-radius: 0; }
 </style>

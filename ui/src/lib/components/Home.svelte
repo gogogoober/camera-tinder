@@ -5,6 +5,7 @@
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
+  import AppShell from './layout/AppShell.svelte';
 
   let { onStart }: { onStart: (range: { from: string; to: string }) => void } = $props();
 
@@ -176,7 +177,7 @@
 
 <svelte:window onkeydown={onKey} />
 
-<div class="pick" class:compact>
+{#snippet sidebar()}
   <aside>
     <div class="eyebrow">Sources</div>
     {#each sources as s (s.id)}
@@ -235,7 +236,9 @@
       {/if}
     {/if}
   </aside>
+{/snippet}
 
+<AppShell left={sidebar} right={summary}>
   <section class="main">
     <header>
       <div>
@@ -343,7 +346,9 @@
       </p>
     {/if}
   </section>
+</AppShell>
 
+{#snippet summary()}
   <div class="summary">
     {#if range}
       <div class="eyebrow">Selected</div>
@@ -363,11 +368,10 @@
       <div class="muted">Pick days on the calendar to begin.</div>
     {/if}
   </div>
-</div>
+{/snippet}
 
 <style>
-  .pick { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; height: 100%; }
-  aside { background: var(--panel); border-right: 1px solid var(--border); padding: 16px 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  aside { display: flex; flex-direction: column; gap: 8px; }
   aside .eyebrow { margin-top: 12px; }
   aside .eyebrow:first-child { margin-top: 0; }
   .src { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); }
@@ -410,20 +414,18 @@
   .plain { background: transparent; border: 0; padding: 4px 6px 4px 11px; }
   .plain.x { padding: 4px 9px 4px 4px; color: var(--muted); }
 
-  .summary { background: var(--panel); border-left: 1px solid var(--border); padding: 18px; display: flex; flex-direction: column; gap: 11px; }
+  .summary { display: flex; flex-direction: column; gap: 11px; }
   .big { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .big .muted { font-size: 14px; font-weight: 500; letter-spacing: 0; }
   .tagform { display: flex; gap: 6px; margin-top: 4px; }
   .tagform input { flex: 1; min-width: 0; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .go { margin-top: auto; padding: 12px; font-size: 16px; }
 
-  /* Phones: one column; the summary becomes a bottom sheet. */
-  .pick.compact { display: flex; flex-direction: column; }
-  .pick.compact aside { display: none; }
-  .pick.compact .main { flex: 1; min-height: 0; padding: 14px 16px 8px; gap: 10px; }
-  .pick.compact .summary { border-left: 0; border-top: 1px solid var(--border); border-radius: 20px 20px 0 0; padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
-  .pick.compact .go { margin-top: 4px; }
-  .pick.compact .sug { grid-template-columns: 1fr auto; }
-  .pick.compact .sug .why, .pick.compact .sug .mono { display: none; }
+  /* Phones: AppShell hides the sidebar and turns the summary into a bottom sheet. */
+  :global(.shell.compact) .main { padding: 14px 16px 8px; gap: 10px; }
+  :global(.shell.compact) .summary { gap: 8px; }
+  :global(.shell.compact) .go { margin-top: 4px; }
+  :global(.shell.compact) .sug { grid-template-columns: 1fr auto; }
+  :global(.shell.compact) .sug .why, :global(.shell.compact) .sug .mono { display: none; }
   .chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
 </style>

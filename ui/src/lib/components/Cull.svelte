@@ -8,6 +8,7 @@
   import Filmstrip from './Filmstrip.svelte';
   import MomentsBar from './MomentsBar.svelte';
   import SwipeCard from './SwipeCard.svelte';
+  import AppShell from './layout/AppShell.svelte';
 
   let {
     range,
@@ -277,7 +278,7 @@
   });
 </script>
 
-<div class="cull" class:compact>
+{#snippet topBar()}
   <header class="top">
     <button onclick={onExit}>{compact ? 'Done' : '‹ Pick'}</button>
     <div class="title">
@@ -294,8 +295,9 @@
     {/if}
     <button onclick={onReview}>Review</button>
   </header>
+{/snippet}
 
-  <div class="body">
+<AppShell top={topBar} right={compact ? undefined : inspector} bottom={bottomBar} overflow="visible">
     <div class="stage-col">
       {#if softTodo.length && !softLater && mode === 'cull'}
         <div class="banner">
@@ -390,8 +392,9 @@
         </div>
       {/if}
     </div>
+</AppShell>
 
-    {#if !compact}
+{#snippet inspector()}
       <aside class="insp">
         <div class="eyebrow">Photo</div>
         {#if current}
@@ -415,9 +418,9 @@
           {/each}
         </div>
       </aside>
-    {/if}
-  </div>
+{/snippet}
 
+{#snippet bottomBar()}
   <div class="bottom">
     {#if selection}
       <div class="selbar">
@@ -460,11 +463,10 @@
       </div>
     {/if}
   </div>
-</div>
+{/snippet}
 
 <style>
-  .cull { display: grid; grid-template-rows: auto 1fr auto; grid-template-columns: minmax(0, 1fr); height: 100%; min-height: 0; overflow: hidden; }
-  .top { display: flex; align-items: center; gap: 12px; padding: 8px 14px; flex-wrap: nowrap; }
+  .top { display: flex; align-items: center; gap: 12px; padding: 0 4px; flex-wrap: nowrap; }
   .title { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
   .title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .top > button { flex: none; }
@@ -477,8 +479,7 @@
   .seg button + button { border-left: 1px solid var(--border); }
   .seg .on { background: var(--text); color: var(--bg); }
 
-  .body { display: grid; grid-template-columns: minmax(0, 1fr) 244px; min-height: 0; padding: 2px 0 2px var(--gutter); }
-  .stage-col { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; min-height: 0; min-width: 0; background: var(--surface); border: 1px solid var(--surface-border); border-radius: var(--surface-radius); box-shadow: var(--surface-shadow); }
+  .stage-col { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; min-height: 0; min-width: 0; }
   .stage { position: relative; flex: 1; min-height: 0; }
   .under { display: flex; justify-content: center; gap: 14px; font-size: 12px; min-height: 18px; }
   .banner { display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 12px; border-radius: 10px; background: color-mix(in srgb, var(--soft) 9%, var(--panel)); border: 1px solid color-mix(in srgb, var(--soft) 35%, var(--border)); font-size: 12.5px; }
@@ -526,7 +527,7 @@
   .meter b { display: block; height: 100%; background: var(--like); }
   .meter b.bad { background: var(--soft); }
 
-  .insp { padding: 14px; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
+  .insp { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
   .kv { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 7px; }
   .kv.first { border: 0; padding: 0; }
   .kv.col { flex-direction: column; gap: 5px; }
@@ -541,19 +542,17 @@
   .dr i b { display: block; height: 100%; background: var(--done); }
   .r { text-align: right; }
 
-  .bottom { padding: 8px 16px 10px; display: flex; flex-direction: column; gap: 9px; }
+  .bottom { padding: 0 4px; display: flex; flex-direction: column; gap: 9px; }
   .selbar { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 12%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border)); font-size: 12.5px; flex-wrap: wrap; }
   .keys { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; justify-content: center; }
 
   /* Phone layout: swipe-first card stack, small action row. */
-  .compact .top { padding-top: max(8px, env(safe-area-inset-top, 0px)); }
-  .compact .body { display: flex; flex-direction: column; }
-  .compact .body { padding: 0; }
-  .compact .stage-col { flex: 1; padding: 8px 20px 0; background: none; border: 0; border-radius: 0; box-shadow: none; }
-  .compact .bottom { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
-  .compact .banner .grow, .compact .pane-h .grow { display: none; }
-  .compact .banner { padding: 6px 8px 6px 10px; }
-  .compact .banner b { flex: 1; }
+  :global(.shell.compact) .top { padding: max(8px, env(safe-area-inset-top, 0px)) 14px 8px; }
+  :global(.shell.compact) .stage-col { padding: 8px 20px 0; }
+  :global(.shell.compact) .bottom { padding: 8px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
+  :global(.shell.compact) .banner .grow, :global(.shell.compact) .pane-h .grow { display: none; }
+  :global(.shell.compact) .banner { padding: 6px 8px 6px 10px; }
+  :global(.shell.compact) .banner b { flex: 1; }
   .actions { display: flex; gap: 8px; justify-content: center; align-items: center; }
   .round { width: 52px; height: 52px; border-radius: 50%; padding: 0; font-size: 22px; color: var(--c, var(--muted)); border: 1.5px solid var(--c, var(--border)); background: color-mix(in srgb, var(--c, var(--muted)) 10%, var(--panel)); }
   .round.sm { width: 38px; height: 38px; font-size: 16px; --c: var(--muted); }
