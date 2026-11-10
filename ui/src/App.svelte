@@ -28,7 +28,7 @@
   <Home onStart={start} />
 {:else if view === 'cull' && range}
   {#key focusId}
-    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} />
+    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} onRescue={() => (view = 'review')} />
   {/key}
 {:else if view === 'review'}
   <Review

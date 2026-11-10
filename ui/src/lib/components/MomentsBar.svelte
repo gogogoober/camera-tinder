@@ -9,6 +9,7 @@
     moments,
     idx,
     selection,
+    setAside,
     compact = false,
     onSelect,
     onJump,
@@ -17,6 +18,8 @@
     moments: Group[];
     idx: number;
     selection: { from: number; to: number } | null;
+    /** Per photo: set aside for Rescue (not counted against a moment's progress until decided). */
+    setAside: boolean[];
     compact?: boolean;
     onSelect: (from: number, to: number) => void;
     onJump: (photoIndex: number) => void;
@@ -25,15 +28,19 @@
   const rows = $derived(
     moments.map((m, i) => {
       let done = 0;
+      let waiting = 0; // set-aside photos nobody has decided
       for (let k = m.start; k < m.end; k++) {
         if (photos[k].decision) done++;
+        else if (setAside[k]) waiting++;
       }
-      const n = m.end - m.start;
+      const total = m.end - m.start;
+      const n = Math.max(1, total - waiting);
       const first = photos[m.start];
       const day = first.capturedAt?.slice(0, 10) ?? '';
       return {
         i,
         n,
+        total,
         done,
         day,
         now: idx >= m.start && idx < m.end,
@@ -68,7 +75,7 @@
       class:now={r.now}
       class:selected={r.selected}
       data-i={r.i}
-      style:flex="{Math.sqrt(r.n).toFixed(2)} 1 0"
+      style:flex="{Math.sqrt(r.total).toFixed(2)} 1 0"
       style:--f="{(r.done / r.n) * 100}%"
       title={r.title}
     >

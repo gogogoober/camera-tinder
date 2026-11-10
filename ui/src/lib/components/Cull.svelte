@@ -1,10 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Decision, type Group, type Photo } from '../api';
+  import { api, type Decision, type Group, type Photo, type Place, type TriageItem } from '../api';
   import { DECISIONS, ORDER, decisionForKey } from '../decisions';
   import { minutesFor, shortRange } from '../days';
   import { formatCount, formatDay, formatTime, previewEdge } from '../format';
   import { viewport } from '../viewport.svelte';
+  import {
+    ISSUE_LABELS,
+    firstUndecidedFrame,
+    groupOf,
+    nextStop,
+    nextUndecidedFrame,
+    setAsideLeft,
+    stepFrame,
+    stopOf,
+    structure,
+  } from '../triage';
+  import BurstStrip from './BurstStrip.svelte';
   import Filmstrip from './Filmstrip.svelte';
   import MomentsBar from './MomentsBar.svelte';
   import SwipeCard from './SwipeCard.svelte';
@@ -15,11 +27,13 @@
     focusId = null,
     onExit,
     onReview,
+    onRescue,
   }: {
     range: { from: string; to: string };
     focusId?: number | null;
     onExit: () => void;
     onReview: () => void;
+    onRescue: () => void;
   } = $props();
 
   interface Ghost { key: number; photo: Photo; decision: Decision; x: number; y: number }
@@ -30,7 +44,10 @@
 
   let photos = $state<Photo[]>([]);
   let moments = $state<Group[]>([]);
-  let bursts = $state<Group[]>([]);
+  let triage = $state<TriageItem[]>([]);
+  let triageVersion = '';
+  /** A set-aside photo the user opened from the filmstrip; shown instead of the cursor's photo. */
+  let opened = $state<number | null>(null);
   let idx = $state(0);
   let selection = $state<Sel | null>(null);
   let timeline = $state<'moments' | 'strip'>('moments');
@@ -42,7 +59,14 @@
   let ghostKey = 0;
 
   const compact = $derived(viewport.compact);
-  const current = $derived<Photo | null>(photos[idx] ?? null);
+  const s = $derived(structure(triage));
+  /** The photo on screen: the opened set-aside photo, else the cursor (a single, or a frame of a group). */
+  const shown = $derived(opened ?? idx);
+  const current = $derived<Photo | null>(photos[shown] ?? null);
+  const item = $derived<TriageItem | null>(triage[shown] ?? null);
+  /** The frames of the group the cursor is on (null for a single, or while a set-aside photo is open). */
+  const members = $derived(opened === null && item?.group ? groupOf(s, idx) : null);
+  const setAsideCount = $derived(setAsideLeft(s, photos).length);
 
   // Per-photo lookups built from the moment and burst groups.
   const momentOf = $derived.by(() => {
@@ -50,13 +74,6 @@
     moments.forEach((g, m) => { for (let i = g.start; i < g.end; i++) out[i] = m; });
     return out;
   });
-  const burstOf = $derived.by(() => {
-    const out: number[] = new Array(photos.length).fill(-1);
-    bursts.forEach((g, b) => { for (let i = g.start; i < g.end; i++) out[i] = b; });
-    return out;
-  });
-  const burstSizeAt = $derived(new Map(bursts.map((g) => [g.start, g.end - g.start])));
-  const burst = $derived(burstOf[idx] >= 0 ? bursts[burstOf[idx]] : null);
 
   const decided = $derived(photos.filter((p) => p.decision).length);
   const left = $derived(photos.length - decided);
@@ -86,9 +103,11 @@
       const plan = await api.plan({ day: range.from, dayTo: range.to, status: 'all' });
       photos = plan.photos;
       moments = plan.moments;
-      bursts = plan.bursts;
+      triage = plan.triage;
+      triageVersion = plan.triageVersion;
       const at = focusId != null ? photos.findIndex((p) => p.id === focusId) : -1;
-      idx = at >= 0 ? at : nextUndecided(0);
+      if (at >= 0 && s.setAside[at]) opened = at;
+      idx = at >= 0 && !s.setAside[at] ? at : land(nextStop(s, photos, -1));
     } catch (e) {
       error = String(e);
     } finally {
@@ -96,17 +115,27 @@
     }
   }
 
-  /** First undecided photo at or after `from`, wrapping round; photos.length when none. */
-  function nextUndecided(from: number): number {
-    for (let i = from; i < photos.length; i++) if (!photos[i].decision) return i;
-    for (let i = 0; i < Math.min(from, photos.length); i++) if (!photos[i].decision) return i;
-    return photos.length;
+  /** Where the cursor goes for a stop returned by `nextStop`: its first undecided frame, or the end (-1). */
+  function land(stop: number): number {
+    return stop < 0 ? photos.length : firstUndecidedFrame(s, photos, stop);
+  }
+
+  /** Move to photo `i` without opening set-aside photos (they snap to the next stop). Moments bar, days list. */
+  function snap(i: number) {
+    selection = null;
+    opened = null;
+    idx = s.setAside[i] ? land(nextStop(s, photos, i)) : firstUndecidedFrame(s, photos, i);
   }
 
   const preloaded = new Map<number, HTMLImageElement>();
   $effect(() => {
     const upcoming: Photo[] = [];
-    for (let i = idx + 1; i < photos.length && upcoming.length < PRELOAD; i++) if (!photos[i].decision) upcoming.push(photos[i]);
+    for (let from = idx; upcoming.length < PRELOAD; ) {
+      const n = nextStop(s, photos, from);
+      if (n < 0 || n === idx || upcoming.some((p) => p.id === photos[n].id)) break;
+      upcoming.push(photos[n]);
+      from = n;
+    }
     for (const p of upcoming) {
       if (preloaded.has(p.id)) continue;
       const img = new Image();
@@ -120,40 +149,51 @@
   });
 
   /** Apply one decision to many photos (by index), locally and in the backend, as one undo step. */
-  function apply(indices: number[], d: Decision) {
+  function apply(indices: number[], d: Decision, place: Place = 'timeline') {
     const list = indices.filter((i) => photos[i]);
     if (!list.length) return;
     for (const i of list) photos[i].decision = d;
     const ids = list.map((i) => photos[i].id);
     enqueue(() => (ids.length === 1 ? api.decide(ids[0], d) : api.decideMany(ids, d)));
+    // Log what triage suggested next to what was decided, to tune the suggestions later.
+    const outcomes = list.filter((i) => triage[i]).map((i) => ({ item: triage[i], planVersion: triageVersion, place, decision: d }));
+    if (outcomes.length) enqueue(() => api.logOutcomes(outcomes));
     flash = { key: ghostKey++, d };
     coached = true;
+  }
+
+  /** After deciding photo `at`: the next undecided frame of its group, else the next stop. */
+  function advanceFrom(at: number): number {
+    return nextUndecidedFrame(s, photos, at) ?? land(nextStop(s, photos, stopOf(s, at)));
   }
 
   function decide(d: Decision, from?: { x: number; y: number }) {
     if (selection) {
       const sel = selection;
       selection = null;
-      const all = Array.from({ length: sel.to - sel.from + 1 }, (_, k) => sel.from + k);
+      // Set-aside photos are left for Rescue; a range decision doesn't touch them.
+      const all = Array.from({ length: sel.to - sel.from + 1 }, (_, k) => sel.from + k).filter((i) => !s.setAside[i]);
       apply(all, d);
-      idx = nextUndecided(sel.to + 1);
+      idx = land(nextStop(s, photos, sel.to));
       return;
     }
     const p = current;
     if (!p) return;
     if (from && (from.x || from.y)) ghosts.push({ key: ghostKey++, photo: { ...p }, decision: d, x: from.x, y: from.y });
-    const at = idx;
-    apply([at], d);
-    idx = nextUndecided(at + 1);
+    const at = shown;
+    apply([at], d, opened !== null ? 'openedEarly' : 'timeline');
+    if (opened !== null) opened = null; // back to where the cursor was
+    else idx = advanceFrom(at);
   }
 
   function decideMoment(d: Decision) {
     const g = moments[momentOf[idx]];
     if (!g) return;
     const list: number[] = [];
-    for (let i = g.start; i < g.end; i++) if (!photos[i].decision) list.push(i);
+    for (let i = g.start; i < g.end; i++) if (!photos[i].decision && !s.setAside[i]) list.push(i);
     apply(list, d);
-    idx = nextUndecided(g.end);
+    opened = null;
+    idx = land(nextStop(s, photos, g.end - 1));
   }
 
   async function undo() {
@@ -167,17 +207,31 @@
       first = Math.min(first, i);
     }
     selection = null;
-    if (first < photos.length) idx = first;
+    if (first < photos.length) {
+      // A set-aside photo can't hold the cursor: show it opened instead.
+      opened = s.setAside[first] ? first : null;
+      if (opened === null) idx = first;
+    }
   }
 
+  /** Skip: the next frame of a group, else the next stop. Does nothing while a set-aside photo is open. */
   function skip() {
-    if (!current) return;
-    idx = nextUndecided(idx + 1);
+    if (!current || opened !== null) return;
+    idx = stepFrame(s, idx, 1) ?? land(nextStop(s, photos, groupOf(s, idx).at(-1)!));
   }
 
+  /** A click on the filmstrip: set-aside photos open in place; anything else moves the cursor there. */
   function jump(i: number) {
     selection = null;
-    idx = Math.max(0, Math.min(photos.length, i));
+    if (i >= photos.length) {
+      opened = null;
+      idx = photos.length;
+    } else if (s.setAside[Math.max(0, i)]) {
+      opened = Math.max(0, i);
+    } else {
+      opened = null;
+      idx = firstUndecidedFrame(s, photos, Math.max(0, i));
+    }
   }
 
   function onKey(e: KeyboardEvent) {
@@ -193,8 +247,12 @@
     } else if (e.key === ' ') {
       e.preventDefault();
       skip();
+    } else if (e.key === '[' || e.key === ']') {
+      const frame = opened === null ? stepFrame(s, idx, e.key === ']' ? 1 : -1) : null;
+      if (frame !== null) idx = frame;
     } else if (e.key === 'Escape') {
-      if (selection) selection = null;
+      if (opened !== null) opened = null;
+      else if (selection) selection = null;
       else onExit();
     }
   }
@@ -221,9 +279,10 @@
   }
 
   const nextPhoto = $derived.by(() => {
-    for (let i = idx + 1; i < photos.length; i++) if (!photos[i].decision) return photos[i];
-    return null;
+    const n = nextStop(s, photos, shown);
+    return n >= 0 && n !== idx ? photos[n] : null;
   });
+  const groupPos = $derived(item?.group ? groupOf(s, idx).indexOf(idx) + 1 : 0);
 </script>
 
 {#snippet topBar()}
@@ -231,7 +290,7 @@
     <button onclick={onExit}>{compact ? 'Done' : '‹ Pick'}</button>
     <div class="title">
       <b>{rangeLabel}</b>
-      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min</span>
+      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min{setAsideCount ? ` · ${setAsideCount} set aside` : ''}</span>
     </div>
     {#if !compact}
       <div class="prog"><div style:width="{photos.length ? (100 * decided) / photos.length : 0}%"></div></div>
@@ -247,6 +306,14 @@
 
 <AppShell top={topBar} right={compact ? undefined : inspector} bottom={bottomBar} overflow="visible">
     <div class="stage-col">
+      {#if opened !== null && item}
+        <div class="banner">
+          <span><b>Set aside · {item.reasons.map((r) => ISSUE_LABELS[r]).join(', ') || 'looks bad'}.</b> You opened it early. Decide now, or leave it for Rescue.</span>
+          <button class="small" onclick={() => (opened = null)}>Leave for Rescue{compact ? '' : ' (esc)'}</button>
+        </div>
+      {:else if members && members.every((m) => triage[m].reasons.length)}
+        <div class="banner pick"><span><b>Every frame has issues.</b> It stays here because you shot a burst.</span></div>
+      {/if}
       <div class="stage">
         {#if current}
           {#each ghosts as g (g.key)}
@@ -265,7 +332,12 @@
           {/key}
           <div class="chips-over mono">
             <span>{formatTime(current.capturedAt)}</span>
-            {#if burst}<span>burst {idx - burst.start + 1}/{burst.end - burst.start}</span>{/if}
+            {#if item?.group && members}<span>{item.group.kind === 'burst' ? 'burst' : 'similar'} {groupPos}/{item.group.size}</span>{/if}
+            {#if item?.group?.suggested && members}<span>★ suggested</span>{/if}
+            {#if item}
+              {#each item.reasons as r (r)}<span class="bad">{ISSUE_LABELS[r]}</span>{/each}
+              {#each item.hints as h (h)}<span class="hint">{ISSUE_LABELS[h]}</span>{/each}
+            {/if}
             {#if current.decision}<span style:color="var(--{current.decision})">{DECISIONS[current.decision].icon} {DECISIONS[current.decision].label}</span>{/if}
           </div>
           {#if compact && !coached}
@@ -275,7 +347,13 @@
           <div class="done">
             <div class="big">{formatCount(photos.length)}</div>
             photos decided in {moments.length} moments.
-            <button class="primary" onclick={onReview}>Review &amp; export</button>
+            {#if setAsideCount}
+              <span>{setAsideCount} looked bad and were set aside.</span>
+              <button class="primary" onclick={onRescue}>Open Rescue</button>
+              <button onclick={onReview}>Review &amp; export</button>
+            {:else}
+              <button class="primary" onclick={onReview}>Review &amp; export</button>
+            {/if}
           </div>
         {/if}
         {#if flash}
@@ -284,6 +362,9 @@
         {#if error}<p class="error toast">{error}</p>{/if}
       </div>
 
+      {#if members && current}
+        <BurstStrip {photos} {triage} {members} frame={idx} {compact} onPick={(i) => (idx = i)} />
+      {/if}
       {#if !compact && current}
         <div class="under muted">
           <span>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} · {formatTime(current.capturedAt)}</span>
@@ -300,12 +381,12 @@
           <div class="kv first"><span>File</span><b>{current.fileName}</b></div>
           <div class="kv"><span>Taken</span><b>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} {formatTime(current.capturedAt)}</b></div>
           {#if current.camera}<div class="kv"><span>Camera</span><b>{current.camera}</b></div>{/if}
-          <div class="kv"><span>Burst</span><b>{burst ? `${idx - burst.start + 1} of ${burst.end - burst.start}` : '—'}</b></div>
+          <div class="kv"><span>Burst</span><b>{item?.group ? `${groupPos} of ${item.group.size}` : '—'}</b></div>
         {/if}
         <div class="eyebrow days-h">Days</div>
         <div class="days">
           {#each dayRows.slice(0, 14) as d (d.day)}
-            <button class="dr" class:now={current?.capturedAt?.startsWith(d.day)} onclick={() => jump(nextUndecidedIn(d.start, d.n))}>
+            <button class="dr" class:now={current?.capturedAt?.startsWith(d.day)} onclick={() => snap(nextUndecidedIn(d.start, d.n))}>
               <span>{d.day === 'unknown' ? '?' : formatDay(d.day).replace(/^\w+, /, '')}</span>
               <i><b style:width="{(100 * d.done) / d.n}%"></b></i>
               <span class="muted r">{d.done}/{d.n}</span>
@@ -328,14 +409,15 @@
       </div>
     {/if}
     {#if timeline === 'moments' || compact}
-      <MomentsBar {photos} {moments} {idx} {selection} {compact} onSelect={(from, to) => (selection = { from, to })} onJump={jump} />
+      <MomentsBar {photos} {moments} {idx} {selection} setAside={s.setAside} {compact} onSelect={(from, to) => (selection = { from, to })} onJump={snap} />
     {/if}
     <Filmstrip
       {photos}
-      {idx}
+      {triage}
+      {s}
+      idx={shown}
       {selection}
       {momentOf}
-      {burstSizeAt}
       back={compact ? 3 : timeline === 'strip' ? 9 : 6}
       forward={compact ? 3 : timeline === 'strip' ? 9 : 6}
       size={compact ? 36 : timeline === 'strip' ? 58 : 50}
@@ -353,7 +435,7 @@
     {:else}
       <div class="keys muted">
         <span><kbd>←</kbd> ✕ nope</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
-        <span><kbd>space</kbd> skip</span><span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
+        <span><kbd>space</kbd> skip</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
       </div>
     {/if}
   </div>
@@ -377,6 +459,10 @@
 
   .chips-over { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 6px; font-size: 11px; color: #fff; z-index: 3; pointer-events: none; flex-wrap: wrap; }
   .chips-over span { background: #000a; border-radius: 5px; padding: 2px 7px; }
+  .chips-over span.hint { background: color-mix(in srgb, var(--favorite) 80%, #000); color: #1a1200; }
+  .chips-over span.bad { background: var(--hate); }
+  .banner { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; font-size: 13px; padding: 8px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--hate) 50%, var(--border)); background: color-mix(in srgb, var(--hate) 9%, var(--panel)); }
+  .banner.pick { border-color: color-mix(in srgb, var(--pick) 50%, var(--border)); background: color-mix(in srgb, var(--pick) 9%, var(--panel)); }
 
   .ghost-card { position: absolute; inset: 0; pointer-events: none; animation: 0.32s ease-in forwards; z-index: 2; }
   .fly-like { animation-name: fly-right; }
