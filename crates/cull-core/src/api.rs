@@ -53,7 +53,7 @@ pub struct CullerService {
     calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
     analyzers: RwLock<Arc<Analyzers>>,
     /// Background analysis: wake signal and the Stop flag (see `worker.rs`).
-    pub(crate) analysis: Arc<crate::worker::AnalysisControl>,
+    pub(crate) analysis_control: Arc<crate::worker::AnalysisControl>,
     /// One scan at a time.
     scanning: Mutex<()>,
     /// Set by `cancel_scan`; the running scan stops after the photos it is reading.
@@ -83,7 +83,7 @@ impl CullerService {
             undo: Mutex::new(Vec::new()),
             calendar: RwLock::new(None),
             analyzers: RwLock::new(Arc::new(Analyzers::rust())),
-            analysis: crate::worker::AnalysisControl::new(),
+            analysis_control: crate::worker::AnalysisControl::new(),
             scanning: Mutex::new(()),
             scan_cancel: AtomicBool::new(false),
         })
@@ -374,7 +374,7 @@ impl CullerService {
         let mut done = 0u64;
         sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
         let pool = rayon::ThreadPoolBuilder::new().num_threads(ANALYZE_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
-        let stop = &self.analysis.stop;
+        let stop = &self.analysis_control.stop;
         for batch in todo.chunks(ANALYZE_BATCH) {
             if stop.load(Ordering::Relaxed) {
                 break;

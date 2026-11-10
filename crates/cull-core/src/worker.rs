@@ -49,7 +49,7 @@ impl CullerService {
     /// Start the background analysis thread. Call once, after the analyzers and preview maker are
     /// set; further calls do nothing. The thread ends when the service is dropped.
     pub fn start_analysis_worker(self: &Arc<Self>, sink: Arc<dyn EventSink>) {
-        let control = self.analysis.clone();
+        let control = self.analysis_control.clone();
         if control.started.swap(true, Ordering::SeqCst) {
             return;
         }
@@ -73,23 +73,23 @@ impl CullerService {
 
     /// Ask the worker to look for work now (the scan does this after every saved batch).
     pub fn wake_analysis(&self) {
-        self.analysis.wake();
+        self.analysis_control.wake();
     }
 
     /// Stop analysing before the next step. Results already saved are kept. Stays stopped until
     /// `resume_analysis` or an app restart.
     pub fn stop_analysis(&self) {
-        self.analysis.stop.store(true, Ordering::Relaxed);
+        self.analysis_control.stop.store(true, Ordering::Relaxed);
     }
 
     /// Undo `stop_analysis` and continue where it left off.
     pub fn resume_analysis(&self) {
-        self.analysis.stop.store(false, Ordering::Relaxed);
+        self.analysis_control.stop.store(false, Ordering::Relaxed);
         self.wake_analysis();
     }
 
     pub fn analysis_stopped(&self) -> bool {
-        self.analysis.stop.load(Ordering::Relaxed)
+        self.analysis_control.stop.load(Ordering::Relaxed)
     }
 
     /// One pass over every photo of the session: analyse whatever lacks a current result.

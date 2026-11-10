@@ -172,3 +172,23 @@ fn a_restarted_app_finishes_unfinished_analysis_without_redoing_the_rest() {
     let r = svc.analyze_pending(&NullSink).unwrap();
     assert_eq!((r.analyzed, r.up_to_date), (0, 4), "{r:?} {first_id}");
 }
+
+#[test]
+fn asking_for_one_kind_computes_only_the_step_that_writes_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    write(&card.join("a.jpg"), |x, y| scene(x, y, 0));
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let id = svc.queue(&Filter::default()).unwrap()[0].id;
+
+    svc.analyze(&AnalyzeRequest { kinds: vec![AnalysisKind::Blur], ..Default::default() }, &NullSink).unwrap();
+    let a = svc.photo_analysis(id).unwrap();
+    assert!(a.blur.is_some() && a.exposure.is_none() && a.perceptual_hash.is_none(), "only blur was computed");
+
+    // The rest is still missing, so a full run computes it and leaves blur alone.
+    let r = svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap();
+    assert_eq!((r.analyzed, r.up_to_date), (1, 0));
+    assert!(svc.photo_analysis(id).unwrap().exposure.is_some());
+}

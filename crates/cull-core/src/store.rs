@@ -397,22 +397,6 @@ impl Store {
     // ---- analysis -----------------------------------------------------
 
     /// Store every result (or error) in `a`, replacing earlier rows for those kinds.
-    pub fn save_analysis(&self, a: &PhotoAnalysis) -> Result<()> {
-        let results: Vec<StepResult> = a
-            .implementations
-            .iter()
-            .map(|(kind, implementation)| StepResult {
-                kind: kind.as_str().to_string(),
-                implementation: implementation.clone(),
-                result: match a.errors.get(kind) {
-                    Some(e) => Err(e.clone()),
-                    None => Ok(a.result_json(*kind).unwrap_or(serde_json::Value::Null)),
-                },
-            })
-            .collect();
-        self.save_results(a.photo_id, &results)
-    }
-
     /// Store step results (one row per kind, replacing an older row of the same kind).
     pub fn save_results(&self, photo_id: PhotoId, results: &[StepResult]) -> Result<()> {
         let at = now();
