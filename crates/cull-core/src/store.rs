@@ -66,6 +66,27 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 -- Older databases also have a `tags` table (saved day ranges, removed Nov 2026). Unused; left alone.
 
+-- Saved tags: a name for a set of days. (Not the old unused `tags` table.) Days may be in many tags.
+CREATE TABLE IF NOT EXISTS day_tags (
+    id         INTEGER PRIMARY KEY,
+    name       TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS day_tag_days (
+    tag_id INTEGER NOT NULL REFERENCES day_tags(id) ON DELETE CASCADE,
+    day    TEXT NOT NULL,
+    PRIMARY KEY (tag_id, day)
+);
+
+-- Every export of a photo (append-only): so "already exported" can be a filter. Never deletes files.
+CREATE TABLE IF NOT EXISTS exports (
+    id          INTEGER PRIMARY KEY,
+    photo_id    INTEGER NOT NULL REFERENCES photos(id),
+    destination TEXT NOT NULL,
+    exported_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS exports_photo ON exports(photo_id);
+
 -- Photo analysis results, one row per photo and kind (see analysis/mod.rs).
 -- `implementation` names the engine; when it changes the row is stale and recomputed.
 CREATE TABLE IF NOT EXISTS analysis (
@@ -301,6 +322,63 @@ impl Store {
         ))?;
         let ids = stmt.query_map(params_from_iter(&args), |r| r.get::<_, PhotoId>(0))?;
         Ok(ids.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Record that these photos were exported to `destination`.
+    pub fn mark_exported(&mut self, ids: &[PhotoId], destination: &str) -> Result<()> {
+        let at = now();
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            tx.execute("INSERT INTO exports (photo_id, destination, exported_at) VALUES (?1, ?2, ?3)", params![id, destination, at])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Which of `ids` have been exported at least once.
+    pub fn exported_ids(&self, ids: &[PhotoId]) -> Result<std::collections::HashSet<PhotoId>> {
+        let mut out = std::collections::HashSet::new();
+        for chunk in ids.chunks(500) {
+            let mut stmt = self.conn.prepare(&format!("SELECT DISTINCT photo_id FROM exports WHERE photo_id IN ({})", placeholders(chunk.len())))?;
+            for r in stmt.query_map(params_from_iter(chunk), |r| r.get::<_, PhotoId>(0))? {
+                out.insert(r?);
+            }
+        }
+        Ok(out)
+    }
+
+    /// All saved tags, by name.
+    pub fn list_tags(&self) -> Result<Vec<SavedTag>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM day_tags ORDER BY name COLLATE NOCASE")?;
+        let rows: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        let mut days = self.conn.prepare("SELECT day FROM day_tag_days WHERE tag_id = ?1 ORDER BY day")?;
+        rows.into_iter()
+            .map(|(id, name)| Ok(SavedTag { id, name, days: days.query_map([id], |r| r.get(0))?.collect::<rusqlite::Result<_>>()? }))
+            .collect()
+    }
+
+    /// Create the tag `name` (case-insensitive) or replace its days. Returns it.
+    pub fn save_tag(&mut self, name: &str, days: &[String]) -> Result<SavedTag> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CoreError::Other("a tag needs a name".into()));
+        }
+        let tx = self.conn.transaction()?;
+        tx.execute("INSERT INTO day_tags (name, created_at) VALUES (?1, ?2) ON CONFLICT(name) DO NOTHING", params![name, now()])?;
+        let id: i64 = tx.query_row("SELECT id FROM day_tags WHERE name = ?1", [name], |r| r.get(0))?;
+        tx.execute("DELETE FROM day_tag_days WHERE tag_id = ?1", [id])?;
+        for d in days {
+            tx.execute("INSERT OR IGNORE INTO day_tag_days (tag_id, day) VALUES (?1, ?2)", params![id, d])?;
+        }
+        tx.commit()?;
+        self.list_tags()?.into_iter().find(|t| t.id == id).ok_or_else(|| CoreError::Other("tag vanished".into()))
+    }
+
+    /// Forget a tag. Photos and decisions are untouched.
+    pub fn delete_tag(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM day_tag_days WHERE tag_id = ?1", [id])?;
+        self.conn.execute("DELETE FROM day_tags WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Remove decisions, decision history and logged outcomes of `ids`. Returns the decisions removed.

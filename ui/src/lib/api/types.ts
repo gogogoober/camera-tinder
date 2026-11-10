@@ -60,9 +60,24 @@ export interface ScanRequest {
   sourceIds?: string[] | null;
 }
 
+/** Which decisions to export, optionally only some days. Always the original files. */
 export interface ExportOptions {
   includeLikes: boolean;
   includeFavorites: boolean;
+  /** Nope (stored as `dislike`). */
+  includeDislikes?: boolean;
+  includeHates?: boolean;
+  /** Also export photos exported before (any earlier export). Omitted = true; the Export screen sends false by default. */
+  includeExported?: boolean;
+  /** Only photos taken on these days (`YYYY-MM-DD`, `"unknown"`); null/absent = every day. */
+  days?: string[] | null;
+}
+
+/** A saved name for a set of days ("Japan trip"). Tags may overlap. */
+export interface SavedTag {
+  id: number;
+  name: string;
+  days: string[];
 }
 
 export interface ExportReport {
@@ -70,6 +85,8 @@ export interface ExportReport {
   copied: number;
   alreadyThere: number;
   failed: [string, string][];
+  /** Copies succeeded but could not be recorded as exported (they may be copied again next time). */
+  notMarked?: string | null;
 }
 
 export type CoreEvent =

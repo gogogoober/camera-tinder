@@ -179,20 +179,45 @@ pub struct ExportReport {
     pub destination: String,
     pub copied: u64,
     pub already_there: u64,
+    /// Photos now safely in the destination (copied or already there). The service marks them exported.
+    #[serde(default)]
+    pub delivered: Vec<PhotoId>,
     pub failed: Vec<(String, String)>,
+    /// Set when the copies succeeded but recording them as exported did not: the files are there,
+    /// but a later export that leaves out exported photos will copy them again.
+    #[serde(default)]
+    pub not_marked: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Which decisions to export, optionally only for some days. The originals are always what is copied.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct ExportOptions {
     pub include_likes: bool,
     pub include_favorites: bool,
+    /// Nope (stored as `dislike`).
+    pub include_dislikes: bool,
+    pub include_hates: bool,
+    /// Also export photos that were exported before (any earlier export, any folder). The UI default is off.
+    pub include_exported: bool,
+    /// Only photos taken on these days (same meaning as `Filter::days`); `None` = every day.
+    pub days: Option<Vec<String>>,
 }
 
 impl Default for ExportOptions {
     fn default() -> Self {
-        Self { include_likes: true, include_favorites: true }
+        Self { include_likes: true, include_favorites: true, include_dislikes: false, include_hates: false, include_exported: true, days: None }
     }
+}
+
+/// A saved name for a set of days ("Japan trip"). Tags may overlap: one day can be in many tags.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedTag {
+    pub id: i64,
+    pub name: String,
+    /// `YYYY-MM-DD` or `"unknown"`, sorted.
+    pub days: Vec<String>,
 }
 
 /// A half-open index range `[start, end)` into a plan's photo list.

@@ -38,6 +38,19 @@ pub trait SimilarityEmbedder: Send + Sync {
     fn embed(&self, img: &AnalysisImage) -> Result<Embedding>;
 }
 
+/// Distance at or below which two frames shot seconds apart still count as the *same general scene*
+/// (a burst of a moving subject, a re-framed shot). Looser than [`near_duplicate_distance`] but
+/// still under the "unrelated" floor of the same calibration.
+pub fn same_scene_distance(model: &str) -> f32 {
+    if model.starts_with("rust.color_layout") {
+        0.40 // near-duplicates <= 0.27, unrelated >= 0.43
+    } else if model.starts_with("apple.vision.feature_print") {
+        0.54 // near-duplicates <= 0.29, unrelated >= 0.59
+    } else {
+        0.15
+    }
+}
+
 /// Distance at or below which two embeddings from `model` count as near-duplicates.
 /// Calibrated per model; unknown models get a conservative value.
 pub fn near_duplicate_distance(model: &str) -> f32 {

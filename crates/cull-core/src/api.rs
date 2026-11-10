@@ -563,16 +563,51 @@ impl CullerService {
 
     // ---- export -------------------------------------------------------
 
+    /// The photos `opts` selects: the chosen decisions, optionally only on some days.
     pub fn keepers(&self, opts: ExportOptions) -> Result<Vec<Photo>> {
-        let photos = self.queue(&Filter { days: None, status: StatusFilter::Keepers })?;
+        let photos = self.queue(&Filter { days: opts.days.clone(), status: StatusFilter::All })?;
+        let exported = if opts.include_exported {
+            Default::default()
+        } else {
+            self.store.lock().unwrap().exported_ids(&photos.iter().map(|p| p.id).collect::<Vec<_>>())?
+        };
         Ok(photos
             .into_iter()
+            .filter(|p| !exported.contains(&p.id))
             .filter(|p| match p.decision {
                 Some(Decision::Like) => opts.include_likes,
                 Some(Decision::Favorite) => opts.include_favorites,
-                _ => false,
+                Some(Decision::Dislike) => opts.include_dislikes,
+                Some(Decision::Hate) => opts.include_hates,
+                None => false,
             })
             .collect())
+    }
+
+    /// How many photos `export` would copy for `opts`.
+    pub fn export_count(&self, opts: ExportOptions) -> Result<usize> {
+        Ok(self.keepers(opts)?.len())
+    }
+
+    // ---- saved tags ---------------------------------------------------
+
+    pub fn list_tags(&self) -> Result<Vec<SavedTag>> {
+        self.store.lock().unwrap().list_tags()
+    }
+
+    /// Create the tag `name` or replace the days of the existing one. Days must be `YYYY-MM-DD` or `"unknown"`.
+    pub fn save_tag(&self, name: &str, days: &[String]) -> Result<SavedTag> {
+        if let Some(bad) = days.iter().find(|d| *d != "unknown" && chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err()) {
+            return Err(CoreError::Other(format!("not a day: {bad}")));
+        }
+        let mut days = days.to_vec();
+        days.sort();
+        days.dedup();
+        self.store.lock().unwrap().save_tag(name, &days)
+    }
+
+    pub fn delete_tag(&self, id: i64) -> Result<()> {
+        self.store.lock().unwrap().delete_tag(id)
     }
 
     pub fn export(&self, target: &dyn ExportTarget, opts: ExportOptions, sink: &dyn EventSink) -> Result<ExportReport> {
@@ -587,7 +622,14 @@ impl CullerService {
                 Some(ExportItem { photo: p, source: source.as_ref() })
             })
             .collect();
-        target.export(&items, sink)
+        let mut report = target.export(&items, sink)?;
+        // Remember what is now in the destination, so a later export can skip it. The copies are done
+        // either way, so a failure here is reported alongside them, never instead of them.
+        if let Err(e) = self.store.lock().unwrap().mark_exported(&report.delivered, &report.destination) {
+            self.log_error("export", &format!("copied {} photos to {} but could not mark them exported: {e}", report.delivered.len(), report.destination));
+            report.not_marked = Some(e.to_string());
+        }
+        Ok(report)
     }
 }
 
@@ -702,6 +744,7 @@ mod tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             seed >> 33
         };
+        let mut scene_vector: Vec<f32> = Vec::new();
         let mut when = NaiveDateTime::parse_from_str("2026-01-01T08:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
         {
             let mut store = svc.store.lock().unwrap();
@@ -719,7 +762,11 @@ mod tests {
                                 r.result = Ok(serde_json::to_value(PerceptualHash(if n % 3 == 0 { next() } else { 0 })).unwrap());
                             }
                             if r.kind == "similarity" {
-                                let vector = (0..64).map(|_| (next() % 1000) as f32 / 1000.0).collect();
+                                // Frames of one scene share an embedding too; a new scene gets a fresh one.
+                                if n % 3 == 0 {
+                                    scene_vector = (0..64).map(|_| (next() % 1000) as f32 / 1000.0).collect();
+                                }
+                                let vector = scene_vector.clone();
                                 r.result = Ok(serde_json::to_value(Embedding { model: r.implementation.clone(), vector }).unwrap());
                             }
                         }

@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SavedTag, SourceInfo, Stats, TagSuggestion } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
 import { mockTriage } from './mockTriage';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
@@ -133,6 +133,25 @@ function statsOf(list: Photo[]): Stats {
     else s.undecided++;
   }
   return s;
+}
+
+let savedTags: SavedTag[] = [];
+/** Photos exported at least once. */
+const exportedIds = new Set<number>();
+let nextTagId = 1;
+
+/** The photos an export with these options would copy. */
+function exportSelection(o: import('./types').ExportOptions): Photo[] {
+  return active().filter((p) => {
+    if (o.includeExported === false && exportedIds.has(p.id)) return false;
+    if (o.days != null && !o.days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown')) return false;
+    return (
+      (p.decision === 'like' && o.includeLikes) ||
+      (p.decision === 'favorite' && o.includeFavorites) ||
+      (p.decision === 'dislike' && !!o.includeDislikes) ||
+      (p.decision === 'hate' && !!o.includeHates)
+    );
+  });
 }
 
 const active = () => photos.filter((p) => sources.some((s) => s.id === p.sourceId));
@@ -336,12 +355,33 @@ export const mockApi: CullerApi = {
     return freed;
   },
 
+  async exportCount(options) {
+    return exportSelection(options).length;
+  },
+
+  async listTags() {
+    return savedTags.map((t) => ({ ...t, days: [...t.days] })).sort((a, b) => a.name.localeCompare(b.name));
+  },
+  async saveTag(name, days) {
+    const nm = name.trim();
+    if (!nm) throw new Error('a tag needs a name');
+    const set = [...new Set(days)].sort();
+    let t = savedTags.find((x) => x.name.toLowerCase() === nm.toLowerCase());
+    if (t) t.days = set;
+    else savedTags.push((t = { id: nextTagId++, name: nm, days: set }));
+    return { ...t, days: [...t.days] };
+  },
+  async deleteTag(id) {
+    savedTags = savedTags.filter((t) => t.id !== id);
+  },
+
   async exportKeepers(dest, options) {
-    const keep = active().filter((p) => (p.decision === 'like' && options.includeLikes) || (p.decision === 'favorite' && options.includeFavorites));
+    const keep = exportSelection(options);
     for (let i = 1; i <= keep.length; i += 50) {
       listeners.forEach((cb) => cb({ type: 'exportProgress', done: Math.min(i, keep.length), total: keep.length }));
       await sleep(5);
     }
+    keep.forEach((p) => exportedIds.add(p.id));
     return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [] };
   },
 

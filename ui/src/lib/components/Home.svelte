@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type PreviewCacheStatus, type SavedTag, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
@@ -18,6 +18,10 @@
   let days = $state<DaySummary[]>([]);
   let suggestions = $state<TagSuggestion[]>([]);
   let calendar = $state<CalendarStatus>('unavailable');
+  /** Saved tags: a name for a set of days. They may overlap (one day in many tags). */
+  let tags = $state<SavedTag[]>([]);
+  let newTag = $state('');
+  let tagError = $state<string | null>(null);
   let connecting = $state(false);
   let cache = $state<PreviewCacheStatus | null>(null);
   let confirmClear = $state(false);
@@ -147,12 +151,13 @@
   }
 
   async function refresh() {
-    [sources, stats, days, suggestions, calendar] = await Promise.all([
+    [sources, stats, days, suggestions, calendar, tags] = await Promise.all([
       api.listSources(),
       api.stats(),
       api.days(),
       api.suggestTags(dismissed),
       api.calendarStatus(),
+      api.listTags().catch(() => [] as SavedTag[]),
     ]);
   }
 
@@ -200,6 +205,35 @@
       else next.add(d);
     }
     selected = next;
+  }
+  /** Which of a tag's days (that still have photos) are selected. */
+  function tagState(t: SavedTag): 'none' | 'some' | 'all' {
+    const ds = t.days.filter((d) => days.some((x) => (x.day ?? 'unknown') === d && x.stats.total > 0));
+    const n = ds.filter((d) => selected.has(d)).length;
+    return n === 0 ? 'none' : n === ds.length ? 'all' : 'some';
+  }
+  function toggleTag(t: SavedTag) {
+    const all = tagState(t) === 'all';
+    const next = new Set(selected);
+    for (const d of t.days) {
+      if (all) next.delete(d);
+      else if (days.some((x) => (x.day ?? 'unknown') === d && x.stats.total > 0)) next.add(d);
+    }
+    selected = next;
+  }
+  async function saveTag() {
+    tagError = null;
+    try {
+      const t = await api.saveTag(newTag, [...selected]);
+      tags = [...tags.filter((x) => x.id !== t.id), t].sort((a, b) => a.name.localeCompare(b.name));
+      newTag = '';
+    } catch (e) {
+      tagError = String(e);
+    }
+  }
+  async function removeTag(t: SavedTag) {
+    await api.deleteTag(t.id);
+    tags = tags.filter((x) => x.id !== t.id);
   }
   const PICK_LABEL = { none: 'Select', some: 'Some', all: 'Selected' } as const;
 
@@ -443,6 +477,30 @@
         </div>
       </div>
 
+      {#if tags.length || selected.size}
+        <div class="group">
+          <span class="eyebrow">Tags · {tags.length}</span>
+          {#each tags as t (t.id)}
+            {@const st = tagState(t)}
+            <div class="sug tag">
+              <span class="nm"><b title={t.name}>{t.name}</b></span>
+              <span class="muted small why">{t.days.length === 1 ? '1 day' : `${t.days.length} days`}</span>
+              <span class="btns">
+                <button class="small pick {st}" aria-pressed={st === 'all'} onclick={() => toggleTag(t)}>{st === 'all' ? '✓ ' : ''}{PICK_LABEL[st]}</button>
+                <button class="small ghost" onclick={() => removeTag(t)} aria-label="Delete tag {t.name}" title="Forgets the tag only; photos and decisions stay">✕</button>
+              </span>
+            </div>
+          {/each}
+          {#if selected.size}
+            <form class="newtag" onsubmit={(e) => { e.preventDefault(); saveTag(); }}>
+              <input type="text" placeholder="Name the {selected.size === 1 ? 'selected day' : `${selected.size} selected days`}, e.g. Japan trip" bind:value={newTag} />
+              <button class="small" disabled={!newTag.trim()}>Save tag</button>
+            </form>
+            {#if tagError}<span class="error small">{tagError}</span>{/if}
+          {/if}
+        </div>
+      {/if}
+
       {#if calendar === 'notDetermined' || calendar === 'denied'}
         <div class="group calprompt">
           <span class="eyebrow">Calendar</span>
@@ -589,6 +647,9 @@
   .confirm .lbl { display: block; font: 500 10.5px ui-monospace, 'SF Mono', monospace; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .confirm .row { display: flex; gap: 6px; }
   .calprompt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .sug.tag { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr) auto; }
+  .newtag { display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+  .newtag input { flex: 1; min-width: 0; }
   .sug { display: grid; grid-template-columns: minmax(0, 1.7fr) 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
   .nm { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
   .nm b { min-width: 0; }

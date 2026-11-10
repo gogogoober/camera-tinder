@@ -7,6 +7,7 @@ import type {
   DaySummary,
   Decision,
   ExportOptions,
+  SavedTag,
   ExportReport,
   Filter,
   GroupingOptions,
@@ -76,6 +77,14 @@ export interface CullerApi {
   clearPreviews(): Promise<number>;
 
   exportKeepers(dest: string, options: ExportOptions): Promise<ExportReport>;
+  /** How many photos `exportKeepers` would copy for these options. */
+  exportCount(options: ExportOptions): Promise<number>;
+
+  /** Saved tags: a name for a set of days. Kept across restarts. */
+  listTags(): Promise<SavedTag[]>;
+  /** Creates the tag, or replaces the days of the one with that name (case-insensitive). */
+  saveTag(name: string, days: string[]): Promise<SavedTag>;
+  deleteTag(id: number): Promise<void>;
 
   // Photo analysis — see docs/photo-analysis.md.
   /** Which engine serves each analysis kind on this platform (null = unavailable). */

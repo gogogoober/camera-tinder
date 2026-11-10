@@ -17,9 +17,9 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use super::PhotoAnalysis;
-use super::hash::NEAR_DUPLICATE_BITS;
+use super::hash::{NEAR_DUPLICATE_BITS, SAME_SCENE_BITS};
 use super::ranking::quality_score;
-use super::similarity::{is_decisive, near_duplicate_distance};
+use super::similarity::{is_decisive, near_duplicate_distance, same_scene_distance};
 use crate::model::PhotoId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,8 +35,10 @@ pub struct GroupingOptions {
     pub embedding_tolerance: f32,
     /// How many following photos (in time order) each photo is compared with.
     pub window: usize,
-    /// Frames this close in time always belong together (a burst), whatever they look like.
-    /// `None` = off, which is how `similar_groups` has always behaved.
+    /// Frames this close in time are burst candidates. They are linked only if a second,
+    /// visual pass says they show the same general scene (looser than a near-duplicate);
+    /// completely unrelated frames shot seconds apart stay apart. With no visual data to
+    /// compare, time alone links them. `None` = off.
     pub burst_gap_secs: Option<i64>,
 }
 
@@ -77,9 +79,27 @@ fn find(parent: &mut [usize], i: usize) -> usize {
     r
 }
 
+/// Second pass for burst candidates: do the two frames show roughly the same scene?
+/// Unknown (nothing comparable) counts as yes: time is then the only evidence there is.
+fn same_general_scene(a: &Candidate, b: &Candidate, opts: &GroupingOptions) -> bool {
+    let hash_ok = match (&a.analysis.perceptual_hash, &b.analysis.perceptual_hash) {
+        (Some(x), Some(y)) => Some(x.distance(y) <= SAME_SCENE_BITS),
+        _ => None,
+    };
+    if opts.use_embeddings
+        && let (Some(x), Some(y)) = (&a.analysis.similarity, &b.analysis.similarity)
+        && let Some(d) = x.distance(y)
+    {
+        let close = d <= same_scene_distance(&x.model) * opts.embedding_tolerance;
+        return if is_decisive(&x.model) { close } else { close && hash_ok != Some(false) };
+    }
+    hash_ok.unwrap_or(true)
+}
+
 fn linked(a: &Candidate, b: &Candidate, opts: &GroupingOptions) -> bool {
     if let (Some(burst), Some(x), Some(y)) = (opts.burst_gap_secs, a.captured_at, b.captured_at)
         && (y - x).num_seconds().abs() <= burst
+        && same_general_scene(a, b, opts)
     {
         return true;
     }
@@ -165,14 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn burst_gap_links_frames_seconds_apart_whatever_they_look_like() {
-        let photos = [a(1, 0, 50), a(2, u64::MAX, 50), a(3, 0x00FF_00FF_00FF_00FF, 50)]; // three different scenes
-        let times = [t("2026-01-01T10:00:00"), t("2026-01-01T10:00:02"), t("2026-01-01T10:09:00")];
+    fn burst_gap_links_frames_seconds_apart_only_if_they_look_related() {
+        // 1 and 2: different scenes, 2 s apart. 4 and 5: same scene (few bits apart), 2 s apart.
+        let photos = [a(1, 0, 50), a(2, u64::MAX, 50), a(3, 0x00FF_00FF_00FF_00FF, 50), a(4, 0, 50), a(5, 0b1111, 60)];
+        let times = [t("2026-01-01T10:00:00"), t("2026-01-01T10:00:02"), t("2026-01-01T10:09:00"), t("2026-01-01T10:20:00"), t("2026-01-01T10:20:02")];
         let c: Vec<Candidate> = photos.iter().zip(times).map(|(analysis, captured_at)| Candidate { captured_at, analysis }).collect();
-        assert!(similar_groups(&c, &GroupingOptions::default()).is_empty(), "off by default");
         let g = similar_groups(&c, &GroupingOptions { burst_gap_secs: Some(3), ..Default::default() });
-        assert_eq!(g.len(), 1);
-        assert_eq!(g[0].photo_ids.len(), 2, "photo 3 is far in time and different");
+        assert_eq!(g.len(), 1, "unrelated frames seconds apart must not group: {g:?}");
+        assert_eq!(g[0].photo_ids.len(), 2);
+        assert!(g[0].photo_ids.contains(&4) && g[0].photo_ids.contains(&5));
     }
 
     #[test]

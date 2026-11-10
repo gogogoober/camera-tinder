@@ -181,6 +181,32 @@ async fn export_keepers(app: AppHandle, state: State<'_, AppState>, dest: String
     .await
 }
 
+#[tauri::command]
+async fn export_count(state: State<'_, AppState>, options: ExportOptions) -> CmdResult<usize> {
+    let svc = state.0.clone();
+    blocking(move || svc.export_count(options)).await
+}
+
+// ---- saved tags (a name for a set of days) ----------------------------
+
+#[tauri::command]
+async fn list_tags(state: State<'_, AppState>) -> CmdResult<Vec<SavedTag>> {
+    let svc = state.0.clone();
+    blocking(move || svc.list_tags()).await
+}
+
+#[tauri::command]
+async fn save_tag(state: State<'_, AppState>, name: String, days: Vec<String>) -> CmdResult<SavedTag> {
+    let svc = state.0.clone();
+    blocking(move || svc.save_tag(&name, &days)).await
+}
+
+#[tauri::command]
+async fn delete_tag(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
+    let svc = state.0.clone();
+    blocking(move || svc.delete_tag(id)).await
+}
+
 // ---- photo analysis (see docs/photo-analysis.md) ----------------------
 
 #[tauri::command]
@@ -317,6 +343,10 @@ pub fn run() {
             clear_previews,
             connect_calendar,
             export_keepers,
+            export_count,
+            list_tags,
+            save_tag,
+            delete_tag,
             analyzer_info,
             analyze_photos,
             stop_analysis,

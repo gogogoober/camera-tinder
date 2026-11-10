@@ -25,7 +25,7 @@ default answer the user corrects. One component, three uses.
 ## Routing: each photo is asked exactly once (in order)
 
 1. **Accidental → Sweep**, even inside a burst (removed from the burst first).
-2. **In a burst / near-duplicate group → Pick, stays in the timeline.** Its issues only lower its rank and
+2. **In a burst / near-duplicate group** (a burst = frames ≤3 s apart *and* a visual second pass says they show the same general scene: looser than near-duplicate, `same_scene_distance` / `SAME_SCENE_BITS`; unrelated frames seconds apart stay separate Judge cards) → Pick, stays in the timeline.** Its issues only lower its rank and
    show as badges. **A burst where every frame is bad stays in the timeline as a Pick**; NOT auto-moved to Sweep — a burst means the owner was trying to capture something. Revisit later.
 3. **Reject-level issue → Sweep**, filed under its worst issue.
 4. Else **Judge**, with hint badges.

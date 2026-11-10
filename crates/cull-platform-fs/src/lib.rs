@@ -313,8 +313,14 @@ impl ExportTarget for CopyToDir {
         let total = items.len() as u64;
         for (i, item) in items.iter().enumerate() {
             match Self::copy_one(&dest, item, i) {
-                Ok(true) => report.copied += 1,
-                Ok(false) => report.already_there += 1,
+                Ok(copied) => {
+                    if copied {
+                        report.copied += 1;
+                    } else {
+                        report.already_there += 1;
+                    }
+                    report.delivered.push(item.photo.id);
+                }
                 Err(e) => report.failed.push((item.photo.rel_path.clone(), e.to_string())),
             }
             sink.emit(CoreEvent::ExportProgress { done: i as u64 + 1, total });

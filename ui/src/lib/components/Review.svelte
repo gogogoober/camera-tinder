@@ -18,7 +18,8 @@
     days: string[] | null;
     onBack: () => void;
     onOpen: (photoId: number) => void;
-    onExport: () => void;
+    /** Opens Export for what's on screen: the decisions of the current filter and the day (or picked days). */
+    onExport: (decisions: Decision[], days: string[] | null) => void;
   } = $props();
 
   type Filter = 'all' | 'favorite' | 'like' | 'dislike' | 'hate' | 'todo';
@@ -81,7 +82,37 @@
     }),
   );
   const visible = $derived(list.slice(0, shown));
-  const keepers = $derived(counts.like + counts.favorite);
+  /** What "Export these" copies: the decisions of the filter on screen (All = the keepers). */
+  const exportDecisions = $derived<Decision[]>(filter === 'all' ? ['favorite', 'like'] : filter === 'todo' ? [] : [filter]);
+  const exportDays = $derived(day ? [day] : pickedDays);
+  /** What the Export screen will start with: these decisions and days, minus photos exported before. */
+  let exportCount = $state(0);
+  /** Bumped once a decision change is saved, so the count is asked for after the write. */
+  let saved = $state(0);
+  let exportTicket = 0;
+  $effect(() => {
+    const ds = exportDecisions;
+    const scope = exportDays;
+    void saved; // re-count after a decision change is saved
+    const mine = ++exportTicket;
+    if (!ds.length) {
+      exportCount = 0;
+      return;
+    }
+    api
+      .exportCount({
+        includeFavorites: ds.includes('favorite'),
+        includeLikes: ds.includes('like'),
+        includeDislikes: ds.includes('dislike'),
+        includeHates: ds.includes('hate'),
+        includeExported: false,
+        days: scope,
+      })
+      .then((n) => {
+        if (mine === exportTicket) exportCount = n;
+      })
+      .catch(() => {});
+  });
 
   function setFilter(f: Filter) {
     filter = f;
@@ -101,6 +132,7 @@
     for (const p of picked) p.decision = d;
     try {
       await api.decideMany(picked.map((p) => p.id), d);
+      saved++;
     } catch (e) {
       error = String(e);
     }
@@ -117,6 +149,7 @@
           const p = photos.find((x) => x.id === b.id);
           if (p) p.decision = b.decision;
         }
+        saved++;
       });
     }
   }
@@ -184,8 +217,10 @@
       {#if error}<p class="error">{error}</p>{/if}
 
       <footer>
-        <div><b>{formatCount(keepers)} keepers</b> <span class="muted">· ✓ {counts.like} + ★ {counts.favorite}{compact ? '' : ' · originals never touched'}</span></div>
-        <button class="primary" onclick={onExport} disabled={!keepers}>{compact ? 'Share' : 'Export'} {formatCount(keepers)}</button>
+        <div><b>{formatCount(counts.like + counts.favorite)} keepers</b> <span class="muted">· ✓ {counts.like} + ★ {counts.favorite}{compact ? '' : ' · originals never touched'}</span></div>
+        <button class="primary" onclick={() => onExport(exportDecisions, exportDays)} disabled={!exportCount} title="Export the originals of what this filter shows that weren't exported before; adjust on the next screen">
+          {compact ? 'Share' : 'Export'} {formatCount(exportCount)}{filter === 'all' || filter === 'todo' ? '' : ` ${FILTERS.find((f) => f[0] === filter)?.[1]}`}
+        </button>
       </footer>
     </section>
 </AppShell>

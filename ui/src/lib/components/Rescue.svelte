@@ -248,7 +248,7 @@
   .lede { margin: 0; }
   .chiprow { display: flex; gap: 10px; align-items: baseline; }
   .lbl { flex: none; width: 54px; font: 600 10px ui-monospace, 'SF Mono', monospace; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(135px, 1fr)); gap: 10px; }
   .cell { position: relative; aspect-ratio: 1; padding: 0; border: 0; border-radius: 9px; overflow: hidden; background: var(--panel-2); cursor: pointer; }
   .cell img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
   .cell::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; }

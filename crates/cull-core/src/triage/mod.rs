@@ -138,7 +138,7 @@ fn single_item(photo: &Photo, analysis: Option<&PhotoAnalysis>, issues: &[Issue]
     }
 }
 
-/// Burst if every gap between neighbouring frames is within [`BURST_GAP_SECS`], else similar.
+/// Burst (time proximity confirmed by a visual pass in grouping) if every gap between neighbouring frames is within [`BURST_GAP_SECS`], else similar.
 fn group_kind(photos: &[&Photo]) -> GroupKind {
     let mut times: Vec<_> = photos.iter().map(|p| p.captured_at).collect();
     times.sort();
@@ -288,10 +288,10 @@ mod tests {
     }
 
     #[test]
-    fn frames_seconds_apart_group_even_when_they_look_different() {
+    fn frames_seconds_apart_stay_apart_when_they_look_unrelated() {
         let photos = [photo(1, "2026-01-01T10:00:00"), photo(2, "2026-01-01T10:00:02")];
         let items = run(&photos, vec![sharp(1, SCENE_A), sharp(2, SCENE_B)]);
-        assert!(items.iter().all(|i| i.question == Question::Pick), "a burst is a burst");
+        assert!(items.iter().all(|i| i.question == Question::Judge && i.group.is_none()), "unrelated shots are not a burst");
     }
 
     #[test]

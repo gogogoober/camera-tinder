@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isMock } from './lib/api';
+  import { isMock, type Decision } from './lib/api';
   import Home from './lib/components/Home.svelte';
   import Cull from './lib/components/Cull.svelte';
   import Rescue from './lib/components/Rescue.svelte';
@@ -10,6 +10,8 @@
   let view = $state<View>('home');
   /** The days picked on the Pick screen's calendar; Cull and Review show exactly these. */
   let days = $state<string[] | null>(null);
+  /** What Review was showing when Export was opened: the decisions and days to start with. */
+  let exportScope = $state<{ decisions: Decision[]; days: string[] | null } | null>(null);
   /** Set when a photo is reopened from Review. */
   let focusId = $state<number | null>(null);
 
@@ -37,10 +39,10 @@
     {days}
     onBack={() => (view = days ? 'cull' : 'home')}
     onOpen={(id) => { focusId = id; view = 'cull'; }}
-    onExport={() => (view = 'export')}
+    onExport={(decisions, scopeDays) => { exportScope = { decisions, days: scopeDays }; view = 'export'; }}
   />
 {:else}
-  <ExportPanel onBack={() => (view = 'review')} />
+  <ExportPanel onBack={() => (view = 'review')} days={exportScope?.days ?? days} preset={exportScope?.decisions ?? null} />
 {/if}
 
 <style>

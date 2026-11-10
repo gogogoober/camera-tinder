@@ -125,6 +125,13 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - **Error log:** background errors (analysis passes, each photo that couldn't be analysed, once per photo per app
   session) go to `errors.log` in the app log folder (`set_error_log` in `setup`) and stderr. It rotates at 50 MB to
   `errors.1.log` (one kept). The Pick screen's Advanced drawer shows the path and the last 100 lines.
+- **Saved tags are back** (Nov 2026, new `day_tags` / `day_tag_days` tables; the old `tags` table stays unused): a name for a set
+  of days, overlapping allowed. Pick screen: save the selection as a tag, click a tag to select its days. Tags are also export scopes.
+- **Exports are remembered** (`exports` table, append-only, one row per photo per export; set by `CullerService::export` from `ExportReport.delivered`). `ExportOptions.include_exported` (Rust default true, Export screen default off) leaves previously exported photos out. It is a filter on the export button only, not on what you see.
+- **Export** (`ExportOptions`): any mix of Favorite / Keep / Nope / Hate, optionally only some days; `export_count` gives the live
+  count. Always copies the original (source file + stored `rel_path`/`file_name`), never a preview. Review's "Export" passes the
+  decisions of the filter on screen and its day.
+- **Bursts need a visual second pass**: ≤3 s apart is only a candidate (`grouping::same_general_scene`).
 - UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
   (month calendar, card stack, round buttons). All logic is shared.

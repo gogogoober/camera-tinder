@@ -44,6 +44,8 @@ pub trait PerceptualHasher: Send + Sync {
 
 /// Hash distance at or below which two photos look nearly identical.
 pub const NEAR_DUPLICATE_BITS: u32 = 10;
+/// Looser limit for frames shot seconds apart: same general scene (unrelated photos average ~32 bits).
+pub const SAME_SCENE_BITS: u32 = 20;
 
 pub struct DHash;
 
