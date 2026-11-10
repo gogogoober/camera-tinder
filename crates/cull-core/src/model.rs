@@ -267,4 +267,10 @@ pub struct TagSuggestion {
     pub source: TagSource,
     pub reason: String,
     pub photo_count: u64,
+    /// Several multi-day calendar events on exactly the same days share one row; `name` joins them.
+    #[serde(default)]
+    pub names: Vec<String>,
+    /// Calendar events that fall inside this one's days (one level only).
+    #[serde(default)]
+    pub children: Vec<TagSuggestion>,
 }

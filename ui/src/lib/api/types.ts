@@ -109,6 +109,10 @@ export interface TagSuggestion {
   source: TagSource;
   reason: string;
   photoCount: number;
+  /** More than one name = several multi-day events on exactly the same days (`name` joins them). */
+  names: string[];
+  /** Events inside this one's days; one level only. */
+  children: TagSuggestion[];
 }
 
 /** `unavailable` = this platform has no calendar source. */

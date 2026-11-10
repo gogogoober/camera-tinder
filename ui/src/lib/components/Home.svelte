@@ -126,8 +126,26 @@
     await api.addTag(s.name, s.startDay, s.endDay, s.source);
     await refresh();
   }
+  const same = (a: TagSuggestion, b: TagSuggestion) => a.name === b.name && a.startDay === b.startDay && a.endDay === b.endDay;
+  /** Hiding a child hides it under every parent; hiding a parent keeps its children, moved up. */
   function dismissSuggestion(s: TagSuggestion) {
-    suggestions = suggestions.filter((x) => x !== s);
+    const next: TagSuggestion[] = [];
+    for (const x of suggestions) {
+      if (same(x, s)) {
+        for (const c of x.children) if (!next.some((n) => same(n, c))) next.push(c);
+      } else {
+        next.push({ ...x, children: x.children.filter((c) => !same(c, s)) });
+      }
+    }
+    suggestions = next;
+  }
+  let expanded = $state(new Set<string>());
+  const sugKey = (s: TagSuggestion) => s.name + s.startDay + s.endDay;
+  function toggle(s: TagSuggestion) {
+    const k = sugKey(s);
+    const next = new Set(expanded);
+    if (!next.delete(k)) next.add(k);
+    expanded = next;
   }
   async function addTag() {
     if (!range) return;
@@ -343,9 +361,16 @@
       {#if suggestions.length}
         <div class="group">
           <span class="eyebrow">Suggested tags · {suggestions.length}</span>
-          {#each suggestions as s (s.name + s.startDay)}
-            <div class="sug">
-              <b>{s.name}</b>
+          {#snippet sugRow(s: TagSuggestion, child: boolean)}
+            {@const open = expanded.has(sugKey(s))}
+            <div class="sug" class:child>
+              <span class="nm">
+                {#if s.children.length}
+                  <button class="plain chev" onclick={() => toggle(s)} aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'}>{open ? '▾' : '▸'}</button>
+                {/if}
+                <b class:merged={s.names.length > 1} title={s.name}>{s.name}</b>
+                {#if s.children.length}<span class="muted small count">{s.children.length}</span>{/if}
+              </span>
               <span class="mono small">{shortRange(s.startDay, s.endDay)}</span>
               <span class="muted small why">{s.reason}</span>
               <span class="btns">
@@ -354,6 +379,14 @@
                 <button class="small ghost" onclick={() => dismissSuggestion(s)} aria-label="Dismiss">✕</button>
               </span>
             </div>
+          {/snippet}
+          {#each suggestions as s (sugKey(s))}
+            {@render sugRow(s, false)}
+            {#if expanded.has(sugKey(s))}
+              {#each s.children as c (sugKey(c))}
+                {@render sugRow(c, true)}
+              {/each}
+            {/if}
           {/each}
         </div>
       {/if}
@@ -450,6 +483,13 @@
   .confirm .row { display: flex; gap: 6px; }
   .calprompt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .sug { display: grid; grid-template-columns: minmax(0, 1.1fr) 120px minmax(0, 1.6fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+  .nm { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .nm b { min-width: 0; }
+  .nm b.merged { font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chev { width: 1.2em; flex: none; color: var(--muted); }
+  .count { flex: none; }
+  .sug.child { padding-left: 22px; }
+  .sug.child .nm b { font-weight: 500; }
   .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btns { display: flex; gap: 6px; }
   button.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }

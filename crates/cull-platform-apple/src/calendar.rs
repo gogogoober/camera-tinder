@@ -15,8 +15,8 @@ use crate::Access;
 
 /// EventKit predicates only look at ~4 years at a time.
 const CHUNK_DAYS: u64 = 365 * 3;
-/// Multi-week events (holidays, "out of office") are noise as tag suggestions.
-const MAX_EVENT_DAYS: i64 = 21;
+/// Multi-month events (holidays, "out of office") are noise as tag suggestions.
+const MAX_EVENT_DAYS: i64 = 60;
 
 pub struct CalendarAccess;
 

@@ -267,15 +267,24 @@ export const mockApi: CullerApi = {
     tags = tags.filter((t) => t.id !== id);
   },
   async suggestTags(): Promise<TagSuggestion[]> {
+    const sug = (name: string, startDay: string, endDay: string, source: 'gap' | 'calendar', reason: string, children: TagSuggestion[] = [], names: string[] = []): TagSuggestion =>
+      ({ name, startDay, endDay, source, reason, photoCount: 0, names, children });
     const all: TagSuggestion[] = [
-      { name: 'Hike', startDay: '2026-08-01', endDay: '2026-08-03', source: 'gap', reason: 'Shot 3 days in a row', photoCount: 0 },
-      { name: "Maya's wedding", startDay: '2026-09-19', endDay: '2026-09-19', source: 'calendar', reason: 'Calendar event, 2 pm – 11 pm', photoCount: 0 },
-      { name: 'Cabin weekend', startDay: '2026-10-17', endDay: '2026-10-18', source: 'calendar', reason: 'All-day calendar event', photoCount: 0 },
-      { name: 'Nov 1 – Nov 8', startDay: '2026-11-01', endDay: '2026-11-08', source: 'gap', reason: 'Shot 8 days in a row', photoCount: 0 },
+      sug('Hike', '2026-08-01', '2026-08-03', 'gap', 'Shot 3 days in a row'),
+      sug("Maya's wedding", '2026-09-19', '2026-09-19', 'calendar', 'Calendar event, 2 pm – 11 pm'),
+      sug('Cabin weekend', '2026-10-17', '2026-10-18', 'calendar', 'All-day calendar event'),
+      sug('Mom Visiting', '2026-10-29', '2026-11-08', 'calendar', 'Calendar event', [
+        sug('Wedding – Washington DC / Mayflower Hotel Stay', '2026-11-05', '2026-11-08', 'calendar', 'Calendar event', [], ['Wedding – Washington DC', 'Mayflower Hotel Stay']),
+        sug('Train to Washington DC', '2026-11-05', '2026-11-05', 'calendar', 'Calendar event'),
+        sug('Mariel Hangout', '2026-11-08', '2026-11-08', 'calendar', 'Calendar event'),
+      ], ['Mom Visiting']),
+      sug('Nov 1 – Nov 8', '2026-11-01', '2026-11-08', 'gap', 'Shot 8 days in a row'),
     ];
+    const taken = (s: TagSuggestion) => tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay);
     return all
       .filter((s) => calendar === 'connected' || s.source !== 'calendar')
-      .filter((s) => !tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay));
+      .filter((s) => !taken(s))
+      .map((s) => ({ ...s, children: s.children.filter((c) => !taken(c)) }));
   },
 
   async calendarStatus() {
