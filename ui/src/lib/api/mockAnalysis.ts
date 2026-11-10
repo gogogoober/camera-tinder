@@ -35,9 +35,15 @@ export const MOCK_ANALYZERS: AnalyzerInfo[] = [
   inputs: kind === 'eyes' || kind === 'faceFraming' ? ['faces'] : kind === 'subjectFocus' ? ['faces', 'saliency'] : [],
 })) as AnalyzerInfo[];
 
+/** Whole-frame sharpness 0–100 the mock pretends each photo has (about 1 in 8 is blurry). */
+export function mockSharpness(id: number): number {
+  const r = rng(id * 104729 + 7);
+  return r() < 0.12 ? Math.round(4 + r() * 16) : Math.round(30 + r() * 70);
+}
+
 export function mockAnalysis(p: Photo): PhotoAnalysis {
   const r = rng(p.id * 7919 + 13);
-  const sharp = p.sharpness ?? 60;
+  const sharp = mockSharpness(p.id);
   const peak = Math.min(100, sharp + Math.round(r() * 25));
   const mean = 0.15 + r() * 0.7;
   const hasFaces = r() < 0.35;

@@ -56,8 +56,8 @@ fn set_tree_mode(root: &Path, file: u32, dir: u32) {
 /// Runs every operation that touches photos: scan, rescan, previews,
 /// all four decisions, bulk decisions, undo, tags, suggestions, export.
 fn exercise_everything(svc: &CullerService, dest: &Path) -> ExportReport {
-    svc.scan(&NullSink).unwrap();
-    svc.scan(&NullSink).unwrap(); // rescan (cached path)
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap(); // rescan (cached path)
     let q = svc.queue(&Filter::default()).unwrap();
     assert_eq!(q.len(), 4);
     for p in &q {
@@ -119,7 +119,7 @@ fn hated_and_rejected_photos_are_never_removed() {
     make_card(&card);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
     svc.decide_many(&ids, Decision::Hate).unwrap();
     // Exporting with everything hated copies nothing and deletes nothing.
@@ -140,7 +140,7 @@ fn export_refuses_destinations_inside_a_source() {
     let before = snapshot(&card);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
     svc.decide_many(&ids, Decision::Like).unwrap();
 
@@ -168,7 +168,7 @@ fn export_never_overwrites_existing_files() {
     make_card(&card);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let q = svc.queue(&Filter::default()).unwrap();
     let ids: Vec<_> = q.iter().map(|p| p.id).collect();
     svc.decide_many(&ids, Decision::Like).unwrap();
@@ -204,7 +204,7 @@ fn export_skips_files_changed_since_scan() {
     make_card(&card);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
     svc.decide_many(&ids, Decision::Like).unwrap();
 
@@ -332,15 +332,15 @@ fn card_is_read_once_at_scan_then_left_alone_until_export() {
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(src.clone()).unwrap();
 
-    // Scan: every JPEG opened exactly once (fingerprint, EXIF, sharpness, previews all from one read).
-    let report = svc.scan(&NullSink).unwrap();
+    // Scan: every JPEG opened exactly once (fingerprint, EXIF, previews all from one read).
+    let report = svc.scan(&Default::default(), &NullSink).unwrap();
     let mut opened = src.take();
     opened.sort();
     assert_eq!(opened, ["DCIM/100NIKON/DSC_0001.JPG", "DCIM/100NIKON/DSC_0002.JPG", "DCIM/100NIKON/DSC_0003.JPG", "DCIM/101FUJI/DSCF0001.JPG"]);
     assert_eq!((report.skipped_unsupported, report.other_files), (1, 1), "NEF + notes.txt are reported, not ignored silently");
 
     // Rescan of an unchanged card: no file contents read at all.
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!(src.take(), Vec::<String>::new(), "rescan should only list the card");
 
     // A whole culling session: every preview size the UI uses (and silly ones), all decisions,
@@ -378,7 +378,7 @@ fn culling_works_with_the_card_unplugged_and_export_reports_what_it_could_not_re
     make_card(&card);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let q = svc.queue(&Filter::default()).unwrap();
 
     // Unplug the card mid-session (the source stays in the session, its files vanish).
@@ -412,14 +412,20 @@ fn older_index_without_previews_is_backfilled_by_one_read_on_rescan() {
     let src = Counting::new(&card);
     let svc = CullerService::in_memory(&cache).unwrap();
     svc.add_source(src.clone()).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     src.take();
 
     // Simulate a library indexed by an older version: no cached previews.
     for e in fs::read_dir(&cache).unwrap() {
         fs::remove_file(e.unwrap().path()).unwrap();
     }
-    svc.scan(&NullSink).unwrap();
+    // The folder itself is unchanged, so a plain rescan doesn't look inside it…
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!(r.unchanged_sources, 1);
+    assert_eq!(src.take(), Vec::<String>::new());
+    // …but rescanning that folder on purpose rebuilds the previews.
+    let force = ScanRequest { source_ids: Some(vec![src.id().to_string()]), force: true };
+    svc.scan(&force, &NullSink).unwrap();
     assert_eq!(src.take().len(), 4, "one read per photo to rebuild previews");
     for p in svc.queue(&Filter::default()).unwrap() {
         svc.preview(p.id, 1024).unwrap();
@@ -452,7 +458,7 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     let card_src = Counting::new(&card);
     svc.add_source(card_src.clone()).unwrap();
     svc.add_source(Arc::new(FsSource::new(&folder).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     card_src.take();
     let q = svc.queue(&Filter::default()).unwrap();
     svc.decide(q[0].id, Decision::Favorite).unwrap();
@@ -486,7 +492,7 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     // Plug back in and rescan: previews rebuilt with one read per photo.
     fs::rename(&away, &card).unwrap();
     svc.add_source(card_src.clone()).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!(card_src.take().len(), 4);
     assert_eq!(svc.stats().unwrap().favorite, 1, "decisions survive clearing");
     for p in svc.queue(&Filter::default()).unwrap() {
@@ -503,7 +509,7 @@ fn clearing_previews_deletes_nothing_but_preview_copies() {
     make_card(&card);
     let svc = CullerService::in_memory(&cache).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let ours = cache_files(&cache);
     assert_eq!(ours.len(), 8);
 

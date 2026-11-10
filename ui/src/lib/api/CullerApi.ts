@@ -16,6 +16,7 @@ import type {
   Plan,
   PreviewCacheStatus,
   ScanReport,
+  ScanRequest,
   SimilarGroup,
   SourceInfo,
   Stats,
@@ -38,7 +39,10 @@ export interface CullerApi {
   addFolder(path: string): Promise<SourceInfo>;
   removeSource(id: string): Promise<void>;
   listSources(): Promise<SourceInfo[]>;
-  scan(): Promise<ScanReport>;
+  /** Scan folders (all by default). New photos are saved in batches as it goes (`scanSaved` events). */
+  scan(request?: ScanRequest): Promise<ScanReport>;
+  /** Stop the running scan after the photos being read right now. Finished photos are kept. */
+  cancelScan(): Promise<void>;
 
   queue(filter: Filter): Promise<Photo[]>;
   /** The queue plus its moments and bursts, for the cull screen. */

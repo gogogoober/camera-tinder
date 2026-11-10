@@ -15,7 +15,7 @@ use crate::error::{CoreError, Result};
 use crate::preview;
 
 /// Long edge of the small working copy used by the cheap whole-image measures.
-pub const WORKING_EDGE: u32 = crate::sharpness::MEASURE_EDGE;
+pub const WORKING_EDGE: u32 = 640;
 
 type Lazy<T> = OnceLock<std::result::Result<T, String>>;
 
@@ -91,7 +91,7 @@ impl AnalysisImage {
         })
     }
 
-    /// Small (≤ 640 px) luma copy; matches the scan-time sharpness measurement.
+    /// Small (≤ 640 px) luma copy, so sharpness scores compare across 12 MP and 45 MP cameras.
     pub fn working_grey(&self) -> Result<&GrayImage> {
         get(&self.working_grey, || Ok(DynamicImage::ImageRgb8(self.working_rgb()?.clone()).to_luma8()))
     }

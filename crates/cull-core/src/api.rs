@@ -1,6 +1,7 @@
 //! `CullerService`: the one facade every UI talks to.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use rayon::prelude::*;
@@ -15,7 +16,7 @@ use crate::model::*;
 use crate::moments::{MOMENT_GAP_SECS, bursts, group_by_gap};
 use crate::ports::{CalendarSource, EventSink, ExportItem, ExportTarget, MediaSource};
 use crate::preview::{MASTER_EDGE, PreviewCache};
-use crate::scan::scan_source;
+use crate::scan::{FolderCheck, scan_source};
 use crate::store::Store;
 use crate::suggest;
 
@@ -34,6 +35,10 @@ pub struct CullerService {
     undo: Mutex<Vec<Vec<(PhotoId, Option<Decision>)>>>,
     calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
     analyzers: RwLock<Arc<Analyzers>>,
+    /// One scan at a time.
+    scanning: Mutex<()>,
+    /// Set by `cancel_scan`; the running scan stops after the photos it is reading.
+    scan_cancel: AtomicBool,
 }
 
 impl CullerService {
@@ -56,6 +61,8 @@ impl CullerService {
             undo: Mutex::new(Vec::new()),
             calendar: RwLock::new(None),
             analyzers: RwLock::new(Arc::new(Analyzers::rust())),
+            scanning: Mutex::new(()),
+            scan_cancel: AtomicBool::new(false),
         })
     }
 
@@ -115,20 +122,43 @@ impl CullerService {
 
     // ---- scanning & browsing ------------------------------------------
 
-    /// Scan every source in the session. Safe to call repeatedly: unchanged
-    /// files are skipped and previous decisions are kept.
-    pub fn scan(&self, sink: &dyn EventSink) -> Result<ScanReport> {
-        let sources = self.sources.read().unwrap().clone();
+    /// Scan the requested sources (all of them by default). Safe to call repeatedly:
+    /// unchanged folders and files are skipped and previous decisions are kept.
+    /// New photos are saved (and `ScanSaved` emitted) in batches while it runs.
+    pub fn scan(&self, req: &ScanRequest, sink: &dyn EventSink) -> Result<ScanReport> {
+        let _one_at_a_time = self.scanning.lock().unwrap();
+        self.scan_cancel.store(false, Ordering::Relaxed);
+        let sources: Vec<_> = self
+            .sources
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|s| req.source_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == s.id())))
+            .cloned()
+            .collect();
+        let check = if req.force { FolderCheck::Force } else { FolderCheck::SkipUnchanged };
         let mut total = ScanReport::default();
         for s in sources {
-            let r = scan_source(&self.store, s.as_ref(), &self.previews, sink)?;
+            if self.scan_cancel.load(Ordering::Relaxed) {
+                total.cancelled = true;
+                break;
+            }
+            let r = scan_source(&self.store, s.as_ref(), &self.previews, check, &self.scan_cancel, sink)?;
             total.found += r.found;
             total.new += r.new;
             total.skipped_unsupported += r.skipped_unsupported;
             total.other_files += r.other_files;
             total.failed.extend(r.failed);
+            total.unchanged_sources += r.unchanged_sources;
+            total.cancelled |= r.cancelled;
         }
         Ok(total)
+    }
+
+    /// Stop the running scan (if any) after the photos it is reading right now.
+    /// Everything already processed is kept; the next scan picks up the rest.
+    pub fn cancel_scan(&self) {
+        self.scan_cancel.store(true, Ordering::Relaxed);
     }
 
     pub fn queue(&self, filter: &Filter) -> Result<Vec<Photo>> {
@@ -187,7 +217,10 @@ impl CullerService {
         if !status.connected_sources.is_empty() {
             return Err(CoreError::Other(format!("disconnect these first: {}", status.connected_sources.join(", "))));
         }
-        self.previews.clear()
+        let freed = self.previews.clear()?;
+        // Folders now look unchanged but lack previews: have the next scan look inside them again.
+        self.store.lock().unwrap().forget_scan_signatures()?;
+        Ok(freed)
     }
 
     // ---- deciding -----------------------------------------------------
@@ -255,6 +288,12 @@ impl CullerService {
 
     // ---- photo analysis ---------------------------------------------
     // See docs/photo-analysis.md. Analysis reads the cached master previews, never the originals.
+
+    /// Platforms with a faster native codec replace the pure-Rust preview maker here
+    /// (e.g. `cull_platform_apple::imageio::ImageIoPreviewMaker`).
+    pub fn set_preview_maker(&self, maker: Arc<dyn crate::ports::PreviewMaker>) {
+        self.previews.set_maker(maker);
+    }
 
     /// Platforms add engines here (e.g. `cull_platform_apple::vision::analyzers()`).
     /// Defaults to `Analyzers::rust()`.

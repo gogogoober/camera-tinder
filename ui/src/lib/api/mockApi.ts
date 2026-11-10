@@ -1,13 +1,12 @@
 import type { CullerApi } from './CullerApi';
 import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
-import { SOFT_THRESHOLD } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
-import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues } from './mockAnalysis';
+import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
 
 /**
  * In-memory fake backend so the UI can be built and tested in a plain browser
  * (`npm run dev:mock`), with no Rust build in the loop. It mimics cull-core:
- * capture-ordered queues, moments/bursts, sharpness scores, tags and suggestions.
+ * capture-ordered queues, moments/bursts, tags and suggestions.
  */
 
 /** Shape of a photo nobody has analysed yet. */
@@ -20,6 +19,10 @@ const EMPTY = {
 const listeners = new Set<(e: CoreEvent) => void>();
 const sources: SourceInfo[] = [];
 let photos: Photo[] = [];
+let cancelRequested = false;
+/** Folders whose last scan finished, and the photos a stopped scan hasn't saved yet. */
+const scannedSources = new Set<string>();
+const unsaved = new Map<string, Photo[]>();
 let tags: Tag[] = [
   { id: 1, name: 'Lisbon', startDay: '2026-06-12', endDay: '2026-06-19', source: 'place' },
 ];
@@ -86,7 +89,6 @@ function makePhotos(sourceId: string, startId: number): Photo[] {
             capturedAt: `${day}T${pad(Math.floor(sec / 3600))}:${pad(Math.floor(sec / 60) % 60)}:${pad(sec % 60)}`,
             camera: id % 3 === 0 ? 'FUJIFILM X-T5' : 'NIKON Z f',
             decision: null,
-            sharpness: r() < 0.12 ? Math.round(4 + r() * 16) : Math.round(30 + r() * 70),
           });
           id++;
           t += burst > 1 ? 1 : 4 + Math.floor(r() * 45);
@@ -171,19 +173,48 @@ export const mockApi: CullerApi = {
   async listSources() {
     return sources.map((s) => ({ ...s, photoCount: photos.filter((p) => p.sourceId === s.id).length }));
   },
-  async scan() {
+  async scan(request = {}) {
+    cancelRequested = false;
     let added = 0;
+    let unchangedSources = 0;
+    let cancelled = false;
+    const emit = (e: CoreEvent) => listeners.forEach((cb) => cb(e));
     for (const s of sources) {
-      if (photos.some((p) => p.sourceId === s.id)) continue;
-      const fresh = makePhotos(s.id, photos.length + 1);
-      for (let done = 0; done <= fresh.length; done += 250) {
-        listeners.forEach((cb) => cb({ type: 'scanProgress', sourceId: s.id, done: Math.min(done, fresh.length), total: fresh.length }));
-        await sleep(30);
+      if (request.sourceIds && !request.sourceIds.includes(s.id)) continue;
+      if (cancelRequested) {
+        cancelled = true; // Stop also skips the folders not reached yet
+        break;
       }
-      photos = photos.concat(fresh);
-      added += fresh.length;
+      // Like the real backend: a folder whose last scan finished looks unchanged, so it's skipped.
+      if (scannedSources.has(s.id)) {
+        if (!request.force) unchangedSources++;
+        continue;
+      }
+      const fresh = unsaved.get(s.id) ?? makePhotos(s.id, photos.length + 1);
+      // Saved in batches, so the Pick screen fills in while the scan runs.
+      let savedHere = 0;
+      for (let done = 0; done < fresh.length && !cancelled; done += 120) {
+        await sleep(120);
+        const batch = fresh.slice(done, done + 120);
+        photos = photos.concat(batch);
+        added += batch.length;
+        savedHere += batch.length;
+        emit({ type: 'scanProgress', sourceId: s.id, done: done + batch.length, total: fresh.length });
+        emit({ type: 'scanSaved', sourceId: s.id, saved: added });
+        cancelled = cancelRequested;
+      }
+      if (savedHere < fresh.length) {
+        unsaved.set(s.id, fresh.slice(savedHere));
+        break;
+      }
+      cancelled = false; // stopped after the last batch: nothing was left out
+      unsaved.delete(s.id);
+      scannedSources.add(s.id);
     }
-    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [] };
+    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [], unchangedSources, cancelled };
+  },
+  async cancelScan() {
+    cancelRequested = true;
   },
 
   async queue(filter) {
@@ -314,7 +345,7 @@ export const mockApi: CullerApi = {
 
   previewUrl(id) {
     const hue = (id * 47) % 360;
-    const soft = (photos.find((p) => p.id === id)?.sharpness ?? 100) < SOFT_THRESHOLD;
+    const soft = mockSharpness(id) < 22; // blurry in the picture too, matching the mock blur analysis
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1000" viewBox="0 0 1500 1000">
       <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="hsl(${hue},55%,55%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},50%,25%)"/>

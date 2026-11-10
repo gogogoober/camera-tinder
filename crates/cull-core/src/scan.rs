@@ -1,18 +1,22 @@
 //! Index a `MediaSource`: the one moment the app reads the originals for culling.
 //!
 //! Each new file is read from the source **exactly once**, into memory. From those
-//! bytes we compute the fingerprint, EXIF, sharpness and the cached previews, so
-//! after a scan the whole culling session runs from the cache and the card sits idle.
+//! bytes we compute the fingerprint, EXIF and the cached previews, so after a scan the
+//! whole culling session runs from the cache and the card sits idle.
 //! (Export is the only other moment the originals are read.)
 //!
-//! Three passes so the database lock is never held during slow I/O:
-//! 1. cheap lookups of already-indexed files (path + size + mtime; no file reads),
-//! 2. one read per new/changed file (or older rows missing previews/sharpness),
-//! 3. one transaction to insert the results.
+//! Work is skipped at three levels, cheapest first:
+//! 1. **Folder:** if the folder lists the same number of files with the same total size as
+//!    after its last complete scan, nothing else happens (unless the scan is forced).
+//! 2. **File:** files already indexed (same path + size + mtime) are not read.
+//! 3. **Photo:** each new file is read and decoded once; every preview size comes from that.
+//!
+//! New photos are saved in batches as they are processed, so the UI can show them while the
+//! scan runs, and a stopped scan keeps everything finished so far (the next scan resumes).
 
 use std::io::{Cursor, Read};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -21,15 +25,21 @@ use rayon::prelude::*;
 use crate::error::{CoreError, Result};
 use crate::identity::fingerprint;
 use crate::metadata::{PhotoMeta, read_meta};
-use crate::preview::{self, PreviewCache};
-use crate::sharpness;
 use crate::model::{MediaKind, ScanReport};
 use crate::ports::{CoreEvent, EventSink, MediaEntry, MediaSource};
-use crate::store::{NewPhoto, Store};
+use crate::preview::PreviewCache;
+use crate::store::{FolderSignature, NewPhoto, Store};
 
 /// Kinds that can currently be culled. RAW joins once embedded-preview
 /// extraction lands (desktop only; iOS stays JPEG-only).
 pub const CULLABLE_KINDS: &[MediaKind] = &[MediaKind::Jpeg];
+
+/// Files read from the source at the same time. Bounds memory and keeps card I/O mostly sequential.
+const INGEST_THREADS: usize = 4;
+/// New photos saved per database transaction (and per "photos saved" event to the UI).
+const SAVE_BATCH: usize = 32;
+/// Progress events: one every this many photos.
+const PROGRESS_EVERY: u64 = 8;
 
 fn mtime_secs(t: Option<SystemTime>) -> i64 {
     t.and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0)
@@ -39,12 +49,8 @@ fn local_naive(t: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(t).naive_local()
 }
 
-/// Files read from the source at the same time. Bounds memory (a 45 MP JPEG is ~30 MB
-/// on disk and ~135 MB decoded) and keeps card I/O mostly sequential.
-const INGEST_THREADS: usize = 4;
-
 /// Read one file from the source, once, and derive everything from those bytes.
-fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta, Option<u8>)> {
+fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta)> {
     let mut bytes = Vec::with_capacity(size as usize);
     source.open(rel_path)?.read_to_end(&mut bytes)?; // the only source read
     if bytes.len() as u64 != size {
@@ -53,24 +59,46 @@ fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &Previe
     let mut cur = Cursor::new(&bytes[..]);
     let fp = fingerprint(&mut cur, size)?;
     let meta = read_meta(&mut cur);
-    // A file that can't be decoded is still indexed (it's still a photo on the card);
-    // it just has no sharpness or preview.
-    let sharp = match preview::decode(&bytes) {
-        Ok(img) => {
-            previews.store_from_image(&fp, &img)?;
-            Some(sharpness::score_image(&img))
-        }
-        Err(_) => None,
-    };
-    Ok((fp, meta, sharp))
+    // A file that can't be decoded is still indexed (it's still a photo on the card); it just has no preview.
+    previews.store_from_original(&fp, &bytes)?;
+    Ok((fp, meta))
 }
 
-pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, previews: &PreviewCache, sink: &dyn EventSink) -> Result<ScanReport> {
+/// How a scan treats folders whose contents look unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderCheck {
+    /// Skip the folder when its file count and total size match its last complete scan.
+    SkipUnchanged,
+    /// Look at every file anyway (already-indexed files are still not read).
+    Force,
+}
+
+pub fn scan_source(
+    store: &Mutex<Store>,
+    source: &dyn MediaSource,
+    previews: &PreviewCache,
+    check: FolderCheck,
+    cancel: &AtomicBool,
+    sink: &dyn EventSink,
+) -> Result<ScanReport> {
     let src = source.id().to_string();
     let mut report = ScanReport::default();
 
-    let candidates: Vec<(MediaEntry, MediaKind)> = source
-        .list()?
+    let listed = source.list()?;
+    let signature = FolderSignature { files: listed.len() as u64, bytes: listed.iter().map(|e| e.size).sum(), ..Default::default() };
+    if check == FolderCheck::SkipUnchanged {
+        if let Some(last) = store.lock().unwrap().scan_signature(&src)? {
+            if last.files == signature.files && last.bytes == signature.bytes {
+                report.unchanged_sources = 1;
+                report.found = last.photos;
+                report.skipped_unsupported = last.raw;
+                report.other_files = last.other;
+                return Ok(report);
+            }
+        }
+    }
+
+    let candidates: Vec<(MediaEntry, MediaKind)> = listed
         .into_iter()
         .filter_map(|e| match MediaKind::from_path(&e.rel_path) {
             Some(k) if CULLABLE_KINDS.contains(&k) => Some((e, k)),
@@ -87,11 +115,11 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, previews: &Pr
     let total = candidates.len() as u64;
     report.found = total;
 
-    // Pass 1: skip files we've already indexed and that haven't changed.
+    // Skip files we've already indexed and that haven't changed (no file reads).
     let mut misses = Vec::new();
-    // Already-indexed photos missing sharpness or cached previews (older versions) are re-read
-    // once now, so they never need the source during culling.
-    let mut backfill: Vec<(i64, String, u64, String)> = Vec::new();
+    // Already-indexed photos without cached previews (older versions, or after "Clear previews")
+    // are re-read once now, so they never need the source during culling.
+    let mut backfill: Vec<(String, u64, String)> = Vec::new();
     store.lock().unwrap().transaction(|s| {
         for (e, k) in candidates {
             let mt = mtime_secs(e.modified);
@@ -99,8 +127,8 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, previews: &Pr
                 Some(id) => {
                     s.touch_photo(id, &src, &e.rel_path)?;
                     let fp = s.photo(id)?.fingerprint;
-                    if s.needs_sharpness(id)? || !previews.has_master(&fp) {
-                        backfill.push((id, e.rel_path.clone(), e.size, fp));
+                    if !previews.has_master(&fp) {
+                        backfill.push((e.rel_path.clone(), e.size, fp));
                     }
                 }
                 None => misses.push((e, k, mt)),
@@ -110,63 +138,93 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, previews: &Pr
     })?;
 
     let done = AtomicU64::new(total - misses.len() as u64);
-    sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: done.load(Ordering::Relaxed), total });
+    let progress = |n: u64| sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: n, total });
+    progress(done.load(Ordering::Relaxed));
+    let tick = || {
+        let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if n % PROGRESS_EVERY == 0 || n == total {
+            progress(n);
+        }
+    };
 
-    // Pass 2: read new files (a few at a time), without holding the DB lock.
+    // Work actually finished, so a Stop that arrives after the last photo doesn't count as stopping.
+    let (read_new, read_backfill) = (AtomicU64::new(0), AtomicU64::new(0));
     let pool = rayon::ThreadPoolBuilder::new().num_threads(INGEST_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
-    let (analyzed, backfilled): (Vec<_>, Vec<(i64, u8)>) = pool.install(|| {
-        let analyzed = misses
-            .into_par_iter()
-            .map(|(e, k, mt)| {
-                let result = ingest(source, &e.rel_path, e.size, previews);
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if n % 25 == 0 || n == total {
-                    sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: n, total });
-                }
-                (e, k, mt, result)
-            })
-            .collect();
-        let backfilled = backfill
-            .into_par_iter()
-            .filter_map(|(id, rel, size, fp)| match ingest(source, &rel, size, previews) {
-                // Same photo as indexed: keep its score. A changed file is re-indexed on the next scan.
-                Ok((new_fp, _, Some(score))) if new_fp == fp => Some((id, score)),
-                _ => None,
-            })
-            .collect();
-        (analyzed, backfilled)
-    });
 
-    // Pass 3: persist.
-    let mut st = store.lock().unwrap();
-    st.transaction(|s| {
-        for (e, kind, mt, result) in analyzed {
-            match result {
-                Ok((fp, meta, sharp)) => {
-                    let captured_at = meta.captured_at.or_else(|| e.modified.map(local_naive));
-                    let (id, is_new) = s.upsert_photo(&NewPhoto {
-                        fingerprint: &fp,
-                        source_id: &src,
-                        rel_path: &e.rel_path,
-                        kind,
-                        size: e.size,
-                        captured_at,
-                        camera: meta.camera.as_deref(),
-                        sharpness: sharp,
-                    })?;
-                    s.record_file(&src, &e.rel_path, e.size, mt, id)?;
-                    if is_new {
-                        report.new += 1;
+    // New files: read a batch (a few at a time, without the DB lock), then save it.
+    for batch in misses.chunks(SAVE_BATCH) {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let analyzed: Vec<_> = pool.install(|| {
+            batch
+                .par_iter()
+                .filter_map(|(e, k, mt)| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return None; // photos already being read finish; the rest wait for the next scan
                     }
+                    let result = ingest(source, &e.rel_path, e.size, previews);
+                    read_new.fetch_add(1, Ordering::Relaxed);
+                    tick();
+                    Some((e, *k, *mt, result))
+                })
+                .collect()
+        });
+        let saved_before = report.new;
+        store.lock().unwrap().transaction(|s| {
+            for (e, kind, mt, result) in analyzed {
+                match result {
+                    Ok((fp, meta)) => {
+                        let captured_at = meta.captured_at.or_else(|| e.modified.map(local_naive));
+                        let (id, is_new) = s.upsert_photo(&NewPhoto {
+                            fingerprint: &fp,
+                            source_id: &src,
+                            rel_path: &e.rel_path,
+                            kind,
+                            size: e.size,
+                            captured_at,
+                            camera: meta.camera.as_deref(),
+                        })?;
+                        s.record_file(&src, &e.rel_path, e.size, mt, id)?;
+                        if is_new {
+                            report.new += 1;
+                        }
+                    }
+                    Err(err) => report.failed.push((e.rel_path.clone(), err.to_string())),
                 }
-                Err(err) => report.failed.push((e.rel_path, err.to_string())),
             }
+            Ok(())
+        })?;
+        if report.new > saved_before {
+            sink.emit(CoreEvent::ScanSaved { source_id: src.clone(), saved: report.new });
         }
-        for (id, score) in backfilled {
-            s.set_photo_sharpness(id, score)?;
-        }
-        Ok(())
-    })?;
-    st.mark_scanned(&src)?;
+    }
+
+    // Previews for already-indexed photos (nothing to save in the database).
+    if !cancel.load(Ordering::Relaxed) && !backfill.is_empty() {
+        pool.install(|| {
+            backfill.par_iter().for_each(|(rel, size, fp)| {
+                if cancel.load(Ordering::Relaxed) {
+                    return;
+                }
+                let mut bytes = Vec::with_capacity(*size as usize);
+                // Same photo as indexed only: a changed file is re-indexed on the next scan.
+                let ok = source.open(rel).and_then(|mut f| Ok(f.read_to_end(&mut bytes)?)).is_ok()
+                    && bytes.len() as u64 == *size
+                    && fingerprint(&mut Cursor::new(&bytes[..]), *size).is_ok_and(|f| &f == fp);
+                if ok {
+                    let _ = previews.store_from_original(fp, &bytes);
+                }
+                read_backfill.fetch_add(1, Ordering::Relaxed);
+            });
+        });
+    }
+
+    report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;
+    // Remember the folder only after a complete, clean scan, so anything missed is retried next time.
+    if !report.cancelled && report.failed.is_empty() {
+        let signature = FolderSignature { photos: report.found, raw: report.skipped_unsupported, other: report.other_files, ..signature };
+        store.lock().unwrap().mark_scanned(&src, &signature)?;
+    }
     Ok(report)
 }

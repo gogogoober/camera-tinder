@@ -16,7 +16,8 @@ export const tauriApi: CullerApi = {
   addFolder: (path) => invoke('add_folder', { path }),
   removeSource: (id) => invoke('remove_source', { id }),
   listSources: () => invoke('list_sources'),
-  scan: () => invoke('scan'),
+  scan: (request) => invoke('scan', { request: request ?? null }),
+  cancelScan: () => invoke('cancel_scan'),
 
   queue: (filter) => invoke('queue', { filter }),
   plan: (filter) => invoke('plan', { filter }),

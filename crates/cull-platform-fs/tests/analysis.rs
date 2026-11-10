@@ -29,7 +29,7 @@ fn analyze_store_issues_groups() {
 
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
-    svc.scan(&NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     // Analysis must work from the preview cache alone: "unplug the card".
     std::fs::rename(&card, tmp.path().join("unplugged")).unwrap();
 

@@ -24,7 +24,13 @@ CREATE TABLE IF NOT EXISTS sources (
     id           TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     added_at     TEXT NOT NULL,
-    last_scan    TEXT
+    last_scan    TEXT,
+    -- What the folder held after its last complete scan (see FolderSignature).
+    scan_files   INTEGER,
+    scan_bytes   INTEGER,
+    scan_photos  INTEGER,
+    scan_raw     INTEGER,
+    scan_other   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS photos (
@@ -38,6 +44,7 @@ CREATE TABLE IF NOT EXISTS photos (
     captured_at TEXT,
     camera      TEXT,
     last_seen   TEXT NOT NULL,
+    -- Unused: the old scan-time blur score. Kept so existing databases need no migration.
     sharpness   INTEGER
 );
 CREATE INDEX IF NOT EXISTS photos_source   ON photos(source_id);
@@ -99,7 +106,19 @@ pub struct NewPhoto<'a> {
     pub size: u64,
     pub captured_at: Option<NaiveDateTime>,
     pub camera: Option<&'a str>,
-    pub sharpness: Option<u8>,
+}
+
+/// A folder's contents as of its last complete scan. Same `files` and `bytes` → nothing to do.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FolderSignature {
+    /// Every file listed (photos, RAW, videos, anything).
+    pub files: u64,
+    /// Their total size.
+    pub bytes: u64,
+    /// The rest is the last scan's report, so a skipped folder still reports what it holds.
+    pub photos: u64,
+    pub raw: u64,
+    pub other: u64,
 }
 
 pub struct Store {
@@ -114,7 +133,7 @@ fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
 
-const PHOTO_COLS: &str = "p.id, p.fingerprint, p.source_id, p.rel_path, p.file_name, p.kind, p.size, p.captured_at, p.camera, d.decision, p.sharpness";
+const PHOTO_COLS: &str = "p.id, p.fingerprint, p.source_id, p.rel_path, p.file_name, p.kind, p.size, p.captured_at, p.camera, d.decision";
 
 fn row_to_photo(row: &Row) -> rusqlite::Result<Photo> {
     let kind: String = row.get(5)?;
@@ -131,7 +150,6 @@ fn row_to_photo(row: &Row) -> rusqlite::Result<Photo> {
         captured_at: captured.and_then(|s| NaiveDateTime::parse_from_str(&s, TIME_FMT).ok()),
         camera: row.get(8)?,
         decision: decision.as_deref().and_then(Decision::parse),
-        sharpness: row.get::<_, Option<i64>>(10)?.map(|v| v.clamp(0, 100) as u8),
     })
 }
 
@@ -159,10 +177,20 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
-        // Databases created before sharpness existed need the column added.
-        let has_sharpness = conn.prepare("PRAGMA table_info(photos)")?.query_map([], |r| r.get::<_, String>(1))?.any(|c| c.is_ok_and(|c| c == "sharpness"));
-        if !has_sharpness {
+        // Databases created before these columns existed need them added.
+        let columns = |table: &str| -> Result<Vec<String>> {
+            let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+            let names = stmt.query_map([], |r| r.get::<_, String>(1))?.collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(names)
+        };
+        if !columns("photos")?.iter().any(|c| c == "sharpness") {
             conn.execute_batch("ALTER TABLE photos ADD COLUMN sharpness INTEGER")?;
+        }
+        let source_cols = columns("sources")?;
+        for col in ["scan_files", "scan_bytes", "scan_photos", "scan_raw", "scan_other"] {
+            if !source_cols.iter().any(|c| c == col) {
+                conn.execute_batch(&format!("ALTER TABLE sources ADD COLUMN {col} INTEGER"))?;
+            }
         }
         Ok(Self { conn })
     }
@@ -190,8 +218,34 @@ impl Store {
         Ok(ids)
     }
 
-    pub fn mark_scanned(&self, source_id: &str) -> Result<()> {
-        self.conn.execute("UPDATE sources SET last_scan = ?2 WHERE id = ?1", params![source_id, now()])?;
+    /// Record a complete scan of `source_id` and what the folder held at the time.
+    pub fn mark_scanned(&self, source_id: &str, sig: &FolderSignature) -> Result<()> {
+        self.conn.execute(
+            "UPDATE sources SET last_scan = ?2, scan_files = ?3, scan_bytes = ?4, scan_photos = ?5, scan_raw = ?6, scan_other = ?7 WHERE id = ?1",
+            params![source_id, now(), sig.files as i64, sig.bytes as i64, sig.photos as i64, sig.raw as i64, sig.other as i64],
+        )?;
+        Ok(())
+    }
+
+    /// What `source_id` held after its last complete scan, if it has had one.
+    pub fn scan_signature(&self, source_id: &str) -> Result<Option<FolderSignature>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT scan_files, scan_bytes, scan_photos, scan_raw, scan_other FROM sources WHERE id = ?1 AND scan_files IS NOT NULL",
+                [source_id],
+                |r| {
+                    let n = |i: usize| r.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0) as u64);
+                    Ok(FolderSignature { files: n(0)?, bytes: n(1)?, photos: n(2)?, raw: n(3)?, other: n(4)? })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Make the next scan of every folder look at each file again (e.g. after the previews were cleared).
+    pub fn forget_scan_signatures(&self) -> Result<()> {
+        self.conn.execute("UPDATE sources SET scan_files = NULL", [])?;
         Ok(())
     }
 
@@ -222,12 +276,11 @@ impl Store {
             .optional()?;
         let file_name = p.rel_path.rsplit('/').next().unwrap_or(p.rel_path);
         let id: PhotoId = self.conn.query_row(
-            "INSERT INTO photos (fingerprint, source_id, rel_path, file_name, kind, size, captured_at, camera, last_seen, sharpness)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "INSERT INTO photos (fingerprint, source_id, rel_path, file_name, kind, size, captured_at, camera, last_seen)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(fingerprint) DO UPDATE SET
                 source_id = excluded.source_id, rel_path = excluded.rel_path,
-                file_name = excluded.file_name, last_seen = excluded.last_seen,
-                sharpness = COALESCE(excluded.sharpness, photos.sharpness)
+                file_name = excluded.file_name, last_seen = excluded.last_seen
              RETURNING id",
             params![
                 p.fingerprint,
@@ -238,8 +291,7 @@ impl Store {
                 p.size as i64,
                 p.captured_at.map(|t| t.format(TIME_FMT).to_string()),
                 p.camera,
-                now(),
-                p.sharpness.map(i64::from)
+                now()
             ],
             |r| r.get(0),
         )?;
@@ -393,15 +445,6 @@ impl Store {
         })
     }
 
-    pub fn set_photo_sharpness(&self, id: PhotoId, score: u8) -> Result<()> {
-        self.conn.execute("UPDATE photos SET sharpness = ?2 WHERE id = ?1", params![id, i64::from(score)])?;
-        Ok(())
-    }
-
-    pub fn needs_sharpness(&self, id: PhotoId) -> Result<bool> {
-        Ok(self.conn.query_row("SELECT sharpness IS NULL FROM photos WHERE id = ?1", [id], |r| r.get(0))?)
-    }
-
     // ---- analysis -----------------------------------------------------
 
     /// Store every result (or error) in `a`, replacing earlier rows for those kinds.
@@ -519,7 +562,6 @@ mod tests {
                 size: 10,
                 captured_at: when.map(|w| NaiveDateTime::parse_from_str(w, TIME_FMT).unwrap()),
                 camera: Some("NIKON Z 6"),
-                sharpness: None,
             })
             .unwrap()
             .0
@@ -595,10 +637,5 @@ mod tests {
         assert_eq!(s.tags().unwrap().len(), 1);
         s.remove_tag(t.id).unwrap();
         assert!(s.tags().unwrap().is_empty());
-
-        s.set_photo_sharpness(a, 12).unwrap();
-        assert_eq!(s.photo(a).unwrap().sharpness, Some(12));
-        assert!(!s.needs_sharpness(a).unwrap());
-        assert!(s.needs_sharpness(b).unwrap());
     }
 }

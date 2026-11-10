@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, type Photo } from '../api';
-  import { formatTime, isSoft } from '../format';
+  import { formatTime } from '../format';
   import { dragSelect } from '../select';
   import Badge from './Badge.svelte';
 
@@ -53,10 +53,9 @@
         class="th"
         class:cur={it.i === idx}
         class:past={it.i < idx}
-        class:soft={isSoft(it.p)}
         class:selected={!!selection && it.i >= selection.from && it.i <= selection.to}
         data-i={it.i}
-        title="{formatTime(it.p.capturedAt)}{isSoft(it.p) ? ' · soft' : ''}"
+        title={formatTime(it.p.capturedAt)}
       >
         <img src={api.previewUrl(it.p.id, 256)} alt="" draggable="false" loading="lazy" />
         {#if burstSizeAt.get(it.i)}<i class="bn">×{burstSizeAt.get(it.i)}</i>{/if}
@@ -73,7 +72,6 @@
   .th { position: relative; flex: none; width: var(--ts); height: var(--ts); border-radius: 8px; cursor: pointer; transition: transform 0.12s; }
   .th:hover { transform: translateY(-2px); }
   .th img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
-  .th.soft img { filter: blur(0.9px); }
   .th.cur { width: calc(var(--ts) + 12px); height: calc(var(--ts) + 12px); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
   .th:not(.cur):not(.past) { opacity: 0.8; }
   .th.selected { outline: 2px solid var(--accent); outline-offset: 2px; }

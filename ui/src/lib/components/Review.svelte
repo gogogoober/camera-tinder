@@ -3,7 +3,7 @@
   import { api, type Decision, type Photo, type StatusFilter } from '../api';
   import { DECISIONS, ORDER } from '../decisions';
   import { shortRange } from '../days';
-  import { formatCount, formatDay, isSoft } from '../format';
+  import { formatCount, formatDay } from '../format';
   import { dragSelect } from '../select';
   import { viewport } from '../viewport.svelte';
   import Badge from './Badge.svelte';
@@ -21,7 +21,7 @@
     onExport: () => void;
   } = $props();
 
-  type Filter = 'all' | 'favorite' | 'like' | 'dislike' | 'hate' | 'todo' | 'soft';
+  type Filter = 'all' | 'favorite' | 'like' | 'dislike' | 'hate' | 'todo';
   const FILTERS: [Filter, string][] = [
     ['all', 'All'],
     ['favorite', '★ Favorite'],
@@ -29,7 +29,6 @@
     ['dislike', '✕ Nope'],
     ['hate', '⊘ Hate'],
     ['todo', 'Not yet'],
-    ['soft', '◐ Soft'],
   ];
   const PAGE = 300;
 
@@ -53,11 +52,10 @@
   }
 
   const counts = $derived.by(() => {
-    const c: Record<Filter, number> = { all: photos.length, favorite: 0, like: 0, dislike: 0, hate: 0, todo: 0, soft: 0 };
+    const c: Record<Filter, number> = { all: photos.length, favorite: 0, like: 0, dislike: 0, hate: 0, todo: 0 };
     for (const p of photos) {
       if (p.decision) c[p.decision]++;
       else c.todo++;
-      if (isSoft(p)) c.soft++;
     }
     return c;
   });
@@ -79,7 +77,6 @@
       if (day && !(p.capturedAt ?? 'unknown').startsWith(day)) return false;
       if (filter === 'all') return true;
       if (filter === 'todo') return !p.decision;
-      if (filter === 'soft') return isSoft(p);
       return p.decision === filter;
     }),
   );

@@ -47,9 +47,16 @@ async fn list_sources(state: State<'_, AppState>) -> CmdResult<Vec<SourceInfo>> 
 }
 
 #[tauri::command]
-async fn scan(app: AppHandle, state: State<'_, AppState>) -> CmdResult<ScanReport> {
+async fn scan(app: AppHandle, state: State<'_, AppState>, request: Option<ScanRequest>) -> CmdResult<ScanReport> {
     let svc = state.0.clone();
-    blocking(move || svc.scan(&TauriSink(app))).await
+    let request = request.unwrap_or_default();
+    blocking(move || svc.scan(&request, &TauriSink(app))).await
+}
+
+/// Stop the running scan after the photos being read right now; finished photos are kept.
+#[tauri::command]
+fn cancel_scan(state: State<'_, AppState>) {
+    state.0.cancel_scan();
 }
 
 #[tauri::command]
@@ -256,6 +263,9 @@ pub fn run() {
             // Apple Vision engines for faces, eyes, aesthetics, similarity… (Rust ones elsewhere).
             #[cfg(target_os = "macos")]
             svc.set_analyzers(cull_platform_apple::vision::analyzers());
+            // ImageIO previews: decodes straight at preview size (several times faster than the portable path).
+            #[cfg(target_os = "macos")]
+            svc.set_preview_maker(Arc::new(cull_platform_apple::imageio::ImageIoPreviewMaker));
             app.manage(AppState(svc));
             Ok(())
         })
@@ -269,6 +279,7 @@ pub fn run() {
             remove_source,
             list_sources,
             scan,
+            cancel_scan,
             queue,
             plan,
             days,

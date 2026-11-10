@@ -34,22 +34,25 @@ thin, swappable layers.**
 ```
 crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   model.rs                 Photo, Decision, Filter, Stats, DaySummary, reports (serde camelCase)
-  ports.rs                 Traits: MediaSource, ExportTarget, EventSink (the platform seams)
+  ports.rs                 Traits: MediaSource, ExportTarget, EventSink, PreviewMaker (the platform seams)
   identity.rs              Content fingerprint: xxh3-128 of size + first 64KiB + last 16KiB
   metadata.rs              EXIF (kamadak-exif): capture time, camera
   store.rs                 SQLite (rusqlite bundled): photos, file_index, decisions, decision_log
-  scan.rs                  3-pass scan: cached lookups → parallel (rayon) analyze (+ sharpness) → one txn insert
-  sharpness.rs             Blur score 0–100 (variance of Laplacian on a 640px grey copy; < 22 = "soft")
+  scan.rs                  Skip unchanged folders → skip indexed files → read each new file once, 4 at a time,
+                           saving every 32 (ScanSaved event) → cancellable (cancel_scan)
   moments.rs               Group by capture-time gap: moments (15 min) and bursts (3 s)
   suggest.rs               Tag suggestions without AI: runs of shooting days, calendar events
-  preview.rs               Decode → EXIF-rotate → downscale → JPEG; disk cache; capped concurrency
+  preview.rs               Preview cache (2048 master + 256 thumb at scan; other sizes from the master);
+                           RustPreviewMaker = portable decode → rotate → downscale → JPEG
   analysis/                Static photo analysis: one module per feature (trait + result + engines), the
                            Analyzers registry, issues, near-duplicate grouping, ranking. See docs/photo-analysis.md
   api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags, analyze…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
 crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
                            vision.rs = Apple Vision analysis engines (faces, eyes input, aesthetics, feature print…);
-                           examples/analyze.rs = run/time/calibrate all analyzers on a folder
+                           imageio.rs = ImageIoPreviewMaker (the macOS PreviewMaker; see Gotchas);
+                           examples/analyze.rs = run/time/calibrate all analyzers on a folder;
+                           examples/scan_timing.rs, preview_bench.rs = time a fresh scan / one preview
                            src-tauri/Info.plist holds the calendar usage strings (embedded in dev builds too)
   tests/end_to_end.rs      Full flow on real JPEGs (scan, cull, undo, export, card→laptop move)
   examples/make_samples.rs Generates synthetic JPEGs (dates via mtime)
@@ -92,6 +95,7 @@ npm run check                       # svelte-check / TypeScript
 npm run build                       # frontend build → dist/
 cargo run -p cull-platform-fs --example make_samples -- <dir> [count]
 cargo run -p cull-platform-apple --example analyze -- test-photos [--rust-only|--calibrate|--pairs|--json]
+cargo run --release -p cull-platform-apple --example scan_timing -- <dir> [--rust]   # ms/photo for a fresh scan
 ```
 
 Test photos: `test-photos/` (gitignored) — 117 real Lorem Picsum images, no EXIF, mtimes spread
@@ -102,12 +106,22 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
   (month calendar, card stack, round buttons). All logic is shared.
-- Sharpness is computed at scan time (full decode, parallel) and backfilled for older rows on rescan.
-  Plain skies/fog can score low; the UI only *suggests* rejects.
+- The scan computes no quality scores. The old scan-time sharpness score, soft-photo triage and burst compare
+  were removed (blur etc. live in photo analysis, to be rebuilt as triage). `photos.sharpness` stays in the
+  schema, unused, so old databases need no migration.
+- Scan skipping: a folder whose file count + total size match its last *complete* scan (`sources.scan_*`) is not
+  looked into; a stopped or failed scan doesn't record that, so the next scan resumes. Adding a folder scans only
+  that folder; ↻ next to a folder forces it (`ScanRequest.force`, still no re-reads of indexed files). Clearing
+  previews forgets the signatures so the next scan rebuilds them. A same-size in-place edit is not noticed (use ↻).
+- Previews on macOS go through ImageIO (`set_preview_maker` in src-tauri). ImageIO only decodes at reduced size
+  when the target is ≤ 1/8 of the original; the 2048 master of a 24 MP photo still costs a near-full decode
+  (~100 ms CPU), the 256 thumb is cheap. Measured on 24 MP JPEGs, 4 threads: dev build 207 → 40 ms/photo,
+  release 65 → 42 ms/photo. ImageIO quality 0.7 ≈ the portable encoder's 85 in size.
+- `[profile.dev.package."*"]` does not cover workspace crates: generic `image` code instantiated in `cull-core`
+  (the portable preview path, analysis) runs unoptimized under `npm start` (~3× slower than release).
 - Calendar: `EventKitCalendar` implements `CalendarSource`. The app never prompts at launch; Pick shows a
   "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
   de-duplicated per title+day. Mock backend fakes the connect flow.
-- A burst "keep one" is two backend calls (Nope the rest, Keep one), so it takes two undos.
 
 - `use cull_core::*` brings in `cull_core::Result<T>`; use `std::result::Result<T, E>` explicitly
   where two type params are needed (see `CmdResult` in src-tauri).
@@ -125,8 +139,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [x] **M1:** add folders → scan → swipe JPEGs (4 decisions, undo, skip, day + status filters)
       → export keepers to a folder. Decisions persist across restarts.
 - [x] **UI second pass (from the design studies):** GitHub-style heatmap with tag lanes + suggestions,
-      time-budget picker, moments timeline, filmstrip, soft-photo triage, burst compare, drag-select,
-      Review screen. Verified in the mock browser (`npm run dev:mock`), not yet in the real Tauri app.
+      time-budget picker, moments timeline, filmstrip, drag-select, Review screen (soft-photo triage and burst
+      compare were removed later; triage will be rebuilt on photo analysis). Verified in the mock browser (`npm run dev:mock`), not yet in the real Tauri app.
 - [x] Calendar tag suggestions (EventKit) — built, needs a manual check in the real app.
 - [ ] GPS place names, night/colour image hints as tag sources.
 - [ ] Hours-of-day timeline option; learned pace; persist dismissed suggestions.
@@ -134,6 +148,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [ ] **M2:** smart session planner (bursts/sessions/trips, time-budget batching, learned pace).
 - [x] Photo analysis back end (docs/photo-analysis.md): 16 analyzers (Rust + Apple Vision), stored per photo,
       issues ("eyes closed", "blurry"…), near-duplicate groups best-first. Commands + TS API + mock wired.
+- [x] Faster scan: ImageIO previews, no scan-time scoring, skip unchanged folders, batched saves with a live
+      Pick screen, Stop button. Verified with tests + mock browser, not yet in the real Tauri app.
 - [ ] Photo analysis UX: when to run `analyzePhotos`, problem tabs, duplicate rows. Tune eyes/noise on real photos.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
@@ -142,9 +158,10 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 ## Source safety (originals are sacred)
 
 - The card/folder is read at exactly two moments: **scan** and **export**. Nothing ever writes to it.
-  - Scan reads each new file **once** into memory (`scan::ingest`, 4 at a time) and derives fingerprint, EXIF,
-    sharpness and the cached previews (2048px master + 256px thumb) from those bytes. Rescans of unchanged
-    files read nothing (path+size+mtime lookup). Older rows without previews are backfilled with one read.
+  - Scan reads each new file **once** into memory (`scan::ingest`, 4 at a time) and derives fingerprint, EXIF
+    and the cached previews (2048px master + 256px thumb, one decode) from those bytes. Rescans of unchanged
+    folders only list them; unchanged files read nothing (path+size+mtime lookup). Older rows without previews
+    are backfilled with one read.
   - Culling never opens the source: every preview size is derived from the cached master
     (`PreviewCache::get`), so the card can be unplugged while you cull.
   - Export reads each keeper once.

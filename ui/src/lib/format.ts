@@ -1,5 +1,3 @@
-import { SOFT_THRESHOLD, type Photo } from './api/types';
-
 export function formatDay(day: string | null): string {
   if (!day) return 'Unknown date';
   const d = new Date(`${day}T00:00:00`);
@@ -22,9 +20,6 @@ export function previewEdge(): number {
   return Math.min(2560, Math.max(1024, Math.round(px / 256) * 256));
 }
 
-
-/** Likely blurry: scored below the soft threshold. Unscored photos are never flagged. */
-export const isSoft = (p: Photo) => p.sharpness != null && p.sharpness < SOFT_THRESHOLD;
 
 export function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;

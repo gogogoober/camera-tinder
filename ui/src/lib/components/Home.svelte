@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
@@ -29,6 +29,7 @@
   let report = $state<ScanReport | null>(null);
   let scanning = $state(false);
   let progress = $state({ done: 0, total: 0 });
+  let stopping = $state(false);
   let error = $state<string | null>(null);
 
   const BUDGETS = [5, 15, 30, 60];
@@ -43,6 +44,8 @@
     refresh().then(() => applyBudget());
     const off = api.onEvent((e) => {
       if (e.type === 'scanProgress') progress = { done: e.done, total: e.total };
+      // New photos were saved mid-scan: show them (days, counts, calendar suggestions) right away.
+      if (e.type === 'scanSaved') liveRefresh();
     });
     // Cards come and go without telling us: re-check what's connected every few seconds.
     loadCache();
@@ -137,31 +140,61 @@
     await refresh();
   }
 
+  // At most one refresh in flight, and at most one every LIVE_REFRESH_MS, while a scan saves photos.
+  const LIVE_REFRESH_MS = 1200;
+  let liveTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastLive = 0;
+  function liveRefresh() {
+    if (liveTimer) return;
+    liveTimer = setTimeout(async () => {
+      lastLive = Date.now();
+      try {
+        await refresh();
+        if (!range) applyBudget();
+      } finally {
+        liveTimer = null;
+      }
+    }, Math.max(0, lastLive + LIVE_REFRESH_MS - Date.now()));
+  }
+
   async function addFolder() {
     error = null;
     try {
       const path = await api.pickSourceFolder();
       if (!path) return;
-      await api.addFolder(path);
-      await scan();
+      const added = await api.addFolder(path);
+      sources = await api.listSources();
+      await scan({ sourceIds: [added.id] }); // only the new folder; the others haven't changed
     } catch (e) {
       error = String(e);
     }
   }
 
-  async function scan() {
+  /** Every folder, skipping ones whose files haven't changed since their last complete scan. */
+  const rescanAll = () => scan();
+  /** One folder, looking at every file even if it seems unchanged. */
+  const rescanFolder = (id: string) => scan({ sourceIds: [id], force: true });
+
+  async function scan(request?: ScanRequest) {
     error = null;
     scanning = true;
+    stopping = false;
     progress = { done: 0, total: 0 };
     try {
-      report = await api.scan();
+      report = await api.scan(request);
     } catch (e) {
       error = String(e);
     } finally {
       scanning = false;
+      stopping = false;
       await refresh();
       applyBudget();
     }
+  }
+
+  async function stopScan() {
+    stopping = true;
+    await api.cancelScan();
   }
 
   async function remove(id: string) {
@@ -186,17 +219,19 @@
           <strong>{s.name}</strong>
           <div class="muted small">{formatCount(s.photoCount)} photos</div>
         </div>
-        <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
+        <span class="src-btns">
+          <button class="ghost" title="Rescan this folder, checking every file" onclick={() => rescanFolder(s.id)} disabled={scanning} aria-label="Rescan {s.name}">↻</button>
+          <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
+        </span>
       </div>
     {/each}
     <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
-    {#if sources.length}<button class="ghost left" onclick={scan} disabled={scanning}>Rescan</button>{/if}
+    {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (unchanged folders are skipped)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
 
     <div class="eyebrow">Auto-tags</div>
     <ul class="how muted small">
       <li><span>⋯</span> Runs of shooting days</li>
       <li><span>▦</span> Calendar (when connected)</li>
-      <li><span>◐</span> Soft photos flagged at scan</li>
     </ul>
 
     {#if stats}
@@ -248,14 +283,17 @@
       {#if compact}
         <div class="mbtns">
           <button onclick={addFolder} disabled={scanning}>+ Add</button>
-          {#if sources.length}<button class="ghost" onclick={scan} disabled={scanning}>Rescan</button>{/if}
+          {#if sources.length}<button class="ghost" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
         </div>
       {/if}
     </header>
 
     {#if scanning}
       <div class="scan">
-        <div class="muted">Scanning… {formatCount(progress.done)} / {formatCount(progress.total)}</div>
+        <div class="scan-h">
+          <span class="muted grow">{stopping ? 'Stopping after the photos being read…' : `Scanning… ${formatCount(progress.done)} / ${formatCount(progress.total)}`}</span>
+          <button class="small" onclick={stopScan} disabled={stopping}>Stop</button>
+        </div>
         <div class="progress"><div style:width="{progress.total ? (100 * progress.done) / progress.total : 0}%"></div></div>
       </div>
     {/if}
@@ -338,6 +376,11 @@
       {/if}
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
+    {#if report && !scanning && report.cancelled}
+      <p class="muted small">Scan stopped. {formatCount(report.new)} new photos kept; Rescan to pick up the rest.</p>
+    {:else if report && !scanning && !report.new && report.unchangedSources && !report.failed.length}
+      <p class="muted small">No new photos: {report.unchangedSources === 1 ? 'the folder hasn’t' : `${report.unchangedSources} folders haven’t`} changed since the last scan. Use ↻ next to a folder to check it file by file.</p>
+    {/if}
     {#if report && !scanning && (report.skippedUnsupported || report.otherFiles)}
       <p class="leftbehind small">
         <b>Not handled by Camera Tinder, and not exported:</b>
@@ -390,6 +433,9 @@
   .group { display: grid; gap: 8px; }
   .empty { max-width: 56ch; }
   .scan { display: grid; gap: 8px; }
+  .scan-h { display: flex; align-items: center; gap: 10px; }
+  .scan-h .grow { flex: 1; min-width: 0; }
+  .src-btns { display: flex; gap: 2px; flex: none; }
   code { font-size: 13px; }
   .legend { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; background: color-mix(in srgb, var(--accent) var(--c, 0%), var(--cell0)); }

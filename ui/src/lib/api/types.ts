@@ -15,12 +15,7 @@ export interface Photo {
   capturedAt: string | null; // "YYYY-MM-DDTHH:MM:SS"
   camera: string | null;
   decision: Decision | null;
-  /** 0–100, higher is sharper; null until analysed. */
-  sharpness: number | null;
 }
-
-/** Photos scoring below this are suggested as likely rejects. Mirrors SOFT_THRESHOLD in cull-core. */
-export const SOFT_THRESHOLD = 22;
 
 export interface SourceInfo {
   id: string;
@@ -55,6 +50,17 @@ export interface ScanReport {
   /** Videos and other files the app ignores; not exported. */
   otherFiles: number;
   failed: [string, string][];
+  /** Folders skipped because they hold the same files as at their last complete scan. */
+  unchangedSources: number;
+  /** Stopped before the end; everything finished is kept. */
+  cancelled: boolean;
+}
+
+/** Which folders to scan. Defaults: every folder, skipping ones that look unchanged. */
+export interface ScanRequest {
+  sourceIds?: string[] | null;
+  /** Check every file even if the folder looks unchanged (already-indexed files are still not read). */
+  force?: boolean;
 }
 
 export interface ExportOptions {
@@ -71,6 +77,8 @@ export interface ExportReport {
 
 export type CoreEvent =
   | { type: 'scanProgress'; sourceId: string; done: number; total: number }
+  /** A batch of new photos was saved mid-scan: refresh what's shown. */
+  | { type: 'scanSaved'; sourceId: string; saved: number }
   | { type: 'exportProgress'; done: number; total: number }
   | { type: 'analysisProgress'; done: number; total: number };
 

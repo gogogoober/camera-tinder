@@ -14,7 +14,6 @@ pub mod moments;
 pub mod ports;
 pub mod preview;
 pub mod scan;
-pub mod sharpness;
 pub mod store;
 pub mod suggest;
 

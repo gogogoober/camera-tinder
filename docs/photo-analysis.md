@@ -40,11 +40,10 @@ cached master preview (2048 px JPEG, upright)        ← analysis never reads th
 | `crates/cull-core/src/analysis/mod.rs` | `AnalysisKind`, `PhotoAnalysis`, `Analyzers` registry + `run`, `AnalyzeRequest`/`AnalyzeReport` |
 | `crates/cull-core/src/analysis/image.rs` | `AnalysisImage`, the single input type (lazy decodes) |
 | `crates/cull-core/src/analysis/geometry.rs` | `NormRect`, `NormPoint` (0–1, **top-left origin**) |
-| `crates/cull-core/src/analysis/<feature>.rs` | One file per feature (table below) |
+| `crates/cull-core/src/analysis/<feature>.rs` | One file per feature (table below); `blur.rs` also holds the shared Laplacian helpers (`laplacian_variance`, `squash`) |
 | `crates/cull-core/src/analysis/issues.rs` | Results → `Issue` list (the problem-tab layer) |
 | `crates/cull-core/src/analysis/grouping.rs` | Near-duplicate grouping (union-find) |
 | `crates/cull-core/src/analysis/ranking.rs` | `quality_score` for best-of-group |
-| `crates/cull-core/src/sharpness.rs` | Shared Laplacian helpers (`laplacian_variance`, `squash`); scan-time score |
 | `crates/cull-core/src/api.rs` | `CullerService` analysis methods (section "photo analysis") |
 | `crates/cull-core/src/store.rs` | `analysis` table, `save_analysis`, `load_analyses`, `analysis_index` |
 | `crates/cull-platform-apple/src/vision.rs` | Apple Vision engines + `install()` / `analyzers()` |

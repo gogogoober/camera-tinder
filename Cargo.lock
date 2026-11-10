@@ -546,6 +546,7 @@ dependencies = [
  "block2",
  "chrono",
  "cull-core",
+ "cull-platform-fs",
  "image",
  "objc2",
  "objc2-core-foundation",
@@ -553,6 +554,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-vision",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::geometry::NormRect;
 use super::image::AnalysisImage;
 use crate::error::Result;
-use crate::sharpness::{laplacian_variance, squash};
+use super::blur::{laplacian_variance, squash};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

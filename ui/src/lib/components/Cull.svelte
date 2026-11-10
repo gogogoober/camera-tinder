@@ -3,7 +3,7 @@
   import { api, type Decision, type Group, type Photo } from '../api';
   import { DECISIONS, ORDER, decisionForKey } from '../decisions';
   import { minutesFor, shortRange } from '../days';
-  import { formatCount, formatDay, formatTime, isSoft, previewEdge } from '../format';
+  import { formatCount, formatDay, formatTime, previewEdge } from '../format';
   import { viewport } from '../viewport.svelte';
   import Filmstrip from './Filmstrip.svelte';
   import MomentsBar from './MomentsBar.svelte';
@@ -33,9 +33,6 @@
   let bursts = $state<Group[]>([]);
   let idx = $state(0);
   let selection = $state<Sel | null>(null);
-  let mode = $state<'cull' | 'triage' | 'compare'>('cull');
-  let triageSet = $state(new Set<number>());
-  let softLater = $state(false);
   let timeline = $state<'moments' | 'strip'>('moments');
   let ghosts = $state<Ghost[]>([]);
   let flash = $state<{ key: number; d: Decision } | null>(null);
@@ -64,7 +61,6 @@
   const decided = $derived(photos.filter((p) => p.decision).length);
   const left = $derived(photos.length - decided);
   const momentNo = $derived(Math.min((momentOf[idx] ?? moments.length) + 1, moments.length));
-  const softTodo = $derived(photos.map((p, i) => i).filter((i) => !photos[i].decision && isSoft(photos[i])));
   const leftInMoment = $derived.by(() => {
     const g = moments[momentOf[idx]];
     return g ? photos.slice(g.start, g.end).filter((p) => !p.decision).length : 0;
@@ -171,7 +167,6 @@
       first = Math.min(first, i);
     }
     selection = null;
-    mode = 'cull';
     if (first < photos.length) idx = first;
   }
 
@@ -182,56 +177,11 @@
 
   function jump(i: number) {
     selection = null;
-    if (mode === 'compare') mode = 'cull';
     idx = Math.max(0, Math.min(photos.length, i));
-  }
-
-  function openTriage() {
-    triageSet = new Set(softTodo);
-    selection = null;
-    mode = 'triage';
-  }
-  function confirmTriage() {
-    const list = [...triageSet];
-    mode = 'cull';
-    apply(list, 'dislike');
-    if (current?.decision) idx = nextUndecided(idx);
-  }
-  function toggleTriage(i: number) {
-    const next = new Set(triageSet);
-    if (next.has(i)) next.delete(i);
-    else next.add(i);
-    triageSet = next;
-  }
-
-  /** Burst frames and the sharpest one (marked as the suggested keeper). */
-  const frames = $derived.by(() => {
-    if (!burst) return [] as number[];
-    return Array.from({ length: burst.end - burst.start }, (_, k) => burst.start + k);
-  });
-  const sharpest = $derived(frames.reduce((best, i) => ((photos[i].sharpness ?? -1) > (photos[best]?.sharpness ?? -1) ? i : best), frames[0] ?? 0));
-
-  function keepFrame(keep: number) {
-    const others = frames.filter((i) => i !== keep);
-    apply(others, 'dislike');
-    apply([keep], 'like');
-    mode = 'cull';
-    idx = nextUndecided(burst ? burst.end : idx + 1);
   }
 
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement || e.metaKey && e.key !== 'z') return;
-    if (mode === 'triage') {
-      if (e.key === 'Enter') { e.preventDefault(); confirmTriage(); }
-      else if (e.key === 'Escape') mode = 'cull';
-      return;
-    }
-    if (mode === 'compare') {
-      const n = parseInt(e.key, 10);
-      if (n >= 1 && n <= frames.length) { e.preventDefault(); keepFrame(frames[n - 1]); }
-      else if (e.key === 'Escape' || e.key === 'b') mode = 'cull';
-      return;
-    }
     const d = decisionForKey(e.key);
     if (d) {
       e.preventDefault();
@@ -243,8 +193,6 @@
     } else if (e.key === ' ') {
       e.preventDefault();
       skip();
-    } else if (e.key === 'b' && burst) {
-      mode = 'compare';
     } else if (e.key === 'Escape') {
       if (selection) selection = null;
       else onExit();
@@ -299,55 +247,8 @@
 
 <AppShell top={topBar} right={compact ? undefined : inspector} bottom={bottomBar} overflow="visible">
     <div class="stage-col">
-      {#if softTodo.length && !softLater && mode === 'cull'}
-        <div class="banner">
-          <b>◐ {softTodo.length} photos look soft</b>
-          <span class="muted grow">Low sharpness score. Clear them as one batch first?</span>
-          <button class="primary small" onclick={openTriage}>Review {softTodo.length}</button>
-          <button class="small" onclick={() => (softLater = true)}>Later</button>
-        </div>
-      {/if}
-
       <div class="stage">
-        {#if mode === 'triage'}
-          <div class="pane">
-            <div class="pane-h">
-              <b>Soft photos</b>
-              <span class="muted grow">{triageSet.size} of {softTodo.length} will be marked Nope. {compact ? 'Tap' : 'Click'} to keep one out.</span>
-              <button class="primary small" onclick={confirmTriage}>Nope {triageSet.size}</button>
-              <button class="small" onclick={() => (mode = 'cull')}>Cancel</button>
-            </div>
-            <div class="tgrid">
-              {#each softTodo as i (i)}
-                <button class="ti" class:off={!triageSet.has(i)} onclick={() => toggleTriage(i)} aria-pressed={triageSet.has(i)}>
-                  <img src={api.previewUrl(photos[i].id, 256)} alt="" draggable="false" />
-                  <span class="score">{photos[i].sharpness}</span>
-                  {#if triageSet.has(i)}<em class="x">✕</em>{/if}
-                </button>
-              {/each}
-            </div>
-          </div>
-        {:else if mode === 'compare' && burst}
-          <div class="pane">
-            <div class="pane-h">
-              <b>Burst of {frames.length}</b>
-              <span class="muted grow">{compact ? 'Tap the keeper.' : `Press 1–${frames.length} or click the keeper.`} The rest become Nope.</span>
-              <button class="small" onclick={() => (mode = 'cull')}>{compact ? 'Close' : 'Esc'}</button>
-            </div>
-            <div class="cmp" style:--n={compact ? 2 : Math.min(frames.length, 5)}>
-              {#each frames as i, k (i)}
-                <button class="cf" class:best={i === sharpest} onclick={() => keepFrame(i)}>
-                  <img src={api.previewUrl(photos[i].id, 1024)} alt="Frame {k + 1}" draggable="false" />
-                  {#if !compact}<span class="num mono">{k + 1}</span>{/if}
-                  <span class="lbl mono">
-                    {i === sharpest ? '✓ sharpest · ' : ''}sharpness {photos[i].sharpness ?? '–'}
-                    <i class="meter"><b class:bad={isSoft(photos[i])} style:width="{photos[i].sharpness ?? 0}%"></b></i>
-                  </span>
-                </button>
-              {/each}
-            </div>
-          </div>
-        {:else if current}
+        {#if current}
           {#each ghosts as g (g.key)}
             <div
               class="ghost-card fly-{g.decision}"
@@ -365,7 +266,6 @@
           <div class="chips-over mono">
             <span>{formatTime(current.capturedAt)}</span>
             {#if burst}<span>burst {idx - burst.start + 1}/{burst.end - burst.start}</span>{/if}
-            {#if isSoft(current)}<span class="warn">◐ soft · {current.sharpness}</span>{/if}
             {#if current.decision}<span style:color="var(--{current.decision})">{DECISIONS[current.decision].icon} {DECISIONS[current.decision].label}</span>{/if}
           </div>
           {#if compact && !coached}
@@ -384,10 +284,9 @@
         {#if error}<p class="error toast">{error}</p>{/if}
       </div>
 
-      {#if !compact && mode === 'cull' && current}
+      {#if !compact && current}
         <div class="under muted">
           <span>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} · {formatTime(current.capturedAt)}</span>
-          {#if burst}<span><kbd>B</kbd> compare burst of {burst.end - burst.start}</span>{/if}
           <span><kbd>⇧</kbd> + arrow: {leftInMoment} left in this moment</span>
         </div>
       {/if}
@@ -401,10 +300,6 @@
           <div class="kv first"><span>File</span><b>{current.fileName}</b></div>
           <div class="kv"><span>Taken</span><b>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} {formatTime(current.capturedAt)}</b></div>
           {#if current.camera}<div class="kv"><span>Camera</span><b>{current.camera}</b></div>{/if}
-          <div class="kv col">
-            <span class="between">Sharpness <b style:color={isSoft(current) ? 'var(--soft)' : 'var(--text)'}>{current.sharpness ?? '–'}{current.sharpness != null ? (isSoft(current) ? ' · soft' : ' · sharp') : ''}</b></span>
-            <i class="meter"><b class:bad={isSoft(current)} style:width="{current.sharpness ?? 0}%"></b></i>
-          </div>
           <div class="kv"><span>Burst</span><b>{burst ? `${idx - burst.start + 1} of ${burst.end - burst.start}` : '—'}</b></div>
         {/if}
         <div class="eyebrow days-h">Days</div>
@@ -455,11 +350,10 @@
         {/each}
         <button class="round sm" onclick={skip} disabled={!current} aria-label="Skip">»</button>
       </div>
-      {#if burst && mode === 'cull'}<button class="small burst" onclick={() => (mode = 'compare')}>Compare burst ×{burst.end - burst.start}</button>{/if}
     {:else}
       <div class="keys muted">
         <span><kbd>←</kbd> ✕ nope</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
-        <span><kbd>space</kbd> skip</span><span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span><kbd>B</kbd> compare burst</span><span>drag to select</span>
+        <span><kbd>space</kbd> skip</span><span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
       </div>
     {/if}
   </div>
@@ -467,10 +361,7 @@
 
 <style>
   .top { display: flex; align-items: center; gap: 12px; padding: 0 4px; flex-wrap: nowrap; }
-  .title { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; flex: 1; }
-  .title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .top > button { flex: none; }
-  .title span { font-size: 12px; }
   .prog { width: 160px; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; flex: none; }
   .prog > div { height: 100%; background: var(--accent); }
   .grow { flex: 1; min-width: 0; }
@@ -482,13 +373,10 @@
   .stage-col { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 8px; min-height: 0; min-width: 0; }
   .stage { position: relative; flex: 1; min-height: 0; }
   .under { display: flex; justify-content: center; gap: 14px; font-size: 12px; min-height: 18px; }
-  .banner { display: flex; align-items: center; gap: 10px; padding: 7px 10px 7px 12px; border-radius: 10px; background: color-mix(in srgb, var(--soft) 9%, var(--panel)); border: 1px solid color-mix(in srgb, var(--soft) 35%, var(--border)); font-size: 12.5px; }
-  .banner b { color: var(--soft); }
   button.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
 
   .chips-over { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 6px; font-size: 11px; color: #fff; z-index: 3; pointer-events: none; flex-wrap: wrap; }
   .chips-over span { background: #000a; border-radius: 5px; padding: 2px 7px; }
-  .chips-over .warn { background: var(--soft); }
 
   .ghost-card { position: absolute; inset: 0; pointer-events: none; animation: 0.32s ease-in forwards; z-index: 2; }
   .fly-like { animation-name: fly-right; }
@@ -509,30 +397,10 @@
   .done .big { font-size: 40px; font-weight: 700; color: var(--text); }
   .toast { position: absolute; bottom: 8px; left: 50%; translate: -50% 0; background: var(--panel); padding: 6px 12px; border-radius: 8px; z-index: 7; }
 
-  .pane { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; }
-  .pane-h { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .tgrid { flex: 1; min-height: 0; overflow: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; align-content: start; padding: 4px; }
-  .ti { position: relative; aspect-ratio: 3 / 2; padding: 0; border: 0; border-radius: 8px; overflow: visible; }
-  .ti img { width: 100%; height: 100%; object-fit: cover; border-radius: 8px; filter: blur(1.4px); }
-  .ti.off { opacity: 0.4; }
-  .ti .score { position: absolute; left: 4px; bottom: 4px; font: 500 10px ui-monospace, 'SF Mono', monospace; background: #000b; color: #fff; border-radius: 4px; padding: 1px 5px; }
-  .ti .x { position: absolute; right: -4px; bottom: -4px; width: 18px; height: 18px; border-radius: 50%; background: var(--dislike); color: #fff; font: 700 10px/18px system-ui; text-align: center; font-style: normal; border: 2px solid var(--bg); }
-  .cmp { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(var(--n), minmax(0, 1fr)); gap: 10px; align-items: center; align-content: center; }
-  .cf { position: relative; padding: 0; border: 0; border-radius: 10px; overflow: hidden; aspect-ratio: 3 / 2; box-shadow: 0 0 0 1px var(--border); }
-  .cf img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  .cf.best { box-shadow: 0 0 0 2px var(--like); }
-  .cf .num { position: absolute; left: 6px; top: 6px; background: #000b; color: #fff; border-radius: 5px; padding: 0 6px; font-size: 11px; }
-  .cf .lbl { position: absolute; inset: auto 0 0 0; padding: 14px 8px 6px; background: linear-gradient(transparent, #000c); color: #fff; font-size: 11px; display: grid; gap: 3px; text-align: left; }
-  .meter { display: block; height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
-  .meter b { display: block; height: 100%; background: var(--like); }
-  .meter b.bad { background: var(--soft); }
-
   .insp { display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
   .kv { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 7px; }
   .kv.first { border: 0; padding: 0; }
-  .kv.col { flex-direction: column; gap: 5px; }
   .kv b { color: var(--text); font-weight: 500; font-family: ui-monospace, 'SF Mono', monospace; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .between { display: flex; justify-content: space-between; }
   .days-h { margin-top: 10px; }
   .days { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
   .dr { display: grid; grid-template-columns: 56px 1fr 48px; gap: 8px; align-items: center; padding: 4px 6px; border: 0; border-radius: 6px; background: transparent; font: 500 11.5px ui-monospace, 'SF Mono', monospace; text-align: left; }
@@ -550,12 +418,8 @@
   :global(.shell.compact) .top { padding: max(8px, env(safe-area-inset-top, 0px)) 14px 8px; }
   :global(.shell.compact) .stage-col { padding: 8px 20px 0; }
   :global(.shell.compact) .bottom { padding: 8px 16px calc(10px + env(safe-area-inset-bottom, 0px)); }
-  :global(.shell.compact) .banner .grow, :global(.shell.compact) .pane-h .grow { display: none; }
-  :global(.shell.compact) .banner { padding: 6px 8px 6px 10px; }
-  :global(.shell.compact) .banner b { flex: 1; }
   .actions { display: flex; gap: 8px; justify-content: center; align-items: center; }
   .round { width: 52px; height: 52px; border-radius: 50%; padding: 0; font-size: 22px; color: var(--c, var(--muted)); border: 1.5px solid var(--c, var(--border)); background: color-mix(in srgb, var(--c, var(--muted)) 10%, var(--panel)); }
   .round.sm { width: 38px; height: 38px; font-size: 16px; --c: var(--muted); }
   .round.like { --c: var(--like); } .round.dislike { --c: var(--dislike); } .round.favorite { --c: var(--favorite); } .round.hate { --c: var(--hate); }
-  .burst { align-self: center; }
 </style>

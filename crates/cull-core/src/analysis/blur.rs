@@ -1,6 +1,6 @@
 //! Blur: is the photo soft, and if so is it camera/subject motion or missed focus?
 //!
-//! Rust implementation: Laplacian variance (as at scan time) over the whole frame **and**
+//! Rust implementation: Laplacian variance over the whole frame **and**
 //! per tile. `peak` averages the sharpest 10% of tiles, so a sharp subject against a creamy
 //! background is not called soft. When the frame is soft, the gradient structure tensor tells
 //! motion blur (edges survive in one direction) from defocus (soft in every direction).
@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::image::AnalysisImage;
 use crate::error::Result;
-use crate::sharpness::{laplacian_variance, squash};
+use image::GrayImage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,13 +24,46 @@ pub enum BlurVerdict {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Blur {
-    /// Whole-frame sharpness 0–100 (same scale as `Photo::sharpness`).
+    /// Whole-frame sharpness 0–100.
     pub score: u8,
     /// Sharpness of the sharpest 10% of the frame, 0–100.
     pub peak: u8,
     /// 0 = edges in every direction, 1 = all edges aligned (typical of motion blur).
     pub directionality: f32,
     pub verdict: BlurVerdict,
+}
+
+/// Variance at which `squash` reads 50.
+const HALF_SCORE_VARIANCE: f64 = 150.0;
+
+/// Variance of the 4-neighbour Laplacian inside `x..x+w`, `y..y+h` of `grey`. Sharp images
+/// have strong edges (high variance); blurry ones are smooth (low variance).
+/// Shared with `accidental` and `subject_focus`.
+pub fn laplacian_variance(grey: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> f64 {
+    let (iw, ih) = (grey.width() as usize, grey.height() as usize);
+    let (x0, y0) = ((x as usize).max(1), (y as usize).max(1));
+    let (x1, y1) = (((x + w) as usize).min(iw - 1), ((y + h) as usize).min(ih - 1));
+    if x1 <= x0 || y1 <= y0 {
+        return 0.0;
+    }
+    let px = grey.as_raw();
+    let (mut sum, mut sum_sq, mut n) = (0.0f64, 0.0f64, 0.0f64);
+    for yy in y0..y1 {
+        for xx in x0..x1 {
+            let c = px[yy * iw + xx] as f64;
+            let lap = px[(yy - 1) * iw + xx] as f64 + px[(yy + 1) * iw + xx] as f64 + px[yy * iw + xx - 1] as f64 + px[yy * iw + xx + 1] as f64 - 4.0 * c;
+            sum += lap;
+            sum_sq += lap * lap;
+            n += 1.0;
+        }
+    }
+    let mean = sum / n;
+    (sum_sq / n - mean * mean).max(0.0)
+}
+
+/// Map a Laplacian variance to the 0–100 sharpness scale.
+pub fn squash(variance: f64) -> u8 {
+    (100.0 * variance / (variance + HALF_SCORE_VARIANCE)).round().clamp(0.0, 100.0) as u8
 }
 
 pub trait BlurAnalyzer: Send + Sync {

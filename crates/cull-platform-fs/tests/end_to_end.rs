@@ -26,7 +26,7 @@ fn scan_cull_export_rescan() {
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
 
-    let report = svc.scan(&NullSink).unwrap();
+    let report = svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!(report.found, 3);
     assert_eq!(report.new, 3);
     assert_eq!(report.skipped_unsupported, 1);
@@ -34,7 +34,6 @@ fn scan_cull_export_rescan() {
 
     let queue = svc.queue(&Filter::default()).unwrap();
     assert_eq!(queue.len(), 3);
-    assert!(queue.iter().all(|p| p.sharpness.is_some()), "sharpness is scored during scan");
 
     // Preview: downscaled, valid JPEG, cached.
     let bytes = svc.preview(queue[0].id, 1024).unwrap();
@@ -73,7 +72,7 @@ fn scan_cull_export_rescan() {
     let svc_id = card.canonicalize().unwrap().to_string_lossy().into_owned();
     svc.remove_source(&svc_id);
     svc.add_source(Arc::new(FsSource::new(&laptop).unwrap())).unwrap();
-    let r = svc.scan(&NullSink).unwrap();
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!((r.found, r.new), (3, 0));
     let s = svc.stats().unwrap();
     assert_eq!((s.total, s.undecided, s.favorite), (3, 0, 1));

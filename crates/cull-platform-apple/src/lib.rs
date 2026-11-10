@@ -1,4 +1,4 @@
-//! Apple platform adapters: Calendar via EventKit, photo analysis via Vision (macOS).
+//! Apple platform adapters: Calendar via EventKit, photo analysis via Vision, previews via ImageIO (macOS).
 //!
 //! iOS reuses the same EventKit API; only the entitlement/Info.plist differs.
 
@@ -18,3 +18,7 @@ pub enum Access {
 /// Photo analysis engines backed by Apple Vision (see `docs/photo-analysis.md`).
 #[cfg(target_os = "macos")]
 pub mod vision;
+
+/// Fast preview maker (decode at reduced size + rotate + scale in one ImageIO call).
+#[cfg(target_os = "macos")]
+pub mod imageio;

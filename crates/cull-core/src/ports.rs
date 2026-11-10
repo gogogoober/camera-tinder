@@ -54,10 +54,25 @@ pub trait ExportTarget: Send + Sync {
 pub enum CoreEvent {
     #[serde(rename_all = "camelCase")]
     ScanProgress { source_id: String, done: u64, total: u64 },
+    /// A batch of new photos was saved: the library (days, counts, suggestions) can be refreshed mid-scan.
+    #[serde(rename_all = "camelCase")]
+    ScanSaved { source_id: String, saved: u64 },
     #[serde(rename_all = "camelCase")]
     ExportProgress { done: u64, total: u64 },
     #[serde(rename_all = "camelCase")]
     AnalysisProgress { done: u64, total: u64 },
+}
+
+/// Makes the cached previews: JPEG in, smaller upright JPEGs out. Platforms with a fast native
+/// codec provide their own (macOS/iOS: ImageIO, which decodes straight at a reduced size);
+/// `preview::RustPreviewMaker` works everywhere.
+pub trait PreviewMaker: Send + Sync {
+    /// Stable id of this implementation, for logs and timings.
+    fn implementation(&self) -> &'static str;
+    /// One JPEG per entry of `edges` (largest first), in that order. Each has its longest edge at
+    /// most that size (never upscaled) with the EXIF orientation applied. The input is decoded
+    /// once; each smaller size is made from the one before it.
+    fn render(&self, jpeg: &[u8], edges: &[u32]) -> Result<Vec<Vec<u8>>>;
 }
 
 /// Progress reporting, delivered to whatever UI exists.

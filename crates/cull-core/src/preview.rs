@@ -1,15 +1,16 @@
 //! Display-sized previews, generated once and cached on disk.
 //!
 //! Full-size camera JPEGs (24–45 MP) are too slow to push to a UI directly.
-//! We decode once, apply EXIF orientation, downscale, and cache a small JPEG
-//! keyed by content fingerprint + size. Concurrent decodes are capped to keep
+//! At scan time the original is decoded once (by the platform's `PreviewMaker`) into a
+//! 2048 px master and a 256 px thumbnail, cached by content fingerprint + size. Other sizes
+//! are made from the master on demand. Concurrent on-demand renders are capped to keep
 //! memory bounded (this matters a lot on iOS).
 
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, ImageDecoder, ImageReader};
@@ -17,7 +18,7 @@ use image::{DynamicImage, ImageDecoder, ImageReader};
 
 use crate::error::{CoreError, Result};
 use crate::model::{MediaKind, Photo};
-use crate::ports::MediaSource;
+use crate::ports::{MediaSource, PreviewMaker};
 
 pub const MIN_EDGE: u32 = 64;
 pub const MAX_EDGE: u32 = 4096;
@@ -32,6 +33,7 @@ pub struct PreviewCache {
     slots: Mutex<usize>,
     freed: Condvar,
     tmp_counter: AtomicU64,
+    maker: RwLock<Arc<dyn PreviewMaker>>,
 }
 
 struct Permit<'a>(&'a PreviewCache);
@@ -46,7 +48,7 @@ impl PreviewCache {
     pub fn new(dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&dir)?;
         let slots = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8);
-        Ok(Self { dir, slots: Mutex::new(slots), freed: Condvar::new(), tmp_counter: AtomicU64::new(0) })
+        Ok(Self { dir, slots: Mutex::new(slots), freed: Condvar::new(), tmp_counter: AtomicU64::new(0), maker: RwLock::new(Arc::new(RustPreviewMaker)) })
     }
 
     fn acquire(&self) -> Permit<'_> {
@@ -76,12 +78,27 @@ impl PreviewCache {
         self.path(fingerprint, MASTER_EDGE).is_file()
     }
 
-    /// Scan time: store the master and thumbnail from an image already decoded from the original.
-    pub fn store_from_image(&self, fingerprint: &str, img: &DynamicImage) -> Result<()> {
-        let master = shrink(img, MASTER_EDGE);
-        self.write_cached(&self.path(fingerprint, MASTER_EDGE), &encode(&master)?)?;
-        self.write_cached(&self.path(fingerprint, THUMB_EDGE), &encode(&shrink(&master, THUMB_EDGE))?)?;
-        Ok(())
+    /// Use a platform's (faster) preview maker instead of the pure-Rust one.
+    pub fn set_maker(&self, maker: Arc<dyn PreviewMaker>) {
+        *self.maker.write().unwrap() = maker;
+    }
+
+    pub fn maker_name(&self) -> &'static str {
+        self.maker.read().unwrap().implementation()
+    }
+
+    fn maker(&self) -> Arc<dyn PreviewMaker> {
+        self.maker.read().unwrap().clone()
+    }
+
+    /// Scan time: store the master and thumbnail made from the original's bytes (one decode).
+    /// Returns false, storing nothing, when the original can't be decoded.
+    pub fn store_from_original(&self, fingerprint: &str, original: &[u8]) -> Result<bool> {
+        let Ok(rendered) = self.maker().render(original, &[MASTER_EDGE, THUMB_EDGE]) else { return Ok(false) };
+        let [master, thumb] = <[Vec<u8>; 2]>::try_from(rendered).map_err(|_| CoreError::Other("preview maker returned the wrong number of sizes".into()))?;
+        self.write_cached(&self.path(fingerprint, MASTER_EDGE), &master)?;
+        self.write_cached(&self.path(fingerprint, THUMB_EDGE), &thumb)?;
+        Ok(true)
     }
 
     /// JPEG bytes of `photo` with its longest edge at most `max_edge` (capped at the master size).
@@ -109,13 +126,15 @@ impl PreviewCache {
             };
             let mut bytes = Vec::with_capacity(photo.size as usize);
             source.open(&photo.rel_path)?.read_to_end(&mut bytes)?;
-            self.store_from_image(&photo.fingerprint, &decode(&bytes)?)?;
+            if !self.store_from_original(&photo.fingerprint, &bytes)? {
+                return Err(CoreError::Other(format!("can't decode {}", photo.file_name)));
+            }
         }
         let master = fs::read(self.path(&photo.fingerprint, MASTER_EDGE))?;
         if edge == MASTER_EDGE {
             return Ok(master);
         }
-        let bytes = encode(&shrink(&decode(&master)?, edge))?;
+        let bytes = self.maker().render(&master, &[edge])?.pop().ok_or_else(|| CoreError::Other("preview maker returned nothing".into()))?;
         self.write_cached(&path, &bytes)?;
         Ok(bytes)
     }
@@ -182,6 +201,26 @@ impl PreviewCache {
             }
         }
         Ok(freed)
+    }
+}
+
+/// The portable preview maker: full decode with the `image` crate, then downscale and encode.
+/// Slower than a native codec (it can't decode at a reduced size), but runs everywhere.
+pub struct RustPreviewMaker;
+
+impl PreviewMaker for RustPreviewMaker {
+    fn implementation(&self) -> &'static str {
+        "rust.image.v1"
+    }
+
+    fn render(&self, jpeg: &[u8], edges: &[u32]) -> Result<Vec<Vec<u8>>> {
+        let mut img = decode(jpeg)?;
+        let mut out = Vec::with_capacity(edges.len());
+        for &edge in edges {
+            img = shrink(&img, edge);
+            out.push(encode(&img)?);
+        }
+        Ok(out)
     }
 }
 
