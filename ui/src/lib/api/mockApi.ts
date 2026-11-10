@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
 import { SOFT_THRESHOLD } from './types';
 
 /**
@@ -15,6 +15,8 @@ let tags: Tag[] = [
   { id: 1, name: 'Lisbon', startDay: '2026-06-12', endDay: '2026-06-19', source: 'place' },
 ];
 let tagId = 2;
+let calendar: CalendarStatus = 'notDetermined';
+let cacheBytes = 0;
 const undoStack: [number, Decision | null][][] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -170,7 +172,7 @@ export const mockApi: CullerApi = {
       photos = photos.concat(fresh);
       added += fresh.length;
     }
-    return { found: active().length, new: added, skippedUnsupported: 3, failed: [] };
+    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [] };
   },
 
   async queue(filter) {
@@ -233,7 +235,30 @@ export const mockApi: CullerApi = {
       { name: 'Cabin weekend', startDay: '2026-10-17', endDay: '2026-10-18', source: 'calendar', reason: 'All-day calendar event', photoCount: 0 },
       { name: 'Nov 1 – Nov 8', startDay: '2026-11-01', endDay: '2026-11-08', source: 'gap', reason: 'Shot 8 days in a row', photoCount: 0 },
     ];
-    return all.filter((s) => !tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay));
+    return all
+      .filter((s) => calendar === 'connected' || s.source !== 'calendar')
+      .filter((s) => !tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay));
+  },
+
+  async calendarStatus() {
+    return calendar;
+  },
+  async connectCalendar() {
+    await sleep(400);
+    calendar = 'connected';
+    return calendar;
+  },
+
+  async previewCacheStatus() {
+    cacheBytes ||= active().length * 520_000;
+    // Mock: a source counts as connected while it's in the session (remove it with ✕ to "unplug").
+    return { files: active().length * 2, bytes: cacheBytes, connectedSources: sources.map((s) => s.name) };
+  },
+  async clearPreviews() {
+    if (sources.length) throw new Error(`disconnect these first: ${sources.map((s) => s.name).join(', ')}`);
+    const freed = cacheBytes;
+    cacheBytes = 0;
+    return freed;
   },
 
   async exportKeepers(dest, options) {

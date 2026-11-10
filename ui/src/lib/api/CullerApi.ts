@@ -1,4 +1,5 @@
 import type {
+  CalendarStatus,
   CoreEvent,
   DaySummary,
   Decision,
@@ -7,6 +8,7 @@ import type {
   Filter,
   Photo,
   Plan,
+  PreviewCacheStatus,
   ScanReport,
   SourceInfo,
   Stats,
@@ -48,6 +50,15 @@ export interface CullerApi {
   removeTag(id: number): Promise<void>;
   /** Guesses from calendar events and runs of shooting days. */
   suggestTags(): Promise<TagSuggestion[]>;
+  /** Whether calendar events can feed tag suggestions. */
+  calendarStatus(): Promise<CalendarStatus>;
+  /** Asks the OS for calendar access (may show a system prompt) and returns the new status. */
+  connectCalendar(): Promise<CalendarStatus>;
+
+  /** Disk used by cached previews, and which sources are still connected. */
+  previewCacheStatus(): Promise<PreviewCacheStatus>;
+  /** Deletes all cached previews; rejected while any source is connected. Returns bytes freed. */
+  clearPreviews(): Promise<number>;
 
   exportKeepers(dest: string, options: ExportOptions): Promise<ExportReport>;
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cull-core", "crates/cull-platform-fs", "src-tauri"]
+members = ["crates/cull-core", "crates/cull-platform-fs", "crates/cull-platform-apple", "src-tauri"]
 
 [workspace.package]
 edition = "2024"

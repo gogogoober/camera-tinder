@@ -1,11 +1,12 @@
 //! Desktop platform: plain-filesystem `MediaSource` and copy-to-folder export.
 
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use cull_core::{CoreError, CoreEvent, EventSink, ExportItem, ExportReport, ExportTarget, MediaEntry, MediaSource, ReadSeek, Result};
+use cull_core::{CoreError, CoreEvent, EventSink, ExportItem, ExportReport, ExportTarget, MediaEntry, MediaSource, Photo, ReadSeek, Result};
 use walkdir::WalkDir;
+use xxhash_rust::xxh3::Xxh3;
 
 /// A folder on disk (or a mounted SD card), scanned recursively.
 pub struct FsSource {
@@ -25,6 +26,11 @@ impl FsSource {
         Ok(Self { root, id, name })
     }
 
+    /// The canonical folder this source reads from.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn resolve(&self, rel_path: &str) -> Result<PathBuf> {
         let rel = Path::new(rel_path);
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -32,6 +38,33 @@ impl FsSource {
         }
         Ok(self.root.join(rel))
     }
+}
+
+/// Whether a source with this id (an `FsSource` id is its canonical folder path) can be
+/// reached right now: the SD card is mounted, the drive is plugged in, the folder exists.
+pub fn is_reachable(source_id: &str) -> bool {
+    fs::metadata(source_id).is_ok_and(|m| m.is_dir())
+}
+
+/// Whether this source is reachable *and* lives on a volume other than the Mac's own
+/// drive: an SD card, USB/Thunderbolt drive, disk image or network share.
+///
+/// "Own drive" = the filesystem device of `/`, the macOS Data volume, and the home folder
+/// (on APFS these can differ). Anything else counts as external — when unsure we say
+/// external, which errs towards keeping the "Clear previews" button locked.
+pub fn is_external_and_connected(source_id: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::metadata(source_id) else { return false };
+    if !meta.is_dir() {
+        return false;
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let internal: Vec<u64> = [Some(PathBuf::from("/")), Some(PathBuf::from("/System/Volumes/Data")), home]
+        .into_iter()
+        .flatten()
+        .filter_map(|p| fs::metadata(p).ok().map(|m| m.dev()))
+        .collect();
+    !internal.contains(&meta.dev())
 }
 
 fn is_hidden(name: &std::ffi::OsStr) -> bool {
@@ -64,37 +97,175 @@ impl MediaSource for FsSource {
     }
 
     fn open(&self, rel_path: &str) -> Result<Box<dyn ReadSeek>> {
-        Ok(Box::new(File::open(self.resolve(rel_path)?)?))
+        // Read-only, always. This is the only way the app touches a source file.
+        let file = OpenOptions::new().read(true).open(self.resolve(rel_path)?)?;
+        Ok(Box::new(file))
     }
 }
 
-/// v1 export: copy keepers into a folder. Never moves or deletes originals.
-/// Re-running is safe: files already copied (same name and size) are skipped;
-/// different files with clashing names get a `-1`, `-2`… suffix.
+/// v1 export: copy keepers into a folder. Never moves, renames or deletes originals.
+///
+/// Safety rules (each one has a test in `tests/source_safety.rs`):
+/// - Refuses a destination inside any protected folder (the sources being culled),
+///   so nothing is ever written onto the card / source tree.
+/// - Never overwrites an existing file: data goes to a uniquely named temp file
+///   (`create_new`) and is only linked into place if the final name is still free.
+/// - Verifies every copy before it counts: a full-content hash of the bytes read from the
+///   source must match the file on disk, and its fingerprint must match the photo that was
+///   culled. Otherwise the copy is removed and reported as failed.
+/// - Re-running is safe: a file that already holds the same photo is skipped; a
+///   different file with the same name gets a `-1`, `-2`… suffix.
 pub struct CopyToDir {
     dest: PathBuf,
+    protected: Vec<PathBuf>,
 }
 
 impl CopyToDir {
     pub fn new(dest: impl Into<PathBuf>) -> Self {
-        Self { dest: dest.into() }
+        Self { dest: dest.into(), protected: Vec::new() }
     }
 
-    fn target_for(&self, file_name: &str, size: u64) -> io::Result<Option<PathBuf>> {
-        let path = Path::new(file_name);
+    /// Folders that must never receive files (typically every source root).
+    pub fn protecting<I, P>(mut self, roots: I) -> Self
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        self.protected.extend(roots.into_iter().map(|p| p.as_ref().to_path_buf()));
+        self
+    }
+
+    /// Resolve `p` as far as it exists (it may not exist yet), so symlinks and `..`
+    /// can't hide that the destination is really inside a protected folder.
+    fn resolve_existing_prefix(p: &Path) -> io::Result<PathBuf> {
+        let abs = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir()?.join(p) };
+        let mut rest = Vec::new();
+        let mut cur = abs.as_path();
+        loop {
+            match fs::canonicalize(cur) {
+                Ok(c) => {
+                    let mut out = c;
+                    for part in rest.iter().rev() {
+                        out.push(part);
+                    }
+                    return Ok(out);
+                }
+                Err(_) => {
+                    let (Some(parent), Some(name)) = (cur.parent(), cur.file_name()) else { return Ok(abs) };
+                    rest.push(name.to_os_string());
+                    cur = parent;
+                }
+            }
+        }
+    }
+
+    fn check_destination(&self) -> Result<PathBuf> {
+        if self.dest.components().any(|c| matches!(c, Component::ParentDir)) {
+            return Err(CoreError::Other(format!("export folder must not contain '..': {}", self.dest.display())));
+        }
+        let dest = Self::resolve_existing_prefix(&self.dest)?;
+        for root in &self.protected {
+            let root = fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            if dest.starts_with(&root) {
+                return Err(CoreError::Other(format!(
+                    "refusing to export into {}: it is inside a photo source ({}). Pick a folder outside your cards/source folders.",
+                    dest.display(),
+                    root.display()
+                )));
+            }
+        }
+        Ok(dest)
+    }
+
+    /// Where `photo` should go, or `None` if a file there already holds this photo.
+    fn target_for(dest: &Path, photo: &Photo) -> Result<Option<PathBuf>> {
+        let path = Path::new(&photo.file_name);
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let ext = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        for n in 0.. {
-            let candidate = if n == 0 { self.dest.join(file_name) } else { self.dest.join(format!("{stem}-{n}{ext}")) };
-            match fs::metadata(&candidate) {
+        for n in 0..10_000 {
+            let candidate = if n == 0 { dest.join(&photo.file_name) } else { dest.join(format!("{stem}-{n}{ext}")) };
+            match fs::symlink_metadata(&candidate) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Some(candidate)),
-                Err(e) => return Err(e),
-                Ok(m) if m.len() == size => return Ok(None), // already exported
+                Err(e) => return Err(e.into()),
+                Ok(m) if m.is_file() && m.len() == photo.size && fingerprint_file(&candidate, m.len())? == photo.fingerprint => {
+                    return Ok(None); // already exported
+                }
                 Ok(_) => continue,
             }
         }
-        unreachable!()
+        Err(CoreError::Other(format!("too many files named like {}", photo.file_name)))
     }
+
+    fn copy_one(dest: &Path, item: &ExportItem<'_>, n: usize) -> Result<bool> {
+        let p = item.photo;
+        let Some(target) = Self::target_for(dest, p)? else { return Ok(false) };
+
+        // Unique temp name, created exclusively: never truncates anything that exists.
+        let tmp = dest.join(format!(".{}.{}-{n}.partial", p.file_name, std::process::id()));
+        let mut out = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let copied = (|| -> Result<()> {
+            let mut src = HashingReader { inner: item.source.open(&p.rel_path)?, hash: Xxh3::new() }; // read-only
+            let written = io::copy(&mut src, &mut out)?;
+            out.sync_all()?;
+            drop(out);
+            // Full-content check: what landed on disk is bit-for-bit what we read from the card.
+            let mut written_hash = Xxh3::new();
+            io::copy(&mut File::open(&tmp)?, &mut HashWriter(&mut written_hash))?;
+            if written_hash.digest128() != src.hash.digest128() {
+                return Err(CoreError::Other("copy is corrupt (bytes on disk differ from the original); not exported".into()));
+            }
+            if written != p.size {
+                return Err(CoreError::Other(format!("source changed since scan: {} bytes, expected {}", written, p.size)));
+            }
+            if fingerprint_file(&tmp, written)? != p.fingerprint {
+                return Err(CoreError::Other("copy does not match the photo you culled (file changed since scan?)".into()));
+            }
+            // Link into place: fails if `target` appeared meanwhile, so nothing is overwritten.
+            match fs::hard_link(&tmp, &target) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(e.into()),
+                // Filesystems without hard links (exFAT/FAT drives): check-then-rename.
+                Err(_) => {
+                    if fs::symlink_metadata(&target).is_ok() {
+                        return Err(CoreError::Other(format!("{} appeared during export", target.display())));
+                    }
+                    fs::rename(&tmp, &target)?;
+                    Ok(())
+                }
+            }
+        })();
+        // Only ever removes our own temp file.
+        let _ = fs::remove_file(&tmp);
+        copied.map(|()| true)
+    }
+}
+
+struct HashingReader<R> {
+    inner: R,
+    hash: Xxh3,
+}
+impl<R: io::Read> io::Read for HashingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.hash.update(&buf[..n]);
+        Ok(n)
+    }
+}
+
+/// An in-memory hash sink (not a file).
+struct HashWriter<'a>(&'a mut Xxh3);
+impl io::Write for HashWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn fingerprint_file(path: &Path, size: u64) -> Result<String> {
+    cull_core::identity::fingerprint(&mut File::open(path)?, size)
 }
 
 impl ExportTarget for CopyToDir {
@@ -103,25 +274,15 @@ impl ExportTarget for CopyToDir {
     }
 
     fn export(&self, items: &[ExportItem<'_>], sink: &dyn EventSink) -> Result<ExportReport> {
-        fs::create_dir_all(&self.dest)?;
-        let mut report = ExportReport { destination: self.dest.to_string_lossy().into_owned(), ..Default::default() };
+        let dest = self.check_destination()?;
+        fs::create_dir_all(&dest)?;
+        let mut report = ExportReport { destination: dest.to_string_lossy().into_owned(), ..Default::default() };
         let total = items.len() as u64;
         for (i, item) in items.iter().enumerate() {
-            let p = item.photo;
-            let result: Result<bool> = (|| {
-                let Some(target) = self.target_for(&p.file_name, p.size)? else { return Ok(false) };
-                let mut src = item.source.open(&p.rel_path)?;
-                let tmp = target.with_file_name(format!(".{}.partial", p.file_name));
-                let mut out = File::create(&tmp)?;
-                io::copy(&mut src, &mut out)?;
-                out.sync_all()?;
-                fs::rename(&tmp, &target)?;
-                Ok(true)
-            })();
-            match result {
+            match Self::copy_one(&dest, item, i) {
                 Ok(true) => report.copied += 1,
                 Ok(false) => report.already_there += 1,
-                Err(e) => report.failed.push((p.rel_path.clone(), e.to_string())),
+                Err(e) => report.failed.push((item.photo.rel_path.clone(), e.to_string())),
             }
             sink.emit(CoreEvent::ExportProgress { done: i as u64 + 1, total });
         }

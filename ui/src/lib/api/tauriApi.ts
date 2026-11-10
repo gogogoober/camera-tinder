@@ -31,6 +31,10 @@ export const tauriApi: CullerApi = {
   addTag: (name, startDay, endDay, source = 'manual') => invoke('add_tag', { name, startDay, endDay, source }),
   removeTag: (id) => invoke('remove_tag', { id }),
   suggestTags: () => invoke('suggest_tags'),
+  calendarStatus: () => invoke('calendar_status'),
+  connectCalendar: () => invoke('connect_calendar'),
+  previewCacheStatus: () => invoke('preview_cache_status'),
+  clearPreviews: () => invoke('clear_previews'),
 
   exportKeepers: (dest, options) => invoke('export_keepers', { dest, options }),
 

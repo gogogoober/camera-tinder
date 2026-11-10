@@ -162,6 +162,20 @@ impl Store {
         Ok(())
     }
 
+    /// Every source ever added: (id, display name).
+    pub fn all_sources(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare("SELECT id, display_name FROM sources ORDER BY display_name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Every source ever added (ids are platform-defined, e.g. canonical folder paths).
+    pub fn all_source_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
+        let ids = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
     pub fn mark_scanned(&self, source_id: &str) -> Result<()> {
         self.conn.execute("UPDATE sources SET last_scan = ?2 WHERE id = ?1", params![source_id, now()])?;
         Ok(())

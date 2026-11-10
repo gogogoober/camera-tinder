@@ -1,11 +1,16 @@
-//! Index a `MediaSource`: list files, fingerprint them, read EXIF.
+//! Index a `MediaSource`: the one moment the app reads the originals for culling.
+//!
+//! Each new file is read from the source **exactly once**, into memory. From those
+//! bytes we compute the fingerprint, EXIF, sharpness and the cached previews, so
+//! after a scan the whole culling session runs from the cache and the card sits idle.
+//! (Export is the only other moment the originals are read.)
 //!
 //! Three passes so the database lock is never held during slow I/O:
-//! 1. cheap lookups of already-indexed files (path + size + mtime),
-//! 2. parallel fingerprint + EXIF read of new/changed files,
+//! 1. cheap lookups of already-indexed files (path + size + mtime; no file reads),
+//! 2. one read per new/changed file (or older rows missing previews/sharpness),
 //! 3. one transaction to insert the results.
 
-use std::io::BufReader;
+use std::io::{Cursor, Read};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,9 +18,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Local, NaiveDateTime};
 use rayon::prelude::*;
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use crate::identity::fingerprint;
 use crate::metadata::{PhotoMeta, read_meta};
+use crate::preview::{self, PreviewCache};
 use crate::sharpness;
 use crate::model::{MediaKind, ScanReport};
 use crate::ports::{CoreEvent, EventSink, MediaEntry, MediaSource};
@@ -33,20 +39,33 @@ fn local_naive(t: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(t).naive_local()
 }
 
-fn analyze(source: &dyn MediaSource, entry: &MediaEntry) -> Result<(String, PhotoMeta, Option<u8>)> {
-    let mut r = BufReader::with_capacity(64 * 1024, source.open(&entry.rel_path)?);
-    let fp = fingerprint(&mut r, entry.size)?;
-    let meta = read_meta(&mut r);
-    Ok((fp, meta, measure(source, &entry.rel_path)))
+/// Files read from the source at the same time. Bounds memory (a 45 MP JPEG is ~30 MB
+/// on disk and ~135 MB decoded) and keeps card I/O mostly sequential.
+const INGEST_THREADS: usize = 4;
+
+/// Read one file from the source, once, and derive everything from those bytes.
+fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta, Option<u8>)> {
+    let mut bytes = Vec::with_capacity(size as usize);
+    source.open(rel_path)?.read_to_end(&mut bytes)?; // the only source read
+    if bytes.len() as u64 != size {
+        return Err(CoreError::Other(format!("file changed while reading ({} bytes, listed as {size})", bytes.len())));
+    }
+    let mut cur = Cursor::new(&bytes[..]);
+    let fp = fingerprint(&mut cur, size)?;
+    let meta = read_meta(&mut cur);
+    // A file that can't be decoded is still indexed (it's still a photo on the card);
+    // it just has no sharpness or preview.
+    let sharp = match preview::decode(&bytes) {
+        Ok(img) => {
+            previews.store_from_image(&fp, &img)?;
+            Some(sharpness::score_image(&img))
+        }
+        Err(_) => None,
+    };
+    Ok((fp, meta, sharp))
 }
 
-/// Sharpness needs a full decode, so it is read separately; failure just means "unknown".
-fn measure(source: &dyn MediaSource, rel_path: &str) -> Option<u8> {
-    let file = source.open(rel_path).ok()?;
-    sharpness::score(BufReader::with_capacity(256 * 1024, file))
-}
-
-pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn EventSink) -> Result<ScanReport> {
+pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, previews: &PreviewCache, sink: &dyn EventSink) -> Result<ScanReport> {
     let src = source.id().to_string();
     let mut report = ScanReport::default();
 
@@ -59,7 +78,10 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
                 report.skipped_unsupported += 1;
                 None
             }
-            None => None,
+            None => {
+                report.other_files += 1;
+                None
+            }
         })
         .collect();
     let total = candidates.len() as u64;
@@ -67,16 +89,18 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
 
     // Pass 1: skip files we've already indexed and that haven't changed.
     let mut misses = Vec::new();
-    // Already-indexed photos from before sharpness existed get scored too.
-    let mut unscored: Vec<(i64, String)> = Vec::new();
+    // Already-indexed photos missing sharpness or cached previews (older versions) are re-read
+    // once now, so they never need the source during culling.
+    let mut backfill: Vec<(i64, String, u64, String)> = Vec::new();
     store.lock().unwrap().transaction(|s| {
         for (e, k) in candidates {
             let mt = mtime_secs(e.modified);
             match s.lookup_file(&src, &e.rel_path, e.size, mt)? {
                 Some(id) => {
                     s.touch_photo(id, &src, &e.rel_path)?;
-                    if s.needs_sharpness(id)? {
-                        unscored.push((id, e.rel_path.clone()));
+                    let fp = s.photo(id)?.fingerprint;
+                    if s.needs_sharpness(id)? || !previews.has_master(&fp) {
+                        backfill.push((id, e.rel_path.clone(), e.size, fp));
                     }
                 }
                 None => misses.push((e, k, mt)),
@@ -88,23 +112,30 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
     let done = AtomicU64::new(total - misses.len() as u64);
     sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: done.load(Ordering::Relaxed), total });
 
-    // Pass 2: read new files in parallel, without holding the DB lock.
-    let analyzed: Vec<_> = misses
-        .into_par_iter()
-        .map(|(e, k, mt)| {
-            let result = analyze(source, &e);
-            let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-            if n % 25 == 0 || n == total {
-                sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: n, total });
-            }
-            (e, k, mt, result)
-        })
-        .collect();
-
-    let backfilled: Vec<(i64, u8)> = unscored
-        .into_par_iter()
-        .filter_map(|(id, rel)| measure(source, &rel).map(|score| (id, score)))
-        .collect();
+    // Pass 2: read new files (a few at a time), without holding the DB lock.
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(INGEST_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
+    let (analyzed, backfilled): (Vec<_>, Vec<(i64, u8)>) = pool.install(|| {
+        let analyzed = misses
+            .into_par_iter()
+            .map(|(e, k, mt)| {
+                let result = ingest(source, &e.rel_path, e.size, previews);
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if n % 25 == 0 || n == total {
+                    sink.emit(CoreEvent::ScanProgress { source_id: src.clone(), done: n, total });
+                }
+                (e, k, mt, result)
+            })
+            .collect();
+        let backfilled = backfill
+            .into_par_iter()
+            .filter_map(|(id, rel, size, fp)| match ingest(source, &rel, size, previews) {
+                // Same photo as indexed: keep its score. A changed file is re-indexed on the next scan.
+                Ok((new_fp, _, Some(score))) if new_fp == fp => Some((id, score)),
+                _ => None,
+            })
+            .collect();
+        (analyzed, backfilled)
+    });
 
     // Pass 3: persist.
     let mut st = store.lock().unwrap();

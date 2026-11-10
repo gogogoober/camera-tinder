@@ -19,3 +19,6 @@ tauri-build = { version = "2.7.4", features = [] }
 [lib]
 name = "camera_tinder_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+cull-platform-apple = { version = "0.1.0", path = "../crates/cull-platform-apple" }

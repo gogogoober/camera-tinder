@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use cull_core::*;
-use cull_platform_fs::{CopyToDir, FsSource};
+use cull_platform_fs::{CopyToDir, FsSource, is_external_and_connected};
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -119,9 +119,63 @@ async fn suggest_tags(state: State<'_, AppState>) -> CmdResult<Vec<TagSuggestion
 }
 
 #[tauri::command]
+async fn preview_cache_status(state: State<'_, AppState>) -> CmdResult<PreviewCacheStatus> {
+    let svc = state.0.clone();
+    blocking(move || svc.preview_cache_status(&is_external_and_connected)).await
+}
+
+/// Refused (with the names to unplug) while any card or external drive with photos is connected.
+#[tauri::command]
+async fn clear_previews(state: State<'_, AppState>) -> CmdResult<u64> {
+    let svc = state.0.clone();
+    blocking(move || svc.clear_previews(&is_external_and_connected)).await
+}
+
+/// "connected" | "notDetermined" | "denied" | "unavailable" (not macOS).
+#[tauri::command]
+fn calendar_status() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        use cull_platform_apple::{Access, CalendarAccess};
+        return match CalendarAccess::status() {
+            Access::Granted => "connected",
+            Access::NotDetermined => "notDetermined",
+            Access::Denied => "denied",
+        };
+    }
+    #[allow(unreachable_code)]
+    "unavailable"
+}
+
+/// Asks macOS for calendar access (first time shows the system prompt) and starts using it.
+#[tauri::command]
+async fn connect_calendar(state: State<'_, AppState>) -> CmdResult<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        use cull_platform_apple::{Access, CalendarAccess, EventKitCalendar};
+        let svc = state.0.clone();
+        let granted = tauri::async_runtime::spawn_blocking(CalendarAccess::request).await.map_err(err)?.map_err(err)?;
+        if granted == Access::Granted {
+            svc.set_calendar(EventKitCalendar::new().map(|c| Arc::new(c) as Arc<dyn CalendarSource>));
+        }
+        return Ok(calendar_status());
+    }
+    #[allow(unreachable_code)]
+    {
+        let _ = state;
+        Ok("unavailable")
+    }
+}
+
+#[tauri::command]
 async fn export_keepers(app: AppHandle, state: State<'_, AppState>, dest: String, options: ExportOptions) -> CmdResult<ExportReport> {
     let svc = state.0.clone();
-    blocking(move || svc.export(&CopyToDir::new(dest), options, &TauriSink(app))).await
+    blocking(move || {
+        // FsSource ids are canonical folder paths: never write into any folder ever culled from.
+        let roots = svc.known_source_ids()?;
+        svc.export(&CopyToDir::new(dest).protecting(roots), options, &TauriSink(app))
+    })
+    .await
 }
 
 /// `preview://localhost/<photoId>?edge=<px>` → cached, downscaled JPEG.
@@ -155,7 +209,13 @@ pub fn run() {
         .setup(|app| {
             let db = app.path().app_data_dir()?.join("camera-tinder.db");
             let cache = app.path().app_cache_dir()?.join("previews");
-            app.manage(AppState(Arc::new(CullerService::open(&db, &cache)?)));
+            let svc = Arc::new(CullerService::open(&db, &cache)?);
+            // Only reconnect if the user already said yes; never prompt at launch.
+            #[cfg(target_os = "macos")]
+            if let Some(cal) = cull_platform_apple::EventKitCalendar::new() {
+                svc.set_calendar(Some(Arc::new(cal)));
+            }
+            app.manage(AppState(svc));
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("preview", |ctx, request, responder| {
@@ -179,6 +239,10 @@ pub fn run() {
             add_tag,
             remove_tag,
             suggest_tags,
+            calendar_status,
+            preview_cache_status,
+            clear_previews,
+            connect_calendar,
             export_keepers
         ])
         .run(tauri::generate_context!())

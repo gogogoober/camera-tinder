@@ -102,6 +102,18 @@ pub struct SourceInfo {
     pub photo_count: u64,
 }
 
+/// How much disk the preview cache uses, and what blocks clearing it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewCacheStatus {
+    pub files: u64,
+    pub bytes: u64,
+    /// Names of cards / external drives holding known photo sources that are plugged in
+    /// right now (the platform decides what counts). Clearing is only allowed when this is
+    /// empty, so rebuilding previews can't quietly start reading a card again.
+    pub connected_sources: Vec<String>,
+}
+
 /// Counts per decision for a set of photos.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -149,7 +161,10 @@ pub struct Filter {
 pub struct ScanReport {
     pub found: u64,
     pub new: u64,
+    /// RAW files: recognised, not yet cullable or exported.
     pub skipped_unsupported: u64,
+    /// Everything else the app ignores (videos, audio memos, sidecars…). Not exported either.
+    pub other_files: u64,
     pub failed: Vec<(String, String)>,
 }
 

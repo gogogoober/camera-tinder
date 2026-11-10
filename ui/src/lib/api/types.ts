@@ -52,6 +52,8 @@ export interface ScanReport {
   found: number;
   new: number;
   skippedUnsupported: number;
+  /** Videos and other files the app ignores; not exported. */
+  otherFiles: number;
   failed: [string, string][];
 }
 
@@ -102,4 +104,14 @@ export interface TagSuggestion {
   source: TagSource;
   reason: string;
   photoCount: number;
+}
+
+/** `unavailable` = this platform has no calendar source. */
+export type CalendarStatus = 'connected' | 'notDetermined' | 'denied' | 'unavailable';
+
+export interface PreviewCacheStatus {
+  files: number;
+  bytes: number;
+  /** Photo sources reachable right now. Clearing is refused until this is empty. */
+  connectedSources: string[];
 }

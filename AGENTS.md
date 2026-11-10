@@ -40,6 +40,8 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   preview.rs               Decode → EXIF-rotate → downscale → JPEG; disk cache; capped concurrency
   api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
+crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission.
+                           src-tauri/Info.plist holds the calendar usage strings (embedded in dev builds too)
   tests/end_to_end.rs      Full flow on real JPEGs (scan, cull, undo, export, card→laptop move)
   examples/make_samples.rs Generates synthetic JPEGs (dates via mtime)
 src-tauri/                 Thin adapter: commands → CullerService; `preview://` URI scheme;
@@ -72,7 +74,7 @@ Data locations (macOS): DB at app data dir `camera-tinder.db`; previews at app c
 ```sh
 source ~/.cargo/env                 # Rust may not be on PATH in fresh shells
 npm run tauri dev                   # run the desktop app (Vite on :1420)
-npm run dev:mock                    # UI only, in a browser, with the mock backend
+npm run dev:mock                    # UI only, in a browser, with the mock backend (ui-mock-alt: port 1421, alongside tauri dev)
 cargo test --workspace              # core + end-to-end tests
 npm run check                       # svelte-check / TypeScript
 npm run build                       # frontend build → dist/
@@ -89,7 +91,9 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
   (month calendar, card stack, round buttons). All logic is shared.
 - Sharpness is computed at scan time (full decode, parallel) and backfilled for older rows on rescan.
   Plain skies/fog can score low; the UI only *suggests* rejects.
-- `CalendarSource` (ports.rs) has no implementation yet; EventKit would plug in via `set_calendar`.
+- Calendar: `EventKitCalendar` implements `CalendarSource`. The app never prompts at launch; Pick shows a
+  "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
+  de-duplicated per title+day. Mock backend fakes the connect flow.
 - A burst "keep one" is two backend calls (Nope the rest, Keep one), so it takes two undos.
 
 - `use cull_core::*` brings in `cull_core::Result<T>`; use `std::result::Result<T, E>` explicitly
@@ -110,7 +114,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [x] **UI second pass (from the design studies):** GitHub-style heatmap with tag lanes + suggestions,
       time-budget picker, moments timeline, filmstrip, soft-photo triage, burst compare, drag-select,
       Review screen. Verified in the mock browser (`npm run dev:mock`), not yet in the real Tauri app.
-- [ ] Calendar (EventKit), GPS place names, night/colour image hints as tag sources.
+- [x] Calendar tag suggestions (EventKit) — built, needs a manual check in the real app.
+- [ ] GPS place names, night/colour image hints as tag sources.
 - [ ] Hours-of-day timeline option; learned pace; persist dismissed suggestions.
 - [ ] Verify photo-alignment fix for portrait images in the real app.
 - [ ] **M2:** smart session planner (bursts/sessions/trips, time-budget batching, learned pace).
@@ -118,6 +123,31 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
 - [ ] iOS (`tauri ios init`, SD-card MediaSource, share-sheet export). Later: cloud sync, Android, Lightroom.
+
+## Source safety (originals are sacred)
+
+- The card/folder is read at exactly two moments: **scan** and **export**. Nothing ever writes to it.
+  - Scan reads each new file **once** into memory (`scan::ingest`, 4 at a time) and derives fingerprint, EXIF,
+    sharpness and the cached previews (2048px master + 256px thumb) from those bytes. Rescans of unchanged
+    files read nothing (path+size+mtime lookup). Older rows without previews are backfilled with one read.
+  - Culling never opens the source: every preview size is derived from the cached master
+    (`PreviewCache::get`), so the card can be unplugged while you cull.
+  - Export reads each keeper once.
+- Nothing deletes, moves, renames or writes source files. Hate/Nope are rows in SQLite.
+- `CopyToDir` refuses destinations inside any source ever added (`known_source_ids`, symlinks resolved), never
+  overwrites (exclusive temp file + `hard_link`), and verifies each copy: full-content xxh3 of the bytes read vs
+  the file on disk, plus fingerprint vs the culled photo.
+- Scan reports RAW (`skippedUnsupported`) and everything else ignored (`otherFiles`: videos…) so the UI can warn
+  that those are not exported.
+- `crates/cull-platform-fs/tests/source_safety.rs` enforces all of this, including counting every source open
+  and a static scan that fails on any new filesystem-writing call outside the audited lines.
+- Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick sidebar → Storage):
+  - Locked while any known source is on a plugged-in **external** volume (`is_external_and_connected`: the folder
+    exists and its filesystem device differs from `/`, the Data volume and $HOME). Internal folders never block.
+    Core enforces this too, not only the UI.
+  - Deletes only regular files directly in the cache folder named exactly like cache output (`is_cache_file`);
+    never recursive, never follows symlinks, refuses if the cache folder itself is a symlink.
+  - Real-volume check: `cargo test -p cull-platform-fs --test source_safety -- --ignored` (mounts a disk image).
 
 ## Conventions
 

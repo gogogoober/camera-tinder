@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type DaySummary, type ScanReport, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
-  import { formatCount } from '../format';
+  import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
 
@@ -15,6 +15,12 @@
   let days = $state<DaySummary[]>([]);
   let tags = $state<Tag[]>([]);
   let suggestions = $state<TagSuggestion[]>([]);
+  let calendar = $state<CalendarStatus>('unavailable');
+  let connecting = $state(false);
+  let cache = $state<PreviewCacheStatus | null>(null);
+  let confirmClear = $state(false);
+  let clearing = $state(false);
+  let cleared = $state<number | null>(null);
   let range = $state<Range | null>(null);
   let budget = $state(15);
   let order = $state<'oldest' | 'newest'>('oldest');
@@ -37,11 +43,61 @@
     const off = api.onEvent((e) => {
       if (e.type === 'scanProgress') progress = { done: e.done, total: e.total };
     });
-    return () => void off.then((f) => f());
+    // Cards come and go without telling us: re-check what's connected every few seconds.
+    loadCache();
+    const poll = setInterval(loadCache, 4000);
+    return () => {
+      clearInterval(poll);
+      void off.then((f) => f());
+    };
   });
 
+  async function loadCache() {
+    try {
+      cache = await api.previewCacheStatus();
+      if (cache.connectedSources.length) confirmClear = false;
+    } catch {
+      cache = null;
+    }
+  }
+
+  async function clearPreviews() {
+    if (!confirmClear) {
+      confirmClear = true;
+      return;
+    }
+    clearing = true;
+    try {
+      cleared = await api.clearPreviews();
+      error = null;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      clearing = false;
+      confirmClear = false;
+      await loadCache();
+    }
+  }
+
   async function refresh() {
-    [sources, stats, days, tags, suggestions] = await Promise.all([api.listSources(), api.stats(), api.days(), api.tags(), api.suggestTags()]);
+    [sources, stats, days, tags, suggestions, calendar] = await Promise.all([
+      api.listSources(),
+      api.stats(),
+      api.days(),
+      api.tags(),
+      api.suggestTags(),
+      api.calendarStatus(),
+    ]);
+  }
+
+  async function connectCalendar() {
+    connecting = true;
+    try {
+      calendar = await api.connectCalendar();
+      suggestions = await api.suggestTags();
+    } finally {
+      connecting = false;
+    }
   }
 
   function applyBudget() {
@@ -147,6 +203,37 @@
       <div class="kv"><span>Photos</span><b>{formatCount(stats.total)}</b></div>
       <div class="kv"><span>Left to cull</span><b>{formatCount(stats.undecided)}</b></div>
     {/if}
+
+    {#if cache}
+      {@const blocked = cache.connectedSources.length > 0}
+      {@const size = formatBytes(cache.bytes)}
+      <div class="eyebrow">Storage</div>
+      <div class="kv"><span>App previews</span><b>{size}</b></div>
+
+      {#if confirmClear && !blocked}
+        <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
+          <b id="clear-q">Clear {size} of preview copies?</b>
+          <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
+          <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions and tags.</p>
+          <p class="muted">Previews are made again the next time you scan a card.</p>
+          <div class="row">
+            <button class="small primary" disabled={clearing} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
+            <button class="small ghost" disabled={clearing} onclick={() => (confirmClear = false)}>Cancel</button>
+          </div>
+        </div>
+      {:else}
+        <button class="small clear" disabled={blocked || cache.bytes === 0} onclick={clearPreviews}>Clear previews</button>
+        <p class="muted small note">Frees space the app used for its own preview copies. Never touches your photos.</p>
+        {#if blocked}
+          <p class="small note wait">
+            <b>Unplug first:</b> {cache.connectedSources.join(', ')}. Clearing waits until your cards and external drives are disconnected,
+            so making previews again can't read from them.
+          </p>
+        {:else if cleared !== null}
+          <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos, decisions and tags are unchanged.</p>
+        {/if}
+      {/if}
+    {/if}
   </aside>
 
   <section class="main">
@@ -203,6 +290,18 @@
         </div>
       </div>
 
+      {#if calendar === 'notDetermined' || calendar === 'denied'}
+        <div class="group calprompt">
+          <span class="eyebrow">Calendar</span>
+          {#if calendar === 'notDetermined'}
+            <span class="muted small">Name your shoots from Apple Calendar events. Stays on this device.</span>
+            <button class="small primary" disabled={connecting} onclick={connectCalendar}>{connecting ? 'Waiting for macOS…' : 'Connect Calendar'}</button>
+          {:else}
+            <span class="muted small">Calendar access is off. Turn it on for Camera Tinder in System Settings → Privacy &amp; Security → Calendars.</span>
+          {/if}
+        </div>
+      {/if}
+
       {#if suggestions.length}
         <div class="group">
           <span class="eyebrow">Suggested tags · {suggestions.length}</span>
@@ -236,8 +335,12 @@
       {/if}
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
-    {#if report && !scanning && report.skippedUnsupported}
-      <p class="muted small">{formatCount(report.skippedUnsupported)} RAW files skipped for now; RAW culling is coming next.</p>
+    {#if report && !scanning && (report.skippedUnsupported || report.otherFiles)}
+      <p class="leftbehind small">
+        <b>Not handled by Camera Tinder, and not exported:</b>
+        {#if report.skippedUnsupported}{formatCount(report.skippedUnsupported)} RAW{/if}{#if report.skippedUnsupported && report.otherFiles}{", "}{/if}{#if report.otherFiles}{formatCount(report.otherFiles)} other (videos etc.){/if}.
+        Copy these yourself before you format the card.
+      </p>
     {/if}
   </section>
 
@@ -290,6 +393,15 @@
   .sw.none { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
   .sw.done { background: transparent; box-shadow: inset 0 0 0 1.5px var(--done); }
 
+  .leftbehind { border: 1px solid var(--border); border-left: 3px solid var(--accent); border-radius: 6px; padding: 8px 10px; }
+  .clear { text-align: left; }
+  .note { margin: 0; line-height: 1.35; }
+  .wait { border-left: 3px solid var(--accent); padding-left: 8px; }
+  .confirm { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); font-size: 12.5px; }
+  .confirm p { margin: 0; line-height: 1.35; }
+  .confirm .lbl { display: block; font: 500 10.5px ui-monospace, 'SF Mono', monospace; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+  .confirm .row { display: flex; gap: 6px; }
+  .calprompt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
   .sug { display: grid; grid-template-columns: minmax(0, 1.1fr) 120px minmax(0, 1.6fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
   .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btns { display: flex; gap: 6px; }

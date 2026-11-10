@@ -61,6 +61,18 @@ impl CullerService {
         self.sources.write().unwrap().retain(|s| s.id() != id);
     }
 
+    /// Ids of every source ever added, in this session or before. Export targets use
+    /// these to refuse writing into a photo source.
+    pub fn known_source_ids(&self) -> Result<Vec<String>> {
+        let mut ids = self.store.lock().unwrap().all_source_ids()?;
+        for s in self.sources.read().unwrap().iter() {
+            if !ids.iter().any(|i| i == s.id()) {
+                ids.push(s.id().to_string());
+            }
+        }
+        Ok(ids)
+    }
+
     pub fn sources(&self) -> Result<Vec<SourceInfo>> {
         let sources = self.sources.read().unwrap().clone();
         sources.iter().map(|s| self.source_info(s.as_ref())).collect()
@@ -96,10 +108,11 @@ impl CullerService {
         let sources = self.sources.read().unwrap().clone();
         let mut total = ScanReport::default();
         for s in sources {
-            let r = scan_source(&self.store, s.as_ref(), sink)?;
+            let r = scan_source(&self.store, s.as_ref(), &self.previews, sink)?;
             total.found += r.found;
             total.new += r.new;
             total.skipped_unsupported += r.skipped_unsupported;
+            total.other_files += r.other_files;
             total.failed.extend(r.failed);
         }
         Ok(total)
@@ -131,8 +144,37 @@ impl CullerService {
     /// Display-sized JPEG for a photo (cached).
     pub fn preview(&self, id: PhotoId, max_edge: u32) -> Result<Vec<u8>> {
         let photo = self.photo(id)?;
-        let source = self.source(&photo.source_id)?;
-        self.previews.get(&photo, source.as_ref(), max_edge)
+        // Normally served from the cache built at scan time; the source is only a
+        // fallback for photos indexed by older versions (and may be unplugged).
+        let source = self.source(&photo.source_id).ok();
+        self.previews.get(&photo, source.as_deref(), max_edge)
+    }
+
+    /// Preview cache size, plus which known sources block clearing right now.
+    /// `is_connected(source_id)` is the platform's answer (desktop: "is it on a plugged-in
+    /// card or external drive?").
+    pub fn preview_cache_status(&self, is_connected: &dyn Fn(&str) -> bool) -> Result<PreviewCacheStatus> {
+        let (files, bytes) = self.previews.usage()?;
+        let mut known = self.store.lock().unwrap().all_sources()?;
+        for s in self.sources.read().unwrap().iter() {
+            if !known.iter().any(|(id, _)| id == s.id()) {
+                known.push((s.id().to_string(), s.display_name().to_string()));
+            }
+        }
+        let connected_sources = known.into_iter().filter(|(id, _)| is_connected(id)).map(|(_, name)| name).collect();
+        Ok(PreviewCacheStatus { files, bytes, connected_sources })
+    }
+
+    /// Delete the app's own preview copies and return the bytes freed. Refused while any
+    /// card / external source is connected: with them gone, nothing can trigger a re-read of
+    /// the originals. Never touches photos, the database (decisions, tags, index) or any file
+    /// the cache didn't create; a later scan rebuilds previews.
+    pub fn clear_previews(&self, is_connected: &dyn Fn(&str) -> bool) -> Result<u64> {
+        let status = self.preview_cache_status(is_connected)?;
+        if !status.connected_sources.is_empty() {
+            return Err(CoreError::Other(format!("disconnect these first: {}", status.connected_sources.join(", "))));
+        }
+        self.previews.clear()
     }
 
     // ---- deciding -----------------------------------------------------
@@ -215,6 +257,8 @@ impl CullerService {
     pub fn export(&self, target: &dyn ExportTarget, opts: ExportOptions, sink: &dyn EventSink) -> Result<ExportReport> {
         let photos = self.keepers(opts)?;
         let sources = self.sources.read().unwrap().clone();
+        // Keepers are only listed for sources in this session. If one of those has been
+        // unplugged, `open` fails and the copy is reported in `failed`, never dropped silently.
         let items: Vec<ExportItem> = photos
             .iter()
             .filter_map(|p| {

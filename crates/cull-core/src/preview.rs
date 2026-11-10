@@ -6,13 +6,14 @@
 //! memory bounded (this matters a lot on iOS).
 
 use std::fs;
-use std::io::{BufRead, BufReader, Seek};
-use std::path::PathBuf;
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex};
 
 use image::codecs::jpeg::JpegEncoder;
 use image::{DynamicImage, ImageDecoder, ImageReader};
+
 
 use crate::error::{CoreError, Result};
 use crate::model::{MediaKind, Photo};
@@ -20,6 +21,11 @@ use crate::ports::MediaSource;
 
 pub const MIN_EDGE: u32 = 64;
 pub const MAX_EDGE: u32 = 4096;
+/// The one full-quality preview made from the original at scan time. Every other
+/// size is derived from it, so culling never needs the card.
+pub const MASTER_EDGE: u32 = 2048;
+/// Made alongside the master: filmstrip / grid thumbnails.
+pub const THUMB_EDGE: u32 = 256;
 
 pub struct PreviewCache {
     dir: PathBuf,
@@ -52,10 +58,39 @@ impl PreviewCache {
         Permit(self)
     }
 
-    /// JPEG bytes of `photo` with its longest edge at most `max_edge`.
-    pub fn get(&self, photo: &Photo, source: &dyn MediaSource, max_edge: u32) -> Result<Vec<u8>> {
-        let max_edge = max_edge.clamp(MIN_EDGE, MAX_EDGE);
-        let path = self.dir.join(format!("{}_{}.jpg", photo.fingerprint, max_edge));
+    fn path(&self, fingerprint: &str, edge: u32) -> PathBuf {
+        self.dir.join(format!("{fingerprint}_{edge}.jpg"))
+    }
+
+    /// Write into the cache dir only: temp file, then rename into place.
+    fn write_cached(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.dir.join(format!(".{}.{}.{n}.tmp", path.file_name().unwrap_or_default().to_string_lossy(), std::process::id()));
+        fs::write(&tmp, &bytes)?;
+        fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    /// True once this photo's previews exist, i.e. it never needs the original again to be viewed.
+    pub fn has_master(&self, fingerprint: &str) -> bool {
+        self.path(fingerprint, MASTER_EDGE).is_file()
+    }
+
+    /// Scan time: store the master and thumbnail from an image already decoded from the original.
+    pub fn store_from_image(&self, fingerprint: &str, img: &DynamicImage) -> Result<()> {
+        let master = shrink(img, MASTER_EDGE);
+        self.write_cached(&self.path(fingerprint, MASTER_EDGE), &encode(&master)?)?;
+        self.write_cached(&self.path(fingerprint, THUMB_EDGE), &encode(&shrink(&master, THUMB_EDGE))?)?;
+        Ok(())
+    }
+
+    /// JPEG bytes of `photo` with its longest edge at most `max_edge` (capped at the master size).
+    ///
+    /// Served from the cache; sizes other than master/thumb are derived from the master.
+    /// The original is only read for photos indexed before masters existed (a rescan fixes those).
+    pub fn get(&self, photo: &Photo, source: Option<&dyn MediaSource>, max_edge: u32) -> Result<Vec<u8>> {
+        let edge = max_edge.clamp(MIN_EDGE, MAX_EDGE).min(MASTER_EDGE);
+        let path = self.path(&photo.fingerprint, edge);
         if let Ok(bytes) = fs::read(&path) {
             return Ok(bytes);
         }
@@ -68,27 +103,130 @@ impl PreviewCache {
         if let Ok(bytes) = fs::read(&path) {
             return Ok(bytes);
         }
-        let reader = BufReader::new(source.open(&photo.rel_path)?);
-        let bytes = render_jpeg(reader, max_edge)?;
-
-        let n = self.tmp_counter.fetch_add(1, Ordering::Relaxed);
-        let tmp = self.dir.join(format!(".{}_{}.{}.{n}.tmp", photo.fingerprint, max_edge, std::process::id()));
-        fs::write(&tmp, &bytes)?;
-        fs::rename(&tmp, &path)?;
+        if !self.has_master(&photo.fingerprint) {
+            let Some(source) = source else {
+                return Err(CoreError::Other(format!("no preview cached for {} and its source is not connected", photo.file_name)));
+            };
+            let mut bytes = Vec::with_capacity(photo.size as usize);
+            source.open(&photo.rel_path)?.read_to_end(&mut bytes)?;
+            self.store_from_image(&photo.fingerprint, &decode(&bytes)?)?;
+        }
+        let master = fs::read(self.path(&photo.fingerprint, MASTER_EDGE))?;
+        if edge == MASTER_EDGE {
+            return Ok(master);
+        }
+        let bytes = encode(&shrink(&decode(&master)?, edge))?;
+        self.write_cached(&path, &bytes)?;
         Ok(bytes)
     }
 }
 
-/// Decode, auto-rotate per EXIF, downscale, re-encode as JPEG.
-pub fn render_jpeg<R: BufRead + Seek>(reader: R, max_edge: u32) -> Result<Vec<u8>> {
-    let mut decoder = ImageReader::new(reader).with_guessed_format()?.into_decoder()?;
+fn is_digits(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// `<32 lowercase hex>_<edge>.jpg`: exactly the names `PreviewCache::path` produces.
+fn is_preview_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".jpg") else { return false };
+    let Some((fp, edge)) = stem.split_once('_') else { return false };
+    fp.len() == 32 && fp.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && is_digits(edge)
+}
+
+/// Only names this cache creates: previews, and `.<preview name>.<pid>.<n>.tmp` leftovers
+/// from `write_cached` (e.g. after a crash). Anything else is not ours and is never deleted.
+fn is_cache_file(name: &str) -> bool {
+    if is_preview_name(name) {
+        return true;
+    }
+    let Some(inner) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")) else { return false };
+    let mut parts = inner.rsplitn(3, '.');
+    let (Some(n), Some(pid), Some(preview)) = (parts.next(), parts.next(), parts.next()) else { return false };
+    is_digits(n) && is_digits(pid) && is_preview_name(preview)
+}
+
+impl PreviewCache {
+    /// (file count, bytes) of cached previews.
+    pub fn usage(&self) -> Result<(u64, u64)> {
+        let (mut files, mut bytes) = (0, 0);
+        for e in fs::read_dir(&self.dir)? {
+            let e = e?;
+            let m = e.metadata()?;
+            if m.is_file() && is_cache_file(&e.file_name().to_string_lossy()) {
+                files += 1;
+                bytes += m.len();
+            }
+        }
+        Ok((files, bytes))
+    }
+
+    /// Delete every cached preview. Touches nothing but this cache's own files:
+    /// - only directly inside the cache folder (never recursive; never follows symlinks),
+    /// - only regular files (a symlink, folder or anything else is skipped),
+    /// - only names the cache itself creates (`is_cache_file`).
+    ///
+    /// Removing a name never destroys data reachable through another link, so even a
+    /// hard link someone placed here can't take an original with it.
+    pub fn clear(&self) -> Result<u64> {
+        // The cache folder itself must be a real folder, not a symlink to somewhere else.
+        if !fs::symlink_metadata(&self.dir)?.is_dir() {
+            return Err(CoreError::Other(format!("preview cache {} is not a plain folder; not clearing", self.dir.display())));
+        }
+        let mut freed = 0;
+        for e in fs::read_dir(&self.dir)? {
+            let e = e?;
+            let m = fs::symlink_metadata(e.path())?;
+            if m.is_file() && is_cache_file(&e.file_name().to_string_lossy()) {
+                let path = e.path();
+                fs::remove_file(&path)?;
+                freed += m.len();
+            }
+        }
+        Ok(freed)
+    }
+}
+
+/// Decode a JPEG held in memory and apply its EXIF orientation.
+pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
+    let mut decoder = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?.into_decoder()?;
     let orientation = decoder.orientation()?;
     let mut img = DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
-    if img.width() > max_edge || img.height() > max_edge {
-        img = img.thumbnail(max_edge, max_edge);
-    }
+    Ok(img)
+}
+
+fn shrink(img: &DynamicImage, edge: u32) -> DynamicImage {
+    if img.width() > edge || img.height() > edge { img.thumbnail(edge, edge) } else { img.clone() }
+}
+
+fn encode(img: &DynamicImage) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, 85).encode_image(&img.to_rgb8())?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_cache_file;
+
+    #[test]
+    fn only_our_own_files_count_as_cache() {
+        assert!(is_cache_file("0123456789abcdef0123456789abcdef_2048.jpg"));
+        assert!(is_cache_file(".0123456789abcdef0123456789abcdef_2048.jpg.123.4.tmp"));
+        for name in [
+            "DSC_0001.JPG",
+            "photo.jpg",
+            "0123_2048.jpg",
+            "0123456789abcdef0123456789abcdef_2048.JPG",
+            "0123456789ABCDEF0123456789ABCDEF_2048.jpg",
+            "0123456789abcdef0123456789abcdef_.jpg",
+            "0123456789abcdef0123456789abcdef_2048.jpg.bak",
+            "camera-tinder.db",
+            ".DS_Store",
+            ".notes.tmp",
+            ".DSC_0001.JPG.123.4.tmp",
+            ".0123456789abcdef0123456789abcdef_2048.jpg.x.4.tmp",
+        ] {
+            assert!(!is_cache_file(name), "{name}");
+        }
+    }
 }
