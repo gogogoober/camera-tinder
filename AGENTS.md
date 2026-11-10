@@ -110,6 +110,11 @@ cargo run --release -p cull-platform-apple --example scan_timing -- <dir> [--rus
 Test photos: `test-photos/` (gitignored) — 117 real Lorem Picsum images, no EXIF, mtimes spread
 over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 
+Test set v2: `test-photos-v2/` (gitignored). `source/` holds the real slices and accidental shots; `set/` is the 100-photo
+folder (add `test-photos-v2/set` in the app) with `manifest.json` = the answer key (expect: sweep / judge / group, burst and
+pair ids, which photos are synthetic). Rebuild: `cargo run --release -p cull-platform-fs --example make_test_set --
+test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are file mtimes over 3 Oct – 8 Nov 2026.
+
 ## Gotchas learned
 
 - **Background analysis:** `CullerService::start_analysis_worker` (called in `setup`) analyses every scanned photo from the

@@ -12,3 +12,4 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 tempfile = "3.27.0"
+chrono = "0.4.45"

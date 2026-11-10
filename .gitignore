@@ -4,3 +4,4 @@
 /src-tauri/gen/schemas
 .DS_Store
 /test-photos
+/test-photos-v2

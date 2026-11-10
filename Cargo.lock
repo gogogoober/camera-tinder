@@ -563,6 +563,7 @@ dependencies = [
 name = "cull-platform-fs"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cull-core",
  "image",
  "tempfile",
