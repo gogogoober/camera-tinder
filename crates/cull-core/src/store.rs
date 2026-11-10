@@ -14,6 +14,7 @@ use crate::analysis::pipeline::StepResult;
 use crate::analysis::{AnalysisKind, PhotoAnalysis};
 use crate::error::{CoreError, Result};
 use crate::model::*;
+use crate::triage::OutcomeEntry;
 
 const TIME_FMT: &str = "%Y-%m-%dT%H:%M:%S";
 
@@ -91,6 +92,18 @@ CREATE TABLE IF NOT EXISTS decision_log (
     decision TEXT,
     previous TEXT,
     at       TEXT NOT NULL
+);
+
+-- What triage suggested vs what the user decided (append-only; an undo is not logged).
+CREATE TABLE IF NOT EXISTS outcomes (
+    id           INTEGER PRIMARY KEY,
+    photo_id     INTEGER NOT NULL REFERENCES photos(id),
+    plan_version TEXT NOT NULL,
+    question     TEXT NOT NULL,
+    place        TEXT NOT NULL,
+    suggestion   TEXT NOT NULL, -- the TriageItem shown, as JSON
+    decision     TEXT NOT NULL,
+    at           TEXT NOT NULL
 );
 "#;
 
@@ -262,6 +275,19 @@ impl Store {
             "UPDATE photos SET source_id = ?2, rel_path = ?3, last_seen = ?4 WHERE id = ?1",
             params![id, source_id, rel_path, now()],
         )?;
+        Ok(())
+    }
+
+    /// Append outcomes (one row each). Rows are never updated or deleted.
+    pub fn insert_outcomes(&self, entries: &[OutcomeEntry]) -> Result<()> {
+        let at = now();
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO outcomes (photo_id, plan_version, question, place, suggestion, decision, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        for e in entries {
+            let suggestion = serde_json::to_string(&e.item).map_err(|err| CoreError::Other(err.to_string()))?;
+            stmt.execute(params![e.item.photo_id, e.plan_version, e.item.question.as_str(), e.place.as_str(), suggestion, e.decision.as_str(), at])?;
+        }
         Ok(())
     }
 
@@ -533,6 +559,28 @@ mod tests {
         assert_eq!(store.set_decision(1, None).unwrap(), Some(Decision::Favorite));
         let log: i64 = store.conn.query_row("SELECT COUNT(*) FROM decision_log", [], |r| r.get(0)).unwrap();
         assert_eq!(log, 3, "history kept and appended");
+    }
+
+    #[test]
+    fn outcomes_are_appended_with_the_suggestion_as_json() {
+        use crate::triage::{Place, Question, TriageItem};
+        let mut store = Store::open_in_memory().unwrap();
+        store.upsert_source("/card", "card").unwrap();
+        let id = photo(&store, "aaaa", "/card", "A.JPG", None);
+        let item = |question| TriageItem { photo_id: id, question, group: None, reasons: vec![crate::analysis::IssueKind::Blurry], hints: vec![], score: Some(0.2), analyzed: true };
+        let entry = |question, place, decision| OutcomeEntry { item: item(question), plan_version: "triage.v1".into(), place, decision };
+        store
+            .transaction(|s| s.insert_outcomes(&[entry(Question::Sweep, Place::Rescue, Decision::Like), entry(Question::Judge, Place::Timeline, Decision::Dislike)]))
+            .unwrap();
+        store.insert_outcomes(&[entry(Question::Sweep, Place::OpenedEarly, Decision::Favorite)]).unwrap();
+
+        let mut stmt = store.conn.prepare("SELECT question, place, decision, suggestion FROM outcomes ORDER BY id").unwrap();
+        let rows: Vec<(String, String, String, String)> =
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let short: Vec<_> = rows.iter().map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str())).collect();
+        assert_eq!(short, [("sweep", "rescue", "like"), ("judge", "timeline", "dislike"), ("sweep", "openedEarly", "favorite")]);
+        let back: TriageItem = serde_json::from_str(&rows[0].3).unwrap();
+        assert_eq!(back, item(Question::Sweep), "the suggestion round-trips");
     }
 
     /// Two copies of the app on one database: the second waits for the first's write instead of failing.

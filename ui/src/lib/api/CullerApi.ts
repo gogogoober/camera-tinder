@@ -10,6 +10,7 @@ import type {
   ExportReport,
   Filter,
   GroupingOptions,
+  OutcomeEntry,
   PhotoAnalysis,
   PhotoIssues,
   Photo,
@@ -51,6 +52,8 @@ export interface CullerApi {
   stats(): Promise<Stats>;
 
   decide(id: number, decision: Decision): Promise<void>;
+  /** Record decisions made on suggested photos (call after `decide`). Used to tune the suggestions. */
+  logOutcomes(entries: OutcomeEntry[]): Promise<void>;
   /** One decision for many photos, undone together by a single undo. */
   decideMany(ids: number[], decision: Decision): Promise<void>;
   /** Reverts the last action (one photo or a batch); returns the photos, now restored. Empty if nothing to undo. */

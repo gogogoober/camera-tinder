@@ -91,6 +91,12 @@ async fn decide(state: State<'_, AppState>, id: PhotoId, decision: Decision) -> 
 }
 
 #[tauri::command]
+async fn log_outcomes(state: State<'_, AppState>, entries: Vec<cull_core::triage::OutcomeEntry>) -> CmdResult<()> {
+    let svc = state.0.clone();
+    blocking(move || svc.log_outcomes(&entries)).await
+}
+
+#[tauri::command]
 async fn decide_many(state: State<'_, AppState>, ids: Vec<PhotoId>, decision: Decision) -> CmdResult<()> {
     let svc = state.0.clone();
     blocking(move || svc.decide_many(&ids, decision)).await
@@ -305,6 +311,7 @@ pub fn run() {
             stats,
             decide,
             decide_many,
+            log_outcomes,
             undo,
             tags,
             add_tag,

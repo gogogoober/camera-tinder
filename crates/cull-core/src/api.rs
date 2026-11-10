@@ -213,6 +213,11 @@ impl CullerService {
         })
     }
 
+    /// Record decisions made on suggested photos (see `triage::OutcomeEntry`). Call it after `decide`.
+    pub fn log_outcomes(&self, entries: &[crate::triage::OutcomeEntry]) -> Result<()> {
+        self.store.lock().unwrap().transaction(|s| s.insert_outcomes(entries))
+    }
+
     pub fn days(&self) -> Result<Vec<DaySummary>> {
         self.store.lock().unwrap().days(&self.source_ids())
     }

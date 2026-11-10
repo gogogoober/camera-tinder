@@ -33,6 +33,16 @@ pub enum Question {
     Sweep,
 }
 
+impl Question {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Judge => "judge",
+            Self::Pick => "pick",
+            Self::Sweep => "sweep",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GroupKind {
@@ -69,6 +79,41 @@ pub struct TriageItem {
     pub score: Option<f32>,
     /// False until the photo has at least one current analysis result; such a photo is just a Judge.
     pub analyzed: bool,
+}
+
+/// Where a suggested photo was decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Place {
+    /// In the timeline, as the cursor reached it.
+    Timeline,
+    /// A set-aside photo the user opened from the filmstrip before the end.
+    OpenedEarly,
+    /// In the Rescue grid at the end.
+    Rescue,
+}
+
+impl Place {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Timeline => "timeline",
+            Self::OpenedEarly => "openedEarly",
+            Self::Rescue => "rescue",
+        }
+    }
+}
+
+/// One decision made on a photo that triage had an opinion about. Logged so the suggestions can be
+/// measured against what the user actually did (see docs/smart-triage.md, "Outcomes").
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutcomeEntry {
+    /// The item as the user saw it.
+    pub item: TriageItem,
+    /// `Plan::triage_version` it came from.
+    pub plan_version: String,
+    pub place: Place,
+    pub decision: crate::model::Decision,
 }
 
 fn has_results(a: &PhotoAnalysis) -> bool {

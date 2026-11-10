@@ -114,6 +114,17 @@ export interface TriageItem {
   analyzed: boolean;
 }
 
+/** Where a suggested photo was decided. */
+export type Place = 'timeline' | 'openedEarly' | 'rescue';
+
+/** One decision on a photo triage had an opinion about; logged to measure the suggestions. */
+export interface OutcomeEntry {
+  item: TriageItem;
+  planVersion: string;
+  place: Place;
+  decision: Decision;
+}
+
 export interface Plan {
   photos: Photo[];
   /** One item per photo, same order. */

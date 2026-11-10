@@ -352,6 +352,7 @@ export const mockApi: CullerApi = {
   async analysisStopped() {
     return analysisStopped;
   },
+  async logOutcomes() {},
   async analyzerInfo() {
     return MOCK_ANALYZERS;
   },
