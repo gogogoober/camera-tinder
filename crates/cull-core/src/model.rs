@@ -277,3 +277,27 @@ pub struct TagSuggestion {
     #[serde(default)]
     pub children: Vec<TagSuggestion>,
 }
+
+/// Forget what was recorded for every photo taken on some days, so they can be culled (or analysed)
+/// again from scratch. Mainly for testing. Photos, previews, tags and the files themselves are kept.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ResetRequest {
+    /// `YYYY-MM-DD` capture days. Empty = nothing (never "everything").
+    pub days: Vec<String>,
+    /// Remove decisions, their history (`decision_log`) and logged outcomes.
+    pub decisions: bool,
+    /// Remove analysis results; background analysis then computes them again.
+    pub analysis: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetReport {
+    /// Photos taken on those days (in the whole library, whichever folder they are in).
+    pub photos: u64,
+    /// Decisions removed.
+    pub decisions: u64,
+    /// Analysis rows removed.
+    pub analysis: u64,
+}

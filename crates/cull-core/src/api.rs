@@ -219,6 +219,40 @@ impl CullerService {
         })
     }
 
+    /// Forget decisions and/or analysis for every photo taken on `req.days`, so those days can be
+    /// culled or analysed again from scratch (mainly for testing). Database only: photos, previews,
+    /// tags and the original files are never touched. An empty `days` does nothing.
+    pub fn reset_days(&self, req: &ResetRequest) -> Result<ResetReport> {
+        for day in &req.days {
+            // Exactly YYYY-MM-DD (chrono alone accepts "2026-7-1", which would silently match no photo).
+            let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
+            if canonical.as_deref() != Ok(day.as_str()) {
+                return Err(CoreError::Other(format!("not a day (YYYY-MM-DD): {day:?}")));
+            }
+        }
+        if req.days.is_empty() || !(req.decisions || req.analysis) {
+            return Ok(ResetReport::default());
+        }
+        let mut store = self.store.lock().unwrap();
+        let ids = store.photo_ids_on_days(&req.days)?;
+        let report = store.transaction(|s| {
+            Ok(ResetReport {
+                photos: ids.len() as u64,
+                decisions: if req.decisions { s.forget_decisions(&ids)? } else { 0 },
+                analysis: if req.analysis { s.forget_analysis(&ids)? } else { 0 },
+            })
+        })?;
+        drop(store);
+        if req.decisions {
+            // Undo must not bring back what was just forgotten.
+            self.undo.lock().unwrap().clear();
+        }
+        if req.analysis {
+            self.wake_analysis(); // does nothing while analysis is stopped
+        }
+        Ok(report)
+    }
+
     /// Record decisions made on suggested photos (see `triage::OutcomeEntry`). Call it after `decide`.
     pub fn log_outcomes(&self, entries: &[crate::triage::OutcomeEntry]) -> Result<()> {
         self.store.lock().unwrap().transaction(|s| s.insert_outcomes(entries))
@@ -542,6 +576,62 @@ mod tests {
         fn open(&self, _: &str) -> Result<Box<dyn ReadSeek>> {
             Err(CoreError::Other("empty".into()))
         }
+    }
+
+    fn seeded(tmp: &std::path::Path, days: &[&str]) -> (CullerService, Vec<PhotoId>) {
+        let svc = CullerService::in_memory(tmp).unwrap();
+        svc.add_source(Arc::new(EmptySource)).unwrap();
+        let img = AnalysisImage::from_image(::image::DynamicImage::ImageRgb8(::image::ImageBuffer::from_fn(64, 64, |x, y| ::image::Rgb([x as u8 * 4, y as u8 * 4, 90]))));
+        let pipeline = Pipeline::from_analyzers(svc.analyzers.read().unwrap().clone());
+        let results = run_photo(&pipeline, &(0..pipeline.steps.len()).collect::<Vec<_>>(), 0, &img, &AtomicBool::new(false)).0;
+        let ids = days
+            .iter()
+            .enumerate()
+            .map(|(n, day)| {
+                let fp = format!("fp{n}");
+                let when = NaiveDateTime::parse_from_str(&format!("{day}T10:00:{n:02}"), "%Y-%m-%dT%H:%M:%S").unwrap();
+                let store = svc.store.lock().unwrap();
+                let (id, _) = store.upsert_photo(&NewPhoto { fingerprint: &fp, source_id: "s", rel_path: &fp, kind: MediaKind::Jpeg, size: 1, captured_at: Some(when), camera: None }).unwrap();
+                store.save_results(id, &results).unwrap();
+                id
+            })
+            .collect();
+        (svc, ids)
+    }
+
+    #[test]
+    fn reset_days_forgets_only_those_days_and_undo_cannot_bring_them_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (svc, ids) = seeded(tmp.path(), &["2026-07-01", "2026-07-01", "2026-07-02"]);
+        svc.decide_many(&ids, Decision::Favorite).unwrap();
+
+        let r = svc.reset_days(&ResetRequest { days: vec!["2026-07-01".into()], decisions: true, analysis: false }).unwrap();
+        assert_eq!((r.photos, r.decisions, r.analysis), (2, 2, 0));
+        let decided: Vec<_> = ids.iter().map(|id| svc.photo(*id).unwrap().decision).collect();
+        assert_eq!(decided, [None, None, Some(Decision::Favorite)]);
+        assert!(svc.undo().unwrap().is_empty(), "undo can't resurrect a reset");
+        assert!(svc.photo_analysis(ids[0]).unwrap().blur.is_some(), "analysis kept unless asked");
+
+        let r = svc.reset_days(&ResetRequest { days: vec!["2026-07-02".into()], decisions: false, analysis: true }).unwrap();
+        assert!(r.analysis > 0);
+        assert!(svc.photo_analysis(ids[2]).unwrap().blur.is_none());
+        assert_eq!(svc.photo(ids[2]).unwrap().decision, Some(Decision::Favorite), "decisions kept unless asked");
+    }
+
+    #[test]
+    fn reset_days_never_means_everything_and_rejects_bad_days() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (svc, ids) = seeded(tmp.path(), &["2026-07-01"]);
+        svc.decide(ids[0], Decision::Like).unwrap();
+        let none = svc.reset_days(&ResetRequest { days: vec![], decisions: true, analysis: true }).unwrap();
+        assert_eq!(none, ResetReport::default(), "an empty list resets nothing");
+        let nothing_chosen = svc.reset_days(&ResetRequest { days: vec!["2026-07-01".into()], decisions: false, analysis: false }).unwrap();
+        assert_eq!(nothing_chosen, ResetReport::default());
+        for bad in ["2026-7-1", "July 1", "", "2026-07-01T10:00:00", "%"] {
+            assert!(svc.reset_days(&ResetRequest { days: vec![bad.into()], decisions: true, analysis: true }).is_err(), "{bad:?}");
+        }
+        assert_eq!(svc.photo(ids[0]).unwrap().decision, Some(Decision::Like), "nothing was touched");
+        assert!(svc.photo_analysis(ids[0]).unwrap().blur.is_some());
     }
 
     /// The triage plan is computed on every request instead of being stored, so it has to stay fast

@@ -96,6 +96,13 @@ async fn log_outcomes(state: State<'_, AppState>, entries: Vec<cull_core::triage
     blocking(move || svc.log_outcomes(&entries)).await
 }
 
+/// Forget decisions and/or analysis for the photos of some days (testing; never touches files).
+#[tauri::command]
+async fn reset_days(state: State<'_, AppState>, request: ResetRequest) -> CmdResult<ResetReport> {
+    let svc = state.0.clone();
+    blocking(move || svc.reset_days(&request)).await
+}
+
 #[tauri::command]
 async fn decide_many(state: State<'_, AppState>, ids: Vec<PhotoId>, decision: Decision) -> CmdResult<()> {
     let svc = state.0.clone();
@@ -311,6 +318,7 @@ pub fn run() {
             stats,
             decide,
             decide_many,
+            reset_days,
             log_outcomes,
             undo,
             tags,

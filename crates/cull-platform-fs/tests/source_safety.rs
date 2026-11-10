@@ -496,6 +496,31 @@ fn background_analysis_during_a_scan_adds_no_reads_of_the_card() {
 }
 
 #[test]
+fn resetting_days_touches_only_the_database() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    make_card(&card);
+    let cache = tmp.path().join("cache");
+    let src = Counting::new(&card);
+    let svc = CullerService::in_memory(&cache).unwrap();
+    svc.add_source(src.clone()).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    svc.analyze(&Default::default(), &NullSink).unwrap();
+    let q = svc.queue(&Filter::default()).unwrap();
+    svc.decide_many(&q.iter().map(|p| p.id).collect::<Vec<_>>(), Decision::Like).unwrap();
+    src.take();
+    let (card_before, cache_before) = (snapshot(&card), cache_files(&cache));
+
+    let days: Vec<String> = svc.days().unwrap().into_iter().filter_map(|d| d.day).collect();
+    let r = svc.reset_days(&ResetRequest { days, decisions: true, analysis: true }).unwrap();
+    assert_eq!(r.photos as usize, q.len());
+    assert_eq!(src.take(), Vec::<String>::new(), "reset must not open the card");
+    assert_eq!(snapshot(&card), card_before);
+    assert_eq!(cache_files(&cache), cache_before, "previews are kept");
+    assert_eq!(svc.queue(&Filter::default()).unwrap().len(), q.len(), "photos are kept");
+}
+
+#[test]
 fn clearing_previews_waits_until_external_sources_are_unplugged() {
     // The platform decides what "external" means; here the test plays the platform:
     // the card is external (blocks while plugged in), the Pictures folder is internal.

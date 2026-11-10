@@ -170,3 +170,19 @@ export interface PreviewCacheStatus {
 }
 
 export * from './analysisTypes';
+
+/** Forget what was recorded for the photos of some days (testing). Files, previews and tags are kept. */
+export interface ResetRequest {
+  /** YYYY-MM-DD capture days. Empty = nothing. */
+  days: string[];
+  /** Decisions, their history and logged outcomes. */
+  decisions: boolean;
+  /** Analysis results (computed again in the background). */
+  analysis: boolean;
+}
+
+export interface ResetReport {
+  photos: number;
+  decisions: number;
+  analysis: number;
+}

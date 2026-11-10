@@ -26,6 +26,7 @@ export const tauriApi: CullerApi = {
 
   decide: (id, decision) => invoke('decide', { id, decision }),
   logOutcomes: (entries) => invoke('log_outcomes', { entries }),
+  resetDays: (request) => invoke('reset_days', { request }),
   decideMany: (ids, decision) => invoke('decide_many', { ids, decision }),
   undo: () => invoke('undo'),
 

@@ -278,6 +278,39 @@ impl Store {
         Ok(())
     }
 
+    /// Every photo taken on one of `days` (`YYYY-MM-DD`), in the whole library.
+    pub fn photo_ids_on_days(&self, days: &[String]) -> Result<Vec<PhotoId>> {
+        let mut ids = Vec::new();
+        for chunk in days.chunks(500) {
+            let mut stmt = self.conn.prepare(&format!("SELECT id FROM photos WHERE substr(captured_at, 1, 10) IN ({}) ORDER BY id", placeholders(chunk.len())))?;
+            for id in stmt.query_map(params_from_iter(chunk), |r| r.get::<_, PhotoId>(0))? {
+                ids.push(id?);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// Remove decisions, decision history and logged outcomes of `ids`. Returns the decisions removed.
+    pub fn forget_decisions(&self, ids: &[PhotoId]) -> Result<u64> {
+        let mut removed = 0;
+        for chunk in ids.chunks(500) {
+            let list = placeholders(chunk.len());
+            removed += self.conn.execute(&format!("DELETE FROM decisions WHERE photo_id IN ({list})"), params_from_iter(chunk))? as u64;
+            self.conn.execute(&format!("DELETE FROM decision_log WHERE photo_id IN ({list})"), params_from_iter(chunk))?;
+            self.conn.execute(&format!("DELETE FROM outcomes WHERE photo_id IN ({list})"), params_from_iter(chunk))?;
+        }
+        Ok(removed)
+    }
+
+    /// Remove every analysis result of `ids`. Returns the rows removed.
+    pub fn forget_analysis(&self, ids: &[PhotoId]) -> Result<u64> {
+        let mut removed = 0;
+        for chunk in ids.chunks(500) {
+            removed += self.conn.execute(&format!("DELETE FROM analysis WHERE photo_id IN ({})", placeholders(chunk.len())), params_from_iter(chunk))? as u64;
+        }
+        Ok(removed)
+    }
+
     /// Append outcomes (one row each). Rows are never updated or deleted.
     pub fn insert_outcomes(&self, entries: &[OutcomeEntry]) -> Result<()> {
         let at = now();
@@ -559,6 +592,40 @@ mod tests {
         assert_eq!(store.set_decision(1, None).unwrap(), Some(Decision::Favorite));
         let log: i64 = store.conn.query_row("SELECT COUNT(*) FROM decision_log", [], |r| r.get(0)).unwrap();
         assert_eq!(log, 3, "history kept and appended");
+        // Tables added later (analysis, outcomes) are created on open.
+        store.insert_outcomes(&[]).unwrap();
+        assert_eq!(store.forget_analysis(&[1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn forgetting_a_day_removes_its_decisions_history_outcomes_and_analysis_only() {
+        use crate::analysis::pipeline::StepResult;
+        use crate::triage::{Place, Question, TriageItem};
+        let mut store = Store::open_in_memory().unwrap();
+        store.upsert_source("/card", "card").unwrap();
+        let a = photo(&store, "aaaa", "/card", "A.JPG", Some("2026-07-01T10:00:00"));
+        let b = photo(&store, "bbbb", "/card", "B.JPG", Some("2026-07-02T10:00:00"));
+        let nodate = photo(&store, "cccc", "/card", "C.JPG", None);
+        for id in [a, b, nodate] {
+            store.set_decision(id, Some(Decision::Like)).unwrap();
+            store.save_results(id, &[StepResult { kind: "blur".into(), implementation: "x".into(), result: Ok(serde_json::json!({})) }]).unwrap();
+            let item = TriageItem { photo_id: id, question: Question::Judge, group: None, reasons: vec![], hints: vec![], score: None, analyzed: true };
+            store.insert_outcomes(&[OutcomeEntry { item, plan_version: "v".into(), place: Place::Timeline, decision: Decision::Like }]).unwrap();
+        }
+        let count = |table: &str, id: PhotoId| -> i64 { store.conn.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE photo_id = ?1"), [id], |r| r.get(0)).unwrap() };
+
+        let ids = store.photo_ids_on_days(&["2026-07-01".into()]).unwrap();
+        assert_eq!(ids, vec![a]);
+        assert_eq!(store.forget_decisions(&ids).unwrap(), 1);
+        for table in ["decisions", "decision_log", "outcomes"] {
+            assert_eq!(count(table, a), 0, "{table} of the reset day");
+            assert_eq!((count(table, b), count(table, nodate)), (1, 1), "{table} of other photos untouched");
+        }
+        assert_eq!(count("analysis", a), 1, "analysis is a separate choice");
+        assert_eq!(store.forget_analysis(&ids).unwrap(), 1);
+        assert_eq!((count("analysis", a), count("analysis", b)), (0, 1));
+        assert_eq!(store.photo(a).unwrap().decision, None, "the photo itself is kept");
+        assert!(store.photo_ids_on_days(&[]).unwrap().is_empty());
     }
 
     #[test]

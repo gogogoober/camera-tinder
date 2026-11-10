@@ -108,6 +108,15 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 
 ## Gotchas learned
 
+- **Background analysis:** `CullerService::start_analysis_worker` (called in `setup`) analyses every scanned photo from the
+  cached 2048 px master and never reads originals (no cached master = skipped). It is woken by the scan and by
+  `add_source`; a crash on one photo is reported, not fatal. Results count only while their implementation id matches
+  the registered step (`PhotoAnalysis::retain_current`). Stop analysis is sticky until Resume or restart. A new
+  analysis step = one `steps.push(...)` in `analysis/pipeline.rs`.
+- **Reset days (testing):** `CullerService::reset_days({ days, decisions, analysis })` forgets decisions (+ history and
+  outcomes) and/or analysis for every photo taken on those `YYYY-MM-DD` days, library-wide. Database only (photos,
+  previews, tags and files stay); an empty list does nothing; malformed days are rejected; it clears the undo stack.
+  UI: "Reset these days…" tucked under Start culling on the Pick screen.
 - UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
   (month calendar, card stack, round buttons). All logic is shared.

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type CalendarStatus, type DaySummary, type PreviewCacheStatus, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
-  import { minutesFor, rangeForBudget, shortRange } from '../days';
+  import { addDays, diffDays, minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
@@ -86,6 +86,34 @@
       clearing = false;
       confirmClear = false;
       await loadCache();
+    }
+  }
+
+  // Testing tool, tucked away under the selection: forget what was recorded for the selected days.
+  let resetDecisions = $state(true);
+  let resetAnalysis = $state(false);
+  let resetArmed = $state(false);
+  let resetMessage = $state<string | null>(null);
+
+  // A new selection starts clean: no armed button, no message about other days.
+  $effect(() => {
+    void range?.from;
+    void range?.to;
+    resetArmed = false;
+    resetMessage = null;
+  });
+
+  async function resetSelectedDays() {
+    if (!range) return;
+    const r = range;
+    const days = Array.from({ length: diffDays(r.from, r.to) + 1 }, (_, k) => addDays(r.from, k));
+    resetArmed = false;
+    try {
+      const rep = await api.resetDays({ days, decisions: resetDecisions, analysis: resetAnalysis });
+      resetMessage = `Reset ${formatCount(rep.photos)} photos: ${formatCount(rep.decisions)} decisions, ${formatCount(rep.analysis)} analysis results.`;
+      await refresh();
+    } catch (e) {
+      resetMessage = String(e);
     }
   }
 
@@ -471,6 +499,21 @@
         </div>
       {/if}
       <button class="primary go" onclick={() => range && onStart(range)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
+      <details class="reset" ontoggle={() => ((resetArmed = false), (resetMessage = null))}>
+        <summary class="muted">Reset these days…</summary>
+        <p class="muted">For testing: forget what was recorded for {shortRange(range.from, range.to)} so it can be culled again. Photos, previews and tags stay; files are never touched.</p>
+        <label><input type="checkbox" bind:checked={resetDecisions} onchange={() => (resetArmed = false)} /> Decisions and their history</label>
+        <label><input type="checkbox" bind:checked={resetAnalysis} onchange={() => (resetArmed = false)} /> Analysis results (computed again)</label>
+        {#if resetArmed}
+          <div class="row">
+            <button class="small danger" onclick={resetSelectedDays}>Reset {shortRange(range.from, range.to)}</button>
+            <button class="small ghost" onclick={() => (resetArmed = false)}>Cancel</button>
+          </div>
+        {:else}
+          <button class="small" disabled={!(resetDecisions || resetAnalysis) || scanning} onclick={() => (resetArmed = true)}>Reset…</button>
+        {/if}
+        {#if resetMessage}<p class="muted">{resetMessage}</p>{/if}
+      </details>
     {:else}
       <div class="muted">Pick days on the calendar to begin.</div>
     {/if}
@@ -537,6 +580,13 @@
   .tagform { display: flex; gap: 6px; margin-top: 4px; }
   .tagform input { flex: 1; min-width: 0; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .go { margin-top: auto; padding: 12px; font-size: 16px; }
+  .reset { font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; }
+  .reset summary { cursor: pointer; font-size: 12px; }
+  .reset[open] { display: flex; }
+  .reset p { margin: 4px 0; }
+  .reset label { display: flex; gap: 6px; align-items: center; }
+  .reset .row { display: flex; gap: 6px; }
+  .reset .danger { color: var(--hate); border-color: color-mix(in srgb, var(--hate) 50%, var(--border)); }
 
   /* Phones: AppShell hides the sidebar and turns the summary into a bottom sheet. */
   :global(.shell.compact) .main { padding: 14px 16px 8px; gap: 10px; }

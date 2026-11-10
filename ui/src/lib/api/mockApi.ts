@@ -353,6 +353,21 @@ export const mockApi: CullerApi = {
     return analysisStopped;
   },
   async logOutcomes() {},
+  async resetDays({ days, decisions, analysis }) {
+    const hit = photos.filter((p) => p.capturedAt && days.includes(p.capturedAt.slice(0, 10)));
+    let d = 0;
+    let a = 0;
+    for (const p of hit) {
+      if (decisions && p.decision) {
+        p.decision = null;
+        d++;
+      }
+      if (analysis && analysed.delete(p.id)) a++;
+    }
+    if (decisions) undoStack.length = 0;
+    if (analysis) void backgroundAnalysis();
+    return { photos: hit.length, decisions: d, analysis: a };
+  },
   async analyzerInfo() {
     return MOCK_ANALYZERS;
   },
