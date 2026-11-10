@@ -199,7 +199,18 @@ impl CullerService {
     pub fn plan(&self, filter: &Filter) -> Result<Plan> {
         let photos = self.queue(filter)?;
         let times: Vec<_> = photos.iter().map(|p| p.captured_at).collect();
-        Ok(Plan { moments: group_by_gap(&times, MOMENT_GAP_SECS), bursts: bursts(&times), photos })
+        let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
+        let analyzers = self.analyzers.read().unwrap().clone();
+        let mut analyses = self.store.lock().unwrap().load_analyses(&ids, None)?;
+        analyses.values_mut().for_each(|a| a.retain_current(&analyzers));
+        let triage = crate::triage::build(&photos, &analyses);
+        Ok(Plan {
+            moments: group_by_gap(&times, MOMENT_GAP_SECS),
+            bursts: bursts(&times),
+            triage,
+            triage_version: crate::triage::PLAN_VERSION.to_string(),
+            photos,
+        })
     }
 
     pub fn days(&self) -> Result<Vec<DaySummary>> {
@@ -490,5 +501,89 @@ impl CullerService {
             })
             .collect();
         target.export(&items, sink)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analysis::pipeline::{Pipeline, run_photo};
+    use crate::analysis::{Embedding, PerceptualHash};
+    use crate::ports::{MediaEntry, ReadSeek};
+    use crate::store::NewPhoto;
+    use chrono::NaiveDateTime;
+
+    /// A source with no files: it only has to exist so its photos belong to the session.
+    struct EmptySource;
+    impl MediaSource for EmptySource {
+        fn id(&self) -> &str {
+            "s"
+        }
+        fn display_name(&self) -> &str {
+            "s"
+        }
+        fn list(&self) -> Result<Vec<MediaEntry>> {
+            Ok(vec![])
+        }
+        fn open(&self, _: &str) -> Result<Box<dyn ReadSeek>> {
+            Err(CoreError::Other("empty".into()))
+        }
+    }
+
+    /// The triage plan is computed on every request instead of being stored, so it has to stay fast
+    /// at the size of a real session: 2,000 fully analysed photos over 5 days, a third of them in bursts.
+    /// If this ever fails, cache the plan; don't loosen the limit silently.
+    #[test]
+    fn a_triage_plan_for_2000_analysed_photos_is_fast() {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = CullerService::in_memory(tmp.path()).unwrap();
+        svc.add_source(Arc::new(EmptySource)).unwrap();
+
+        // Real results for one tiny image, reused for every photo with its own hash and embedding.
+        let img = AnalysisImage::from_image(::image::DynamicImage::ImageRgb8(::image::ImageBuffer::from_fn(64, 64, |x, y| ::image::Rgb([x as u8 * 4, y as u8 * 4, 90]))));
+        let pipeline = Pipeline::from_analyzers(svc.analyzers.read().unwrap().clone());
+        let template = run_photo(&pipeline, &(0..pipeline.steps.len()).collect::<Vec<_>>(), 0, &img, &AtomicBool::new(false)).0;
+
+        let mut seed = 12345u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let mut when = NaiveDateTime::parse_from_str("2026-01-01T08:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+        {
+            let mut store = svc.store.lock().unwrap();
+            store
+                .transaction(|s| {
+                    for n in 0..2000 {
+                        // Every third photo starts a new scene minutes later; the others follow a second after.
+                        when += chrono::Duration::seconds(if n % 3 == 0 { 120 + (next() % 600) as i64 } else { 1 });
+                        let fp = format!("fp{n}");
+                        let (id, _) = s.upsert_photo(&NewPhoto { fingerprint: &fp, source_id: "s", rel_path: &fp, kind: MediaKind::Jpeg, size: 1, captured_at: Some(when), camera: None })?;
+                        let mut results = template.clone();
+                        for r in &mut results {
+                            if r.kind == "perceptualHash" {
+                                // Frames of one scene share a hash; scenes differ.
+                                r.result = Ok(serde_json::to_value(PerceptualHash(if n % 3 == 0 { next() } else { 0 })).unwrap());
+                            }
+                            if r.kind == "similarity" {
+                                let vector = (0..64).map(|_| (next() % 1000) as f32 / 1000.0).collect();
+                                r.result = Ok(serde_json::to_value(Embedding { model: r.implementation.clone(), vector }).unwrap());
+                            }
+                        }
+                        s.save_results(id, &results)?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        let plan = svc.plan(&Filter { status: StatusFilter::All, ..Default::default() }).unwrap();
+        let took = start.elapsed();
+        println!("plan() for 2000 analysed photos: {took:?}");
+        assert_eq!(plan.triage.len(), 2000);
+        assert!(plan.triage.iter().all(|t| t.analyzed));
+        assert!(plan.triage.iter().any(|t| t.question == crate::triage::Question::Pick), "bursts were found");
+        assert!(took < std::time::Duration::from_secs(2), "took {took:?}");
     }
 }

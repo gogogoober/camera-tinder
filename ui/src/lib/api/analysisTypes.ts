@@ -220,6 +220,8 @@ export interface GroupingOptions {
   /** Multiplier on the calibrated embedding threshold. Default 1. */
   embeddingTolerance?: number;
   window?: number;
+  /** Frames this many seconds apart always group. Default off. */
+  burstGapSecs?: number | null;
 }
 
 export interface SimilarGroup {

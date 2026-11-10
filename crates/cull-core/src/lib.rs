@@ -16,6 +16,7 @@ pub mod preview;
 pub mod scan;
 pub mod store;
 pub mod suggest;
+pub mod triage;
 mod worker;
 
 pub use api::CullerService;

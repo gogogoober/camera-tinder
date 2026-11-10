@@ -322,13 +322,12 @@ Inputs are already current-only (`retain_current`). Steps, in this order:
 4. Not grouped and has a reject-level issue with `severity >= SWEEP_MIN_SEVERITY` → `Sweep`, `reasons` = its
    reject-level issues, worst first.
 5. Everything else → `Judge`.
-6. `hints` for every item = its issues whose kind is in `HINT_KINDS`.
+6. `hints` for every item = all its issues that are not in its `reasons` (so a borderline-dark photo that stays a Judge still shows a badge).
 
 `triage/route.rs` holds the constants:
 
 ```rust
 pub const REJECT_KINDS: &[IssueKind] = &[Blurry, MotionBlur, SubjectOutOfFocus, Underexposed, Overexposed, FaceCutOff, Utility];
-pub const HINT_KINDS: &[IssueKind] = &[Tilted, ColorCast, Noisy, Flat, LowAesthetic, EyesClosed, PoorFaceQuality];
 pub const SWEEP_MIN_SEVERITY: f32 = 0.4;
 ```
 

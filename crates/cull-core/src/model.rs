@@ -211,6 +211,9 @@ pub struct Plan {
     pub photos: Vec<Photo>,
     pub moments: Vec<Group>,
     pub bursts: Vec<Group>,
+    /// One item per photo, same order: which question each photo gets (see `triage`).
+    pub triage: Vec<crate::triage::TriageItem>,
+    pub triage_version: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

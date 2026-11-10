@@ -35,11 +35,14 @@ pub struct GroupingOptions {
     pub embedding_tolerance: f32,
     /// How many following photos (in time order) each photo is compared with.
     pub window: usize,
+    /// Frames this close in time always belong together (a burst), whatever they look like.
+    /// `None` = off, which is how `similar_groups` has always behaved.
+    pub burst_gap_secs: Option<i64>,
 }
 
 impl Default for GroupingOptions {
     fn default() -> Self {
-        Self { max_gap_secs: Some(10 * 60), max_hash_bits: NEAR_DUPLICATE_BITS, use_embeddings: true, embedding_tolerance: 1.0, window: 60 }
+        Self { max_gap_secs: Some(10 * 60), max_hash_bits: NEAR_DUPLICATE_BITS, use_embeddings: true, embedding_tolerance: 1.0, window: 60, burst_gap_secs: None }
     }
 }
 
@@ -75,6 +78,11 @@ fn find(parent: &mut [usize], i: usize) -> usize {
 }
 
 fn linked(a: &Candidate, b: &Candidate, opts: &GroupingOptions) -> bool {
+    if let (Some(burst), Some(x), Some(y)) = (opts.burst_gap_secs, a.captured_at, b.captured_at)
+        && (y - x).num_seconds().abs() <= burst
+    {
+        return true;
+    }
     if let Some(max) = opts.max_gap_secs {
         match (a.captured_at, b.captured_at) {
             (Some(x), Some(y)) if (y - x).num_seconds().abs() > max => return false,
@@ -154,6 +162,17 @@ mod tests {
         // Without a time limit, photo 5 joins.
         let g = similar_groups(&c, &GroupingOptions { max_gap_secs: None, ..Default::default() });
         assert_eq!(g[0].photo_ids.len(), 4);
+    }
+
+    #[test]
+    fn burst_gap_links_frames_seconds_apart_whatever_they_look_like() {
+        let photos = [a(1, 0, 50), a(2, u64::MAX, 50), a(3, 0x00FF_00FF_00FF_00FF, 50)]; // three different scenes
+        let times = [t("2026-01-01T10:00:00"), t("2026-01-01T10:00:02"), t("2026-01-01T10:09:00")];
+        let c: Vec<Candidate> = photos.iter().zip(times).map(|(analysis, captured_at)| Candidate { captured_at, analysis }).collect();
+        assert!(similar_groups(&c, &GroupingOptions::default()).is_empty(), "off by default");
+        let g = similar_groups(&c, &GroupingOptions { burst_gap_secs: Some(3), ..Default::default() });
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].photo_ids.len(), 2, "photo 3 is far in time and different");
     }
 
     #[test]

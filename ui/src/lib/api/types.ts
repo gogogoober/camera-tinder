@@ -1,3 +1,4 @@
+import type { IssueKind } from './analysisTypes';
 // Mirrors the serde types in crates/cull-core/src/model.rs.
 
 export type Decision = 'like' | 'dislike' | 'favorite' | 'hate';
@@ -84,8 +85,40 @@ export interface Group {
   end: number;
 }
 
+export type Question = 'judge' | 'pick' | 'sweep';
+export type GroupKind = 'burst' | 'similar';
+
+export interface TriageGroup {
+  /** The group's earliest photo; the same for every member. */
+  id: number;
+  /** burst = frames seconds apart; similar = the same scene again, minutes apart. */
+  kind: GroupKind;
+  size: number;
+  /** 0 = best frame. */
+  rank: number;
+  /** ★: the best frame, and it has no reject-level issue. */
+  suggested: boolean;
+}
+
+/** What to ask about one photo (see docs/smart-triage.md). */
+export interface TriageItem {
+  photoId: number;
+  question: Question;
+  group: TriageGroup | null;
+  /** Why it is set aside (sweep) or what is wrong with this frame (pick), worst first. */
+  reasons: IssueKind[];
+  /** Other issues found: badges only. */
+  hints: IssueKind[];
+  score: number | null;
+  /** False until the photo has analysis results; then it is just a judge. */
+  analyzed: boolean;
+}
+
 export interface Plan {
   photos: Photo[];
+  /** One item per photo, same order. */
+  triage: TriageItem[];
+  triageVersion: string;
   /** Photos split by gaps of minutes. */
   moments: Group[];
   /** Runs shot seconds apart (two or more photos). */

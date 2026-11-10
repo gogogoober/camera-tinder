@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion, TriageItem } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
 
@@ -241,7 +241,9 @@ export const mockApi: CullerApi = {
   },
   async plan(filter): Promise<Plan> {
     const list = query(filter);
-    return { photos: list, moments: groupByGap(list, 15 * 60), bursts: groupByGap(list, 3, 2) };
+    // Every photo a plain judge until mockTriage.ts (next step) fakes sweeps and bursts.
+    const triage = list.map((p): TriageItem => ({ photoId: p.id, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: false }));
+    return { photos: list, moments: groupByGap(list, 15 * 60), bursts: groupByGap(list, 3, 2), triage, triageVersion: 'mock' };
   },
   async days() {
     const byDay = new Map<string | null, Photo[]>();
