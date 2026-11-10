@@ -365,7 +365,9 @@
             {@const open = expanded.has(sugKey(s))}
             <div class="sug" class:child>
               <span class="nm">
-                {#if s.children.length}
+                {#if !s.children.length && !child && suggestions.some((x) => x.children.length)}
+                  <span class="chev" aria-hidden="true"></span>
+                {:else if s.children.length}
                   <button class="plain chev" onclick={() => toggle(s)} aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'}>{open ? '▾' : '▸'}</button>
                 {/if}
                 <b class:merged={s.names.length > 1} title={s.name}>{s.name}</b>
@@ -486,9 +488,9 @@
   .nm { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
   .nm b { min-width: 0; }
   .nm b.merged { font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chev { width: 1.2em; flex: none; color: var(--muted); }
+  .chev { width: 1.4em; flex: none; color: var(--muted); font-size: 1.1em; text-align: left; }
   .count { flex: none; }
-  .sug.child { padding-left: 22px; }
+  .sug.child { padding-left: 2.8em; }
   .sug.child .nm b { font-weight: 500; }
   .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .btns { display: flex; gap: 6px; }
