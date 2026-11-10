@@ -1,4 +1,4 @@
-//! Scan behaviour: unchanged folders are skipped, saves happen in batches, and Stop keeps the work done.
+//! Scan behaviour: rescans read only new files, saves happen in batches, and Stop keeps the work done.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -19,7 +19,7 @@ fn card(root: &Path, n: u8) {
 }
 
 #[test]
-fn unchanged_folder_is_skipped_until_its_contents_change_or_it_is_forced() {
+fn rescans_read_only_new_files_and_requests_can_name_one_folder() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("card");
     card(&root, 3);
@@ -28,23 +28,19 @@ fn unchanged_folder_is_skipped_until_its_contents_change_or_it_is_forced() {
     let src = svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
 
     let r = svc.scan(&ScanRequest::default(), &NullSink).unwrap();
-    assert_eq!((r.found, r.new, r.unchanged_sources), (3, 3, 0));
+    assert_eq!((r.found, r.new, r.skipped_unsupported), (3, 3, 1));
 
-    // Same files: skipped, but still reports what the folder holds.
+    // Same files: everything is found again, nothing is new.
     let r = svc.scan(&ScanRequest::default(), &NullSink).unwrap();
-    assert_eq!((r.found, r.new, r.skipped_unsupported, r.unchanged_sources), (3, 0, 1, 1));
+    assert_eq!((r.found, r.new, r.skipped_unsupported), (3, 0, 1));
 
-    // A new photo changes the file count: the folder is scanned and only the new file is read.
+    // A new photo: only that one is new.
     write_jpeg(&root.join("DCIM/DSC_0099.JPG"), 99);
-    let r = svc.scan(&ScanRequest::default(), &NullSink).unwrap();
-    assert_eq!((r.found, r.new, r.unchanged_sources), (4, 1, 0));
-
-    // Forced: looks inside even though nothing changed (and still finds nothing new).
-    let r = svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true }, &NullSink).unwrap();
-    assert_eq!((r.found, r.new, r.unchanged_sources), (4, 0, 0));
+    let r = svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]) }, &NullSink).unwrap();
+    assert_eq!((r.found, r.new), (4, 1));
 
     // Asking for another folder leaves this one alone.
-    let r = svc.scan(&ScanRequest { source_ids: Some(vec!["/elsewhere".into()]), force: true }, &NullSink).unwrap();
+    let r = svc.scan(&ScanRequest { source_ids: Some(vec!["/elsewhere".into()]) }, &NullSink).unwrap();
     assert_eq!(r.found, 0);
 }
 
@@ -81,6 +77,6 @@ fn stopping_keeps_saved_batches_and_the_next_scan_finishes_the_rest() {
     // A stopped scan doesn't mark the folder as done, so a plain rescan finishes it.
     let r = svc.scan(&ScanRequest::default(), &NullSink).unwrap();
     assert!(!r.cancelled);
-    assert_eq!((r.new, r.unchanged_sources), (8, 0));
+    assert_eq!(r.new, 8);
     assert_eq!(svc.queue(&Filter::default()).unwrap().len(), 40);
 }

@@ -5,11 +5,10 @@
 //! whole culling session runs from the cache and the card sits idle.
 //! (Export is the only other moment the originals are read.)
 //!
-//! Work is skipped at three levels, cheapest first:
-//! 1. **Folder:** if the folder lists the same number of files with the same total size as
-//!    after its last complete scan, nothing else happens (unless the scan is forced).
-//! 2. **File:** files already indexed (same path + size + mtime) are not read.
-//! 3. **Photo:** each new file is read and decoded once; every preview size comes from that.
+//! A rescan lists the folder and looks each file up in the index: files already indexed (same
+//! path + size + mtime) are not read. Each new file is read and decoded once; every preview size
+//! comes from that. (A folder-level "unchanged, skip it" shortcut was tried and removed: it saved
+//! ~25 µs per photo and caused bugs.)
 //!
 //! New photos are saved in batches as they are processed, so the UI can show them while the
 //! scan runs, and a stopped scan keeps everything finished so far (the next scan resumes).
@@ -29,7 +28,7 @@ use crate::metadata::{PhotoMeta, read_meta};
 use crate::model::{MediaKind, ScanReport};
 use crate::ports::{CoreEvent, EventSink, MediaEntry, MediaSource};
 use crate::preview::PreviewCache;
-use crate::store::{FolderSignature, NewPhoto, Store};
+use crate::store::{NewPhoto, Store};
 
 /// Kinds that can currently be culled. RAW joins once embedded-preview
 /// extraction lands (desktop only; iOS stays JPEG-only).
@@ -79,21 +78,10 @@ fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &Previe
     Ok((fp, meta))
 }
 
-/// How a scan treats folders whose contents look unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FolderCheck {
-    /// Skip the folder when its file count and total size match its last complete scan, and the
-    /// photos it held then still point to it.
-    SkipUnchanged,
-    /// Look at every file anyway (already-indexed files are still not read).
-    Force,
-}
-
 pub fn scan_source(
     store: &Mutex<Store>,
     source: &dyn MediaSource,
     previews: &PreviewCache,
-    check: FolderCheck,
     cancel: &AtomicBool,
     sink: &dyn EventSink,
 ) -> Result<ScanReport> {
@@ -101,20 +89,6 @@ pub fn scan_source(
     let mut report = ScanReport::default();
 
     let listed = source.list()?;
-    let signature = FolderSignature { files: listed.len() as u64, bytes: listed.iter().map(|e| e.size).sum(), ..Default::default() };
-    if check == FolderCheck::SkipUnchanged {
-        let store = store.lock().unwrap();
-        if let Some(last) = store.scan_signature(&src)? {
-            if last.files == signature.files && last.bytes == signature.bytes && store.source_photo_count(&src)? == last.indexed {
-                report.unchanged_sources = 1;
-                report.found = last.photos;
-                report.skipped_unsupported = last.raw;
-                report.other_files = last.other;
-                return Ok(report);
-            }
-        }
-    }
-
     let candidates: Vec<(MediaEntry, MediaKind)> = listed
         .into_iter()
         .filter_map(|e| match MediaKind::from_path(&e.rel_path) {
@@ -241,11 +215,8 @@ pub fn scan_source(
     }
 
     report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;
-    // Remember the folder only after a complete, clean scan, so anything missed is retried next time.
-    if !report.cancelled && report.failed.is_empty() {
-        let store = store.lock().unwrap();
-        let signature = FolderSignature { photos: report.found, raw: report.skipped_unsupported, other: report.other_files, indexed: store.source_photo_count(&src)?, ..signature };
-        store.mark_scanned(&src, &signature)?;
+    if !report.cancelled {
+        store.lock().unwrap().mark_scanned(&src)?;
     }
     Ok(report)
 }

@@ -6,178 +6,81 @@
 //! decode, rotate and downscale. Smaller sizes are drawn from that first image (no second
 //! decode), and every size is written with ImageIO's JPEG encoder.
 //!
-//! Plain C APIs, declared here directly: only a dozen functions are needed.
+//! Uses the typed `objc2` bindings (same family as the Vision code): Core Foundation objects
+//! are released automatically, and the photo's bytes are copied into ImageIO's own buffer
+//! rather than lent to it, so nothing depends on how long ImageIO keeps a reference.
 
-use std::ffi::c_void;
-use std::ptr::{self, NonNull};
+use objc2_core_foundation::{CFBoolean, CFData, CFDictionary, CFMutableData, CFNumber, CFRetained, CFString, CFType, CGPoint, CGRect, CGSize};
+use objc2_core_graphics::{CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGContext, CGImage, CGImageAlphaInfo, CGInterpolationQuality, kCGColorSpaceSRGB};
+use objc2_image_io::{
+    CGImageDestination, CGImageSource, kCGImageDestinationLossyCompressionQuality, kCGImageSourceCreateThumbnailFromImageAlways,
+    kCGImageSourceCreateThumbnailWithTransform, kCGImageSourceShouldCacheImmediately, kCGImageSourceThumbnailMaxPixelSize,
+};
 
 use cull_core::ports::PreviewMaker;
 use cull_core::{CoreError, Result};
 
-type CFTypeRef = *const c_void;
-type CFIndex = isize;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CGRect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    static kCFAllocatorNull: CFTypeRef;
-    static kCFBooleanTrue: CFTypeRef;
-    static kCFTypeDictionaryKeyCallBacks: c_void;
-    static kCFTypeDictionaryValueCallBacks: c_void;
-    fn CFRelease(cf: CFTypeRef);
-    fn CFDataCreateWithBytesNoCopy(alloc: CFTypeRef, bytes: *const u8, len: CFIndex, dealloc: CFTypeRef) -> CFTypeRef;
-    fn CFDataCreateMutable(alloc: CFTypeRef, capacity: CFIndex) -> CFTypeRef;
-    fn CFDataGetLength(data: CFTypeRef) -> CFIndex;
-    fn CFDataGetBytePtr(data: CFTypeRef) -> *const u8;
-    fn CFNumberCreate(alloc: CFTypeRef, kind: CFIndex, value: *const c_void) -> CFTypeRef;
-    fn CFDictionaryCreate(
-        alloc: CFTypeRef,
-        keys: *const CFTypeRef,
-        values: *const CFTypeRef,
-        n: CFIndex,
-        key_callbacks: *const c_void,
-        value_callbacks: *const c_void,
-    ) -> CFTypeRef;
-    fn CFStringCreateWithCString(alloc: CFTypeRef, s: *const u8, encoding: u32) -> CFTypeRef;
-}
-
-#[link(name = "ImageIO", kind = "framework")]
-unsafe extern "C" {
-    static kCGImageSourceCreateThumbnailFromImageAlways: CFTypeRef;
-    static kCGImageSourceCreateThumbnailWithTransform: CFTypeRef;
-    static kCGImageSourceThumbnailMaxPixelSize: CFTypeRef;
-    static kCGImageSourceShouldCacheImmediately: CFTypeRef;
-    static kCGImageDestinationLossyCompressionQuality: CFTypeRef;
-    fn CGImageSourceCreateWithData(data: CFTypeRef, options: CFTypeRef) -> CFTypeRef;
-    fn CGImageSourceCreateThumbnailAtIndex(src: CFTypeRef, index: usize, options: CFTypeRef) -> CFTypeRef;
-    fn CGImageDestinationCreateWithData(data: CFTypeRef, uti: CFTypeRef, count: usize, options: CFTypeRef) -> CFTypeRef;
-    fn CGImageDestinationAddImage(dest: CFTypeRef, image: CFTypeRef, properties: CFTypeRef);
-    fn CGImageDestinationFinalize(dest: CFTypeRef) -> bool;
-}
-
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    static kCGColorSpaceSRGB: CFTypeRef;
-    fn CGImageGetWidth(image: CFTypeRef) -> usize;
-    fn CGImageGetHeight(image: CFTypeRef) -> usize;
-    fn CGColorSpaceCreateWithName(name: CFTypeRef) -> CFTypeRef;
-    fn CGBitmapContextCreate(data: *mut c_void, w: usize, h: usize, bits: usize, row_bytes: usize, space: CFTypeRef, info: u32) -> CFTypeRef;
-    fn CGBitmapContextCreateImage(ctx: CFTypeRef) -> CFTypeRef;
-    fn CGContextSetInterpolationQuality(ctx: CFTypeRef, quality: i32);
-    fn CGContextDrawImage(ctx: CFTypeRef, rect: CGRect, image: CFTypeRef);
-}
-
-const K_CF_NUMBER_SINT64: CFIndex = 4;
-const K_CF_NUMBER_FLOAT64: CFIndex = 6;
-const K_CF_STRING_ENCODING_UTF8: u32 = 0x0800_0100;
-const K_CG_IMAGE_ALPHA_NONE_SKIP_LAST: u32 = 5;
-const K_CG_INTERPOLATION_HIGH: i32 = 3;
 /// ImageIO's scale runs higher than libjpeg's: 0.85 made previews ~50% bigger than the portable
 /// encoder at 85. 0.7 keeps the preview cache about the same size (~0.6 MB per photo).
 const JPEG_QUALITY: f64 = 0.7;
 
-/// An owned Core Foundation object, released on drop.
-struct Cf(NonNull<c_void>);
-
-impl Cf {
-    fn new(ptr: CFTypeRef, what: &str) -> Result<Cf> {
-        NonNull::new(ptr as *mut c_void).map(Cf).ok_or_else(|| CoreError::Other(format!("ImageIO: {what} failed")))
-    }
-    fn ptr(&self) -> CFTypeRef {
-        self.0.as_ptr()
-    }
+fn failed(what: &str) -> CoreError {
+    CoreError::Other(format!("ImageIO: {what} failed"))
 }
 
-impl Drop for Cf {
-    fn drop(&mut self) {
-        unsafe { CFRelease(self.ptr()) }
-    }
-}
-
-fn number_i64(v: i64) -> Result<Cf> {
-    Cf::new(unsafe { CFNumberCreate(ptr::null(), K_CF_NUMBER_SINT64, (&v as *const i64).cast()) }, "number")
-}
-
-fn number_f64(v: f64) -> Result<Cf> {
-    Cf::new(unsafe { CFNumberCreate(ptr::null(), K_CF_NUMBER_FLOAT64, (&v as *const f64).cast()) }, "number")
-}
-
-fn dictionary(pairs: &[(CFTypeRef, CFTypeRef)]) -> Result<Cf> {
-    let keys: Vec<CFTypeRef> = pairs.iter().map(|p| p.0).collect();
-    let values: Vec<CFTypeRef> = pairs.iter().map(|p| p.1).collect();
-    Cf::new(
-        unsafe {
-            CFDictionaryCreate(
-                ptr::null(),
-                keys.as_ptr(),
-                values.as_ptr(),
-                pairs.len() as CFIndex,
-                &kCFTypeDictionaryKeyCallBacks,
-                &kCFTypeDictionaryValueCallBacks,
-            )
-        },
-        "dictionary",
-    )
+fn options(pairs: &[(&CFString, &CFType)]) -> CFRetained<CFDictionary<CFString, CFType>> {
+    let (keys, values): (Vec<&CFString>, Vec<&CFType>) = pairs.iter().copied().unzip();
+    CFDictionary::from_slices(&keys, &values)
 }
 
 /// Decode `jpeg` at (about) `edge` px on the long side, upright. Never upscales.
-fn thumbnail(jpeg: &[u8], edge: u32) -> Result<Cf> {
-    // The bytes outlive every object made from them in `render`, so ImageIO can read them in place.
-    let data = Cf::new(unsafe { CFDataCreateWithBytesNoCopy(ptr::null(), jpeg.as_ptr(), jpeg.len() as CFIndex, kCFAllocatorNull) }, "wrap bytes")?;
-    let source = Cf::new(unsafe { CGImageSourceCreateWithData(data.ptr(), ptr::null()) }, "open image")?;
-    let max = number_i64(edge as i64)?;
-    let options = unsafe {
-        dictionary(&[
+fn thumbnail(jpeg: &[u8], edge: u32) -> Result<CFRetained<CGImage>> {
+    let data = CFData::from_bytes(jpeg); // a copy: ImageIO owns its input
+    let max = CFNumber::new_i64(edge as i64);
+    // SAFETY: the keys are ImageIO's own constants and each value has the type ImageIO documents for it.
+    unsafe {
+        let source = CGImageSource::with_data(&data, None).ok_or_else(|| failed("open image"))?;
+        let opts = options(&[
             // Always decode the real image: an embedded EXIF thumbnail is only ~160 px.
-            (kCGImageSourceCreateThumbnailFromImageAlways, kCFBooleanTrue),
-            (kCGImageSourceCreateThumbnailWithTransform, kCFBooleanTrue),
-            (kCGImageSourceShouldCacheImmediately, kCFBooleanTrue),
-            (kCGImageSourceThumbnailMaxPixelSize, max.ptr()),
-        ])?
-    };
-    Cf::new(unsafe { CGImageSourceCreateThumbnailAtIndex(source.ptr(), 0, options.ptr()) }, "decode")
+            (kCGImageSourceCreateThumbnailFromImageAlways, CFBoolean::new(true)),
+            (kCGImageSourceCreateThumbnailWithTransform, CFBoolean::new(true)),
+            (kCGImageSourceShouldCacheImmediately, CFBoolean::new(true)),
+            (kCGImageSourceThumbnailMaxPixelSize, &max),
+        ]);
+        source.thumbnail_at_index(0, Some(opts.as_ref())).ok_or_else(|| failed("decode"))
+    }
 }
 
 /// Draw `image` scaled so its long edge is at most `edge` (sRGB, high-quality interpolation).
-fn scaled(image: &Cf, edge: u32) -> Result<Option<Cf>> {
-    let (w, h) = unsafe { (CGImageGetWidth(image.ptr()), CGImageGetHeight(image.ptr())) };
+fn scaled(image: &CGImage, edge: u32) -> Result<Option<CFRetained<CGImage>>> {
+    let (w, h) = (CGImage::width(Some(image)), CGImage::height(Some(image)));
     let long = w.max(h);
     if long <= edge as usize {
         return Ok(None);
     }
     let scale = edge as f64 / long as f64;
     let (tw, th) = (((w as f64 * scale).round() as usize).max(1), ((h as f64 * scale).round() as usize).max(1));
-    let space = Cf::new(unsafe { CGColorSpaceCreateWithName(kCGColorSpaceSRGB) }, "colour space")?;
-    let ctx = Cf::new(unsafe { CGBitmapContextCreate(ptr::null_mut(), tw, th, 8, 0, space.ptr(), K_CG_IMAGE_ALPHA_NONE_SKIP_LAST) }, "bitmap")?;
-    unsafe {
-        CGContextSetInterpolationQuality(ctx.ptr(), K_CG_INTERPOLATION_HIGH);
-        CGContextDrawImage(ctx.ptr(), CGRect { x: 0.0, y: 0.0, width: tw as f64, height: th as f64 }, image.ptr());
-    }
-    Cf::new(unsafe { CGBitmapContextCreateImage(ctx.ptr()) }, "scale").map(Some)
+    // SAFETY: sRGB is a constant name; a null data pointer asks Core Graphics to allocate the bitmap.
+    let space = CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })).ok_or_else(|| failed("colour space"))?;
+    let ctx = unsafe { CGBitmapContextCreate(std::ptr::null_mut(), tw, th, 8, 0, Some(&space), CGImageAlphaInfo::NoneSkipLast.0) }.ok_or_else(|| failed("bitmap"))?;
+    CGContext::set_interpolation_quality(Some(&ctx), CGInterpolationQuality::High);
+    CGContext::draw_image(Some(&ctx), CGRect::new(CGPoint::new(0.0, 0.0), CGSize::new(tw as f64, th as f64)), Some(image));
+    CGBitmapContextCreateImage(Some(&ctx)).map(Some).ok_or_else(|| failed("scale"))
 }
 
-fn encode_jpeg(image: &Cf) -> Result<Vec<u8>> {
-    let out = Cf::new(unsafe { CFDataCreateMutable(ptr::null(), 0) }, "buffer")?;
-    let uti = Cf::new(unsafe { CFStringCreateWithCString(ptr::null(), c"public.jpeg".as_ptr().cast(), K_CF_STRING_ENCODING_UTF8) }, "type")?;
-    let dest = Cf::new(unsafe { CGImageDestinationCreateWithData(out.ptr(), uti.ptr(), 1, ptr::null()) }, "encoder")?;
-    let quality = number_f64(JPEG_QUALITY)?;
-    let props = unsafe { dictionary(&[(kCGImageDestinationLossyCompressionQuality, quality.ptr())])? };
+fn encode_jpeg(image: &CGImage) -> Result<Vec<u8>> {
+    let out = CFMutableData::new(None, 0).ok_or_else(|| failed("buffer"))?;
+    let quality = CFNumber::new_f64(JPEG_QUALITY);
+    // SAFETY: "public.jpeg" is a valid type identifier and the quality value is a CFNumber, as documented.
     unsafe {
-        CGImageDestinationAddImage(dest.ptr(), image.ptr(), props.ptr());
-        if !CGImageDestinationFinalize(dest.ptr()) {
-            return Err(CoreError::Other("ImageIO: encode failed".into()));
+        let dest = CGImageDestination::with_data(&out, &CFString::from_static_str("public.jpeg"), 1, None).ok_or_else(|| failed("encoder"))?;
+        let props = options(&[(kCGImageDestinationLossyCompressionQuality, &quality)]);
+        dest.add_image(image, Some(props.as_ref()));
+        if !dest.finalize() {
+            return Err(failed("encode"));
         }
-        let len = CFDataGetLength(out.ptr()) as usize;
-        Ok(std::slice::from_raw_parts(CFDataGetBytePtr(out.ptr()), len).to_vec())
     }
+    Ok(out.to_vec())
 }
 
 /// See the module docs. Thread-safe: each call uses its own ImageIO objects.

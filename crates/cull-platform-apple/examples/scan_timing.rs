@@ -27,7 +27,7 @@ fn main() {
 
     let t = Instant::now();
     svc.scan(&Default::default(), &NullSink).unwrap();
-    println!("rescan (folder unchanged): {:.4}s", t.elapsed().as_secs_f64());
+    println!("rescan (nothing new): {:.4}s", t.elapsed().as_secs_f64());
 
     let (files, bytes) = cull_core::preview::PreviewCache::new(tmp.path().join("previews")).unwrap().usage().unwrap();
     println!("preview cache: {files} files, {:.0} KB per photo", bytes as f64 / 1024.0 / report.found.max(1) as f64);

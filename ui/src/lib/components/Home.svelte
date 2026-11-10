@@ -170,10 +170,8 @@
     }
   }
 
-  /** Every folder, skipping ones whose files haven't changed since their last complete scan. */
+  /** Every folder: lists each one and reads only files it hasn't indexed yet. */
   const rescanAll = () => scan();
-  /** One folder, looking at every file even if it seems unchanged. */
-  const rescanFolder = (id: string) => scan({ sourceIds: [id], force: true });
 
   async function scan(request?: ScanRequest) {
     error = null;
@@ -220,13 +218,12 @@
           <div class="muted small">{formatCount(s.photoCount)} photos</div>
         </div>
         <span class="src-btns">
-          <button class="ghost" title="Rescan this folder, checking every file" onclick={() => rescanFolder(s.id)} disabled={scanning} aria-label="Rescan {s.name}">↻</button>
           <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
         </span>
       </div>
     {/each}
     <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
-    {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (unchanged folders are skipped)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
+    {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (photos already scanned aren't read again)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
 
     <div class="eyebrow">Auto-tags</div>
     <ul class="how muted small">
@@ -378,8 +375,8 @@
     {#if error}<p class="error">{error}</p>{/if}
     {#if report && !scanning && report.cancelled}
       <p class="muted small">Scan stopped. {formatCount(report.new)} new photos kept; Rescan to pick up the rest.</p>
-    {:else if report && !scanning && !report.new && report.unchangedSources && !report.failed.length}
-      <p class="muted small">No new photos: {report.unchangedSources === 1 ? 'the folder hasn’t' : `${report.unchangedSources} folders haven’t`} changed since the last scan. Use ↻ next to a folder to check it file by file.</p>
+    {:else if report && !scanning && !report.new && report.found && !report.failed.length}
+      <p class="muted small">No new photos since the last scan.</p>
     {/if}
     {#if report && !scanning && (report.skippedUnsupported || report.otherFiles)}
       <p class="leftbehind small">

@@ -427,13 +427,7 @@ fn older_index_without_previews_is_backfilled_by_one_read_on_rescan() {
     for e in fs::read_dir(&cache).unwrap() {
         fs::remove_file(e.unwrap().path()).unwrap();
     }
-    // The folder itself is unchanged, so a plain rescan doesn't look inside it…
-    let r = svc.scan(&Default::default(), &NullSink).unwrap();
-    assert_eq!(r.unchanged_sources, 1);
-    assert_eq!(src.take(), Vec::<String>::new());
-    // …but rescanning that folder on purpose rebuilds the previews.
-    let force = ScanRequest { source_ids: Some(vec![src.id().to_string()]), force: true };
-    svc.scan(&force, &NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!(src.take().len(), 4, "one read per photo to rebuild previews");
     for p in svc.queue(&Filter::default()).unwrap() {
         svc.preview(p.id, 1024).unwrap();
@@ -671,7 +665,7 @@ fn a_whole_session_leaves_every_byte_of_a_real_card_unchanged() {
         let src = svc.add_source(Arc::new(FsSource::new(card.path()).unwrap())).unwrap();
         svc.scan(&Default::default(), &NullSink).unwrap();
         svc.scan(&Default::default(), &NullSink).unwrap();
-        svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true }, &NullSink).unwrap();
+        svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]) }, &NullSink).unwrap();
         let q = svc.queue(&Filter::default()).unwrap();
         assert_eq!(q.len(), 4, "{fs_kind}");
         for p in &q {

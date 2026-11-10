@@ -24,14 +24,8 @@ CREATE TABLE IF NOT EXISTS sources (
     id           TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     added_at     TEXT NOT NULL,
-    last_scan    TEXT,
-    -- What the folder held after its last complete scan (see FolderSignature).
-    scan_files   INTEGER,
-    scan_bytes   INTEGER,
-    scan_photos  INTEGER,
-    scan_raw     INTEGER,
-    scan_other   INTEGER,
-    scan_indexed INTEGER
+    last_scan    TEXT
+    -- Databases from Nov 2026 builds may also have unused scan_* columns (a removed folder-skip cache).
 );
 
 CREATE TABLE IF NOT EXISTS photos (
@@ -109,22 +103,6 @@ pub struct NewPhoto<'a> {
     pub camera: Option<&'a str>,
 }
 
-/// A folder's contents as of its last complete scan. Same `files` and `bytes` → nothing to do.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct FolderSignature {
-    /// Every file listed (photos, RAW, videos, anything).
-    pub files: u64,
-    /// Their total size.
-    pub bytes: u64,
-    /// The rest is the last scan's report, so a skipped folder still reports what it holds.
-    pub photos: u64,
-    pub raw: u64,
-    pub other: u64,
-    /// Photos whose location was this folder. Fewer now means some were last seen elsewhere
-    /// (e.g. a copy on the laptop), so the folder is looked into again to claim them back.
-    pub indexed: u64,
-}
-
 pub struct Store {
     conn: Connection,
 }
@@ -193,12 +171,6 @@ impl Store {
         if !columns("photos")?.iter().any(|c| c == "sharpness") {
             conn.execute_batch("ALTER TABLE photos ADD COLUMN sharpness INTEGER")?;
         }
-        let source_cols = columns("sources")?;
-        for col in ["scan_files", "scan_bytes", "scan_photos", "scan_raw", "scan_other", "scan_indexed"] {
-            if !source_cols.iter().any(|c| c == col) {
-                conn.execute_batch(&format!("ALTER TABLE sources ADD COLUMN {col} INTEGER"))?;
-            }
-        }
         Ok(Self { conn })
     }
 
@@ -225,35 +197,9 @@ impl Store {
         Ok(ids)
     }
 
-    /// Record a complete scan of `source_id` and what the folder held at the time.
-    pub fn mark_scanned(&self, source_id: &str, sig: &FolderSignature) -> Result<()> {
-        self.conn.execute(
-            "UPDATE sources SET last_scan = ?2, scan_files = ?3, scan_bytes = ?4, scan_photos = ?5, scan_raw = ?6, scan_other = ?7, scan_indexed = ?8 WHERE id = ?1",
-            params![source_id, now(), sig.files as i64, sig.bytes as i64, sig.photos as i64, sig.raw as i64, sig.other as i64, sig.indexed as i64],
-        )?;
-        Ok(())
-    }
-
-    /// What `source_id` held after its last complete scan, if it has had one.
-    pub fn scan_signature(&self, source_id: &str) -> Result<Option<FolderSignature>> {
-        let row = self
-            .conn
-            .query_row(
-                "SELECT scan_files, scan_bytes, scan_photos, scan_raw, scan_other, scan_indexed FROM sources
-                 WHERE id = ?1 AND scan_files IS NOT NULL AND scan_indexed IS NOT NULL",
-                [source_id],
-                |r| {
-                    let n = |i: usize| r.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0) as u64);
-                    Ok(FolderSignature { files: n(0)?, bytes: n(1)?, photos: n(2)?, raw: n(3)?, other: n(4)?, indexed: n(5)? })
-                },
-            )
-            .optional()?;
-        Ok(row)
-    }
-
-    /// Make the next scan of every folder look at each file again (e.g. after the previews were cleared).
-    pub fn forget_scan_signatures(&self) -> Result<()> {
-        self.conn.execute("UPDATE sources SET scan_files = NULL", [])?;
+    /// Record when `source_id` was last scanned to the end.
+    pub fn mark_scanned(&self, source_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE sources SET last_scan = ?2 WHERE id = ?1", params![source_id, now()])?;
         Ok(())
     }
 

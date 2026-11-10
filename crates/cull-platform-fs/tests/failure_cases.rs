@@ -127,27 +127,26 @@ fn export_refuses_a_destination_that_differs_from_a_source_only_in_letter_case()
     assert!(!root.join("DCIM/keepers").exists());
 }
 
-/// Renaming files keeps the folder's count and size, so a plain rescan skips it. Export must then
-/// report the photos it can't find, never drop them silently; ↻ (forced) fixes it.
+/// A file renamed after the scan: export reports the photo it can't find (never drops it silently),
+/// and the next rescan finds it under its new name.
 #[test]
-fn renamed_files_in_a_skipped_folder_are_reported_by_export_and_found_by_a_forced_rescan() {
+fn a_renamed_file_is_reported_by_export_and_found_by_the_next_rescan() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("card");
     card(&root, 2);
     let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
-    let src = svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
     svc.scan(&Default::default(), &NullSink).unwrap();
     for p in svc.queue(&Filter::default()).unwrap() {
         svc.decide(p.id, Decision::Like).unwrap();
     }
     fs::rename(root.join("DCIM/DSC_0000.JPG"), root.join("DCIM/RENAMED.JPG")).unwrap();
-    assert_eq!(svc.scan(&Default::default(), &NullSink).unwrap().unchanged_sources, 1);
 
     let target = || CopyToDir::new(tmp.path().join("out")).protecting(svc.known_source_ids().unwrap());
     let r = svc.export(&target(), ExportOptions::default(), &NullSink).unwrap();
     assert_eq!((r.copied, r.failed.len()), (1, 1));
 
-    svc.scan(&ScanRequest { source_ids: Some(vec![src.id]), force: true }, &NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let r = svc.export(&target(), ExportOptions::default(), &NullSink).unwrap();
     assert_eq!((r.copied, r.already_there, r.failed.len()), (1, 1, 0));
 }
@@ -209,17 +208,17 @@ fn a_damaged_preview_is_rebuilt_not_used() {
     for p in svc.queue(&Filter::default()).unwrap() {
         assert!(complete(&svc.preview(p.id, 2048).unwrap()), "half a preview shown (decoders fill the rest with grey)");
     }
-    // A forced rescan also notices damaged masters and rebuilds them.
+    // A rescan also notices damaged masters and rebuilds them.
     for e in fs::read_dir(&cache).unwrap() {
         let path = e.unwrap().path();
         let bytes = fs::read(&path).unwrap();
         fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
     }
-    svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true }, &NullSink).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
     svc.remove_source(&src.id);
     for id in ids {
-        assert!(complete(&svc.preview(id, 2048).unwrap()), "damaged preview kept after a forced rescan");
+        assert!(complete(&svc.preview(id, 2048).unwrap()), "damaged preview kept after a rescan");
     }
 }
 
@@ -235,11 +234,10 @@ fn a_folder_containing_the_apps_own_cache_does_not_index_the_cache() {
     let svc = CullerService::open(&db, &cache).unwrap();
     fs::copy(root_photo(&home), db.parent().unwrap().join("stray.jpg")).unwrap(); // anything in the app's data folder
     // What the desktop app does when a folder is added.
-    let src = svc.add_source(Arc::new(FsSource::new(&home).unwrap().excluding(svc.app_dirs()))).unwrap();
-    let force = || ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true };
+    svc.add_source(Arc::new(FsSource::new(&home).unwrap().excluding(svc.app_dirs()))).unwrap();
     let mut found = Vec::new();
     for _ in 0..3 {
-        found.push(svc.scan(&force(), &NullSink).unwrap().found);
+        found.push(svc.scan(&Default::default(), &NullSink).unwrap().found);
     }
     assert_eq!(found, vec![3, 3, 3], "photos found per scan");
 }

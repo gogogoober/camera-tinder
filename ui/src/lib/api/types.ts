@@ -50,17 +50,13 @@ export interface ScanReport {
   /** Videos and other files the app ignores; not exported. */
   otherFiles: number;
   failed: [string, string][];
-  /** Folders skipped because they hold the same files as at their last complete scan. */
-  unchangedSources: number;
   /** Stopped before the end; everything finished is kept. */
   cancelled: boolean;
 }
 
-/** Which folders to scan. Defaults: every folder, skipping ones that look unchanged. */
+/** Which folders to scan (every folder by default). Files already indexed are never read again. */
 export interface ScanRequest {
   sourceIds?: string[] | null;
-  /** Check every file even if the folder looks unchanged (already-indexed files are still not read). */
-  force?: boolean;
 }
 
 export interface ExportOptions {

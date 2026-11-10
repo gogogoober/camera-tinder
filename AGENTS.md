@@ -38,7 +38,7 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   identity.rs              Content fingerprint: xxh3-128 of size + first 64KiB + last 16KiB
   metadata.rs              EXIF (kamadak-exif): capture time, camera
   store.rs                 SQLite (rusqlite bundled): photos, file_index, decisions, decision_log
-  scan.rs                  Skip unchanged folders → skip indexed files → read each new file once, 4 at a time,
+  scan.rs                  List the folder → skip indexed files → read each new file once, 4 at a time,
                            saving every 32 (ScanSaved event) → cancellable (cancel_scan)
   moments.rs               Group by capture-time gap: moments (15 min) and bursts (3 s)
   suggest.rs               Tag suggestions without AI: runs of shooting days, calendar events
@@ -109,12 +109,13 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - The scan computes no quality scores. The old scan-time sharpness score, soft-photo triage and burst compare
   were removed (blur etc. live in photo analysis, to be rebuilt as triage). `photos.sharpness` stays in the
   schema, unused, so old databases need no migration.
-- Scan skipping: a folder whose file count + total size match its last *complete* scan (`sources.scan_*`), and
-  which still has as many photos pointing to it (`scan_indexed`; photos move when seen in another folder), is not
-  looked into; a stopped or failed scan doesn't record that, so the next scan resumes. Adding a folder scans only
-  that folder; ↻ next to a folder forces it (`ScanRequest.force`, still no re-reads of indexed files). Clearing
-  previews forgets the signatures so the next scan rebuilds them. A same-size in-place edit is not noticed (use ↻).
-- Previews on macOS go through ImageIO (`set_preview_maker` in src-tauri). ImageIO only decodes at reduced size
+- Rescans list every folder and look each file up by path + size + mtime; indexed files are never read again.
+  There is deliberately **no folder-level "unchanged, skip it" cache**: it was tried (Nov 2026), saved ~25 µs per
+  photo (75 ms per 3,000) and caused two bugs, so it was removed. Old databases may still have unused
+  `sources.scan_*` columns. Adding a folder scans only that folder (`ScanRequest.source_ids`).
+- Previews on macOS go through ImageIO (`set_preview_maker` in src-tauri), via the typed `objc2-image-io` /
+  `objc2-core-graphics` bindings (no hand-written FFI; the photo's bytes are copied into ImageIO, not lent; the copy
+  costs ~2 ms of ~40). ImageIO only decodes at reduced size
   when the target is ≤ 1/8 of the original; the 2048 master of a 24 MP photo still costs a near-full decode
   (~100 ms CPU), the 256 thumb is cheap. Measured on 24 MP JPEGs, 4 threads: dev build 207 → 40 ms/photo,
   release 65 → 42 ms/photo. ImageIO quality 0.7 ≈ the portable encoder's 85 in size.
@@ -149,7 +150,7 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [ ] **M2:** smart session planner (bursts/sessions/trips, time-budget batching, learned pace).
 - [x] Photo analysis back end (docs/photo-analysis.md): 16 analyzers (Rust + Apple Vision), stored per photo,
       issues ("eyes closed", "blurry"…), near-duplicate groups best-first. Commands + TS API + mock wired.
-- [x] Faster scan: ImageIO previews, no scan-time scoring, skip unchanged folders, batched saves with a live
+- [x] Faster scan: ImageIO previews, no scan-time scoring, no re-reads of indexed files, batched saves with a live
       Pick screen, Stop button. Verified with tests + mock browser, not yet in the real Tauri app.
 - [ ] Photo analysis UX: when to run `analyzePhotos`, problem tabs, duplicate rows. Tune eyes/noise on real photos.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
@@ -160,8 +161,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 
 - The card/folder is read at exactly two moments: **scan** and **export**. Nothing ever writes to it.
   - Scan reads each new file **once** into memory (`scan::ingest`, 4 at a time) and derives fingerprint, EXIF
-    and the cached previews (2048px master + 256px thumb, one decode) from those bytes. Rescans of unchanged
-    folders only list them; unchanged files read nothing (path+size+mtime lookup). Older rows without previews
+    and the cached previews (2048px master + 256px thumb, one decode) from those bytes. Rescans list the folders;
+    unchanged files read nothing (path+size+mtime lookup). Older rows without previews
     are backfilled with one read.
   - Culling never opens the source: every preview size is derived from the cached master
     (`PreviewCache::get`), so the card can be unplugged while you cull. The one fallback read (no master yet)

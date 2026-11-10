@@ -161,21 +161,16 @@ pub struct ScanReport {
     /// Everything else the app ignores (videos, audio memos, sidecars…). Not exported either.
     pub other_files: u64,
     pub failed: Vec<(String, String)>,
-    /// Folders skipped because they hold the same files as at their last complete scan.
-    pub unchanged_sources: u64,
     /// Stopped before the end (`CullerService::cancel_scan`). Everything finished is kept.
     pub cancelled: bool,
 }
 
-/// Which folders to scan, and whether to look inside ones that seem unchanged.
+/// Which folders to scan.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ScanRequest {
     /// Only these sources; every source in the session when `None`.
     pub source_ids: Option<Vec<SourceId>>,
-    /// Check every file even when the folder's file count and total size are unchanged.
-    /// Files already indexed are still not read.
-    pub force: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

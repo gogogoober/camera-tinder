@@ -43,7 +43,7 @@ fn full_flow_with_imageio_previews_leaves_the_card_identical() {
     svc.set_preview_maker(Arc::new(ImageIoPreviewMaker));
     let src = svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
     svc.scan(&Default::default(), &NullSink).unwrap();
-    svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]), force: true }, &NullSink).unwrap();
+    svc.scan(&ScanRequest { source_ids: Some(vec![src.id.clone()]) }, &NullSink).unwrap();
     for p in svc.queue(&Filter::default()).unwrap() {
         for edge in [256, 800, 2048] {
             let preview = svc.preview(p.id, edge);

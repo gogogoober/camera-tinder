@@ -20,7 +20,7 @@ const listeners = new Set<(e: CoreEvent) => void>();
 const sources: SourceInfo[] = [];
 let photos: Photo[] = [];
 let cancelRequested = false;
-/** Folders whose last scan finished, and the photos a stopped scan hasn't saved yet. */
+/** Folders whose photos are all saved, and the photos a stopped scan hasn't saved yet. */
 const scannedSources = new Set<string>();
 const unsaved = new Map<string, Photo[]>();
 let tags: Tag[] = [
@@ -176,7 +176,6 @@ export const mockApi: CullerApi = {
   async scan(request = {}) {
     cancelRequested = false;
     let added = 0;
-    let unchangedSources = 0;
     let cancelled = false;
     const emit = (e: CoreEvent) => listeners.forEach((cb) => cb(e));
     for (const s of sources) {
@@ -185,11 +184,8 @@ export const mockApi: CullerApi = {
         cancelled = true; // Stop also skips the folders not reached yet
         break;
       }
-      // Like the real backend: a folder whose last scan finished looks unchanged, so it's skipped.
-      if (scannedSources.has(s.id)) {
-        if (!request.force) unchangedSources++;
-        continue;
-      }
+      // Like the real backend: photos already indexed aren't read again (the mock has no new files to find).
+      if (scannedSources.has(s.id)) continue;
       const fresh = unsaved.get(s.id) ?? makePhotos(s.id, photos.length + 1);
       // Saved in batches, so the Pick screen fills in while the scan runs.
       let savedHere = 0;
@@ -211,7 +207,7 @@ export const mockApi: CullerApi = {
       unsaved.delete(s.id);
       scannedSources.add(s.id);
     }
-    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [], unchangedSources, cancelled };
+    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [], cancelled };
   },
   async cancelScan() {
     cancelRequested = true;

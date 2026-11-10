@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::moments::{MOMENT_GAP_SECS, bursts, group_by_gap};
 use crate::ports::{CalendarSource, EventSink, ExportItem, ExportTarget, MediaSource};
 use crate::preview::{MASTER_EDGE, PreviewCache};
-use crate::scan::{FolderCheck, scan_source};
+use crate::scan::scan_source;
 use crate::store::Store;
 use crate::suggest;
 
@@ -133,7 +133,7 @@ impl CullerService {
     // ---- scanning & browsing ------------------------------------------
 
     /// Scan the requested sources (all of them by default). Safe to call repeatedly:
-    /// unchanged folders and files are skipped and previous decisions are kept.
+    /// files already indexed are not read again and previous decisions are kept.
     /// New photos are saved (and `ScanSaved` emitted) in batches while it runs.
     pub fn scan(&self, req: &ScanRequest, sink: &dyn EventSink) -> Result<ScanReport> {
         // A scan that crashed must not block every later one.
@@ -147,20 +147,18 @@ impl CullerService {
             .filter(|s| req.source_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == s.id())))
             .cloned()
             .collect();
-        let check = if req.force { FolderCheck::Force } else { FolderCheck::SkipUnchanged };
         let mut total = ScanReport::default();
         for s in sources {
             if self.scan_cancel.load(Ordering::Relaxed) {
                 total.cancelled = true;
                 break;
             }
-            let r = scan_source(&self.store, s.as_ref(), &self.previews, check, &self.scan_cancel, sink)?;
+            let r = scan_source(&self.store, s.as_ref(), &self.previews, &self.scan_cancel, sink)?;
             total.found += r.found;
             total.new += r.new;
             total.skipped_unsupported += r.skipped_unsupported;
             total.other_files += r.other_files;
             total.failed.extend(r.failed);
-            total.unchanged_sources += r.unchanged_sources;
             total.cancelled |= r.cancelled;
         }
         Ok(total)
@@ -224,7 +222,7 @@ impl CullerService {
     /// the originals. Never touches photos, the database (decisions, tags, index) or any file
     /// the cache didn't create; a later scan rebuilds previews.
     pub fn clear_previews(&self, is_connected: &dyn Fn(&str) -> bool) -> Result<u64> {
-        // Not while a scan runs: it would record folders as done while their previews are being deleted.
+        // Not while a scan runs: it would delete previews the scan has just made.
         let _no_scan: MutexGuard<()> = match self.scanning.try_lock() {
             Ok(g) => g,
             Err(TryLockError::Poisoned(p)) => p.into_inner(),
@@ -234,10 +232,7 @@ impl CullerService {
         if !status.connected_sources.is_empty() {
             return Err(CoreError::Other(format!("disconnect these first: {}", status.connected_sources.join(", "))));
         }
-        let freed = self.previews.clear()?;
-        // Folders now look unchanged but lack previews: have the next scan look inside them again.
-        self.store.lock().unwrap().forget_scan_signatures()?;
-        Ok(freed)
+        self.previews.clear()
     }
 
     // ---- deciding -----------------------------------------------------
