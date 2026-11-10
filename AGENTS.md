@@ -121,6 +121,10 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
   release 65 → 42 ms/photo. ImageIO quality 0.7 ≈ the portable encoder's 85 in size.
 - `[profile.dev.package."*"]` does not cover workspace crates: generic `image` code instantiated in `cull-core`
   (the portable preview path, analysis) runs unoptimized under `npm start` (~3× slower than release).
+- Pick screen: the selected-days set in Home is the one source of truth for what gets culled; tag/suggestion
+  "Select" buttons only add/remove days in it and read their state back from it. Culling still receives the
+  first–last span of that set (multi-day `Filter` is the next step). Suggestions are grouped in core
+  (`suggest::from_calendar`); dismissing passes row ids back to `suggest_tags` so the rest regroups.
 - Calendar: `EventKitCalendar` implements `CalendarSource`. The app never prompts at launch; Pick shows a
   "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
   de-duplicated per title+day. Mock backend fakes the connect flow.

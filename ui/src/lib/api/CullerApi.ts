@@ -59,8 +59,9 @@ export interface CullerApi {
   tags(): Promise<Tag[]>;
   addTag(name: string, startDay: string, endDay: string, source?: TagSource): Promise<Tag>;
   removeTag(id: number): Promise<void>;
-  /** Guesses from calendar events and runs of shooting days. */
-  suggestTags(): Promise<TagSuggestion[]>;
+  /** Guesses from calendar events and runs of shooting days, grouped one level deep.
+   *  `dismissed` row ids are left out and the rest is regrouped. */
+  suggestTags(dismissed?: string[]): Promise<TagSuggestion[]>;
   /** Whether calendar events can feed tag suggestions. */
   calendarStatus(): Promise<CalendarStatus>;
   /** Asks the OS for calendar access (may show a system prompt) and returns the new status. */

@@ -103,6 +103,8 @@ export interface Tag {
 }
 
 export interface TagSuggestion {
+  /** Stable row id; pass it to `suggestTags(dismissed)` to leave the row out. */
+  id: string;
   name: string;
   startDay: string;
   endDay: string;

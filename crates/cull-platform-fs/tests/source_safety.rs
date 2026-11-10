@@ -73,7 +73,7 @@ fn exercise_everything(svc: &CullerService, dest: &Path) -> ExportReport {
     svc.undo().unwrap();
     svc.decide_many(&[q[0].id, q[1].id], Decision::Hate).unwrap();
     svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
-    svc.suggest_tags().unwrap();
+    svc.suggest_tags(&[]).unwrap();
     svc.export(&CopyToDir::new(dest).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink).unwrap()
 }
 
@@ -368,7 +368,7 @@ fn card_is_read_once_at_scan_then_left_alone_until_export() {
     svc.undo().unwrap();
     svc.decide_many(&[q[2].id, q[3].id], Decision::Favorite).unwrap();
     svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
-    svc.suggest_tags().unwrap();
+    svc.suggest_tags(&[]).unwrap();
     svc.days().unwrap();
     svc.stats().unwrap();
     assert_eq!(src.take(), Vec::<String>::new(), "culling must not touch the card");

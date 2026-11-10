@@ -121,9 +121,9 @@ async fn remove_tag(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
 }
 
 #[tauri::command]
-async fn suggest_tags(state: State<'_, AppState>) -> CmdResult<Vec<TagSuggestion>> {
+async fn suggest_tags(state: State<'_, AppState>, dismissed: Option<Vec<String>>) -> CmdResult<Vec<TagSuggestion>> {
     let svc = state.0.clone();
-    blocking(move || svc.suggest_tags()).await
+    blocking(move || svc.suggest_tags(&dismissed.unwrap_or_default())).await
 }
 
 #[tauri::command]

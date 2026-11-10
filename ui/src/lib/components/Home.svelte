@@ -22,7 +22,10 @@
   let confirmClear = $state(false);
   let clearing = $state(false);
   let cleared = $state<number | null>(null);
-  let range = $state<Range | null>(null);
+  /** The one source of truth for what gets culled: selected days (`YYYY-MM-DD`). */
+  let selected = $state(new Set<string>());
+  /** Suggestion rows the user dismissed (by id); the rest is regrouped without them. */
+  let dismissed = $state<string[]>([]);
   let budget = $state(15);
   let order = $state<'oldest' | 'newest'>('oldest');
   let tagName = $state('');
@@ -34,10 +37,13 @@
 
   const BUDGETS = [5, 15, 30, 60];
 
-  const inRange = $derived(range ? days.filter((d) => d.day && d.day >= range!.from && d.day <= range!.to) : []);
-  const left = $derived(inRange.reduce((n, d) => n + d.stats.undecided, 0));
-  const total = $derived(inRange.reduce((n, d) => n + d.stats.total, 0));
-  const tagsInRange = $derived(range ? tags.filter((t) => t.startDay <= range!.to && t.endDay >= range!.from) : []);
+  const picked = $derived(days.filter((d) => d.day && selected.has(d.day)));
+  const pickedDays = $derived(picked.map((d) => d.day as string).sort());
+  /** First to last selected day. Until culling takes a list of days, it gets this span. */
+  const range = $derived<Range | null>(pickedDays.length ? { from: pickedDays[0], to: pickedDays[pickedDays.length - 1] } : null);
+  const left = $derived(picked.reduce((n, d) => n + d.stats.undecided, 0));
+  const total = $derived(picked.reduce((n, d) => n + d.stats.total, 0));
+  const tagsInRange = $derived(tags.filter((t) => pickedDays.some((d) => d >= t.startDay && d <= t.endDay)));
   const compact = $derived(viewport.compact);
 
   onMount(() => {
@@ -89,7 +95,7 @@
       api.stats(),
       api.days(),
       api.tags(),
-      api.suggestTags(),
+      api.suggestTags(dismissed),
       api.calendarStatus(),
     ]);
   }
@@ -98,7 +104,7 @@
     connecting = true;
     try {
       calendar = await api.connectCalendar();
-      suggestions = await api.suggestTags();
+      suggestions = await api.suggestTags(dismissed);
     } finally {
       connecting = false;
     }
@@ -106,7 +112,7 @@
 
   function applyBudget() {
     const r = rangeForBudget(days, budget, order);
-    if (r) range = r;
+    if (r) selected = new Set(daysWithPhotos(r.from, r.to));
   }
 
   function pickBudget(m: number) {
@@ -118,31 +124,42 @@
     applyBudget();
   }
 
-  function showTag(t: { startDay: string; endDay: string }) {
-    range = { from: t.startDay, to: t.endDay };
+  /** Days with photos between two days, inclusive. */
+  function daysWithPhotos(from: string, to: string): string[] {
+    return days.filter((d) => d.day && d.day >= from && d.day <= to && d.stats.total > 0).map((d) => d.day as string);
   }
+  type Span = { startDay: string; endDay: string };
+  /** How much of a tag's days are selected, read straight from the calendar. */
+  function pickState(t: Span): 'none' | 'some' | 'all' {
+    const ds = daysWithPhotos(t.startDay, t.endDay);
+    const n = ds.filter((d) => selected.has(d)).length;
+    return n === 0 ? 'none' : n === ds.length ? 'all' : 'some';
+  }
+  /** Adds a tag's days to the selection, or removes them when they're all selected already. */
+  function togglePick(t: Span) {
+    const all = pickState(t) === 'all';
+    const next = new Set(selected);
+    for (const d of daysWithPhotos(t.startDay, t.endDay)) {
+      if (all) next.delete(d);
+      else next.add(d);
+    }
+    selected = next;
+  }
+  const PICK_LABEL = { none: 'Select', some: 'Some', all: 'Selected' } as const;
 
   async function acceptSuggestion(s: TagSuggestion) {
     await api.addTag(s.name, s.startDay, s.endDay, s.source);
     await refresh();
   }
-  const same = (a: TagSuggestion, b: TagSuggestion) => a.name === b.name && a.startDay === b.startDay && a.endDay === b.endDay;
-  /** Hiding a child hides it under every parent; hiding a parent keeps its children, moved up. */
-  function dismissSuggestion(s: TagSuggestion) {
-    const next: TagSuggestion[] = [];
-    for (const x of suggestions) {
-      if (same(x, s)) {
-        for (const c of x.children) if (!next.some((n) => same(n, c))) next.push(c);
-      } else {
-        next.push({ ...x, children: x.children.filter((c) => !same(c, s)) });
-      }
-    }
-    suggestions = next;
+  /** Hides the row everywhere and regroups the rest (its children may move under another row).
+   *  The selection is untouched. */
+  async function dismissSuggestion(s: TagSuggestion) {
+    dismissed = [...dismissed, s.id];
+    suggestions = await api.suggestTags(dismissed);
   }
   let expanded = $state(new Set<string>());
-  const sugKey = (s: TagSuggestion) => s.name + s.startDay + s.endDay;
   function toggle(s: TagSuggestion) {
-    const k = sugKey(s);
+    const k = s.id;
     const next = new Set(expanded);
     if (!next.delete(k)) next.add(k);
     expanded = next;
@@ -168,7 +185,7 @@
       lastLive = Date.now();
       try {
         await refresh();
-        if (!range) applyBudget();
+        if (!selected.size) applyBudget();
       } finally {
         liveTimer = null;
       }
@@ -221,6 +238,7 @@
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return;
     if (e.key === 'Enter' && range && left) onStart(range);
+    if (e.key === 'Escape' && selected.size) selected = new Set();
   }
 </script>
 
@@ -333,14 +351,14 @@
       {#if compact && tags.length}
         <div class="chips scroll">
           {#each tags as t (t.id)}
-            <button class="chip" class:on={range?.from === t.startDay && range?.to === t.endDay} onclick={() => showTag(t)}>{t.name}</button>
+            <button class="chip" class:on={pickState(t) === 'all'} onclick={() => togglePick(t)}>{t.name}</button>
           {/each}
         </div>
       {/if}
 
       <div class="group heat">
-        <span class="eyebrow">Tags and calendar · drag to pick days</span>
-        <Heatmap {days} {tags} {suggestions} {range} layout={compact ? 'months' : 'weeks'} onRange={(r) => (range = r)} onTag={showTag} />
+        <span class="eyebrow">Calendar · click or drag to pick days</span>
+        <Heatmap {days} {selected} onChange={(next) => (selected = next)} />
         <div class="legend muted small">
           Photos still to cull: <i class="sw none"></i>none <i class="sw l1"></i><i class="sw l2"></i><i class="sw l3"></i><i class="sw l4"></i>many <i class="sw done"></i>all done
         </div>
@@ -362,7 +380,8 @@
         <div class="group">
           <span class="eyebrow">Suggested tags · {suggestions.length}</span>
           {#snippet sugRow(s: TagSuggestion, child: boolean)}
-            {@const open = expanded.has(sugKey(s))}
+            {@const open = expanded.has(s.id)}
+            {@const pick = pickState(s)}
             <div class="sug" class:child>
               <span class="nm">
                 {#if !s.children.length && !child && suggestions.some((x) => x.children.length)}
@@ -370,22 +389,26 @@
                 {:else if s.children.length}
                   <button class="plain chev" onclick={() => toggle(s)} aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'}>{open ? '▾' : '▸'}</button>
                 {/if}
-                <b class:merged={s.names.length > 1} title={s.name}>{s.name}</b>
+                {#if s.names.length > 1}
+                  <span class="names">{#each s.names as n (n)}<b title={n}>{n}</b>{/each}</span>
+                {:else}
+                  <b title={s.name}>{s.name}</b>
+                {/if}
                 {#if s.children.length}<span class="muted small count">{s.children.length}</span>{/if}
               </span>
               <span class="mono small">{shortRange(s.startDay, s.endDay)}</span>
               <span class="muted small why">{s.reason}</span>
               <span class="btns">
-                <button class="small" onclick={() => showTag(s)}>Show</button>
+                <button class="small pick {pick}" aria-pressed={pick === 'all'} onclick={() => togglePick(s)}>{pick === 'all' ? '✓ ' : ''}{PICK_LABEL[pick]}</button>
                 <button class="small primary" onclick={() => acceptSuggestion(s)}>Add</button>
                 <button class="small ghost" onclick={() => dismissSuggestion(s)} aria-label="Dismiss">✕</button>
               </span>
             </div>
           {/snippet}
-          {#each suggestions as s (sugKey(s))}
+          {#each suggestions as s (s.id)}
             {@render sugRow(s, false)}
-            {#if expanded.has(sugKey(s))}
-              {#each s.children as c (sugKey(c))}
+            {#if expanded.has(s.id)}
+              {#each s.children as c (c.id)}
                 {@render sugRow(c, true)}
               {/each}
             {/if}
@@ -399,7 +422,7 @@
           <div class="chips">
             {#each tags as t (t.id)}
               <span class="chip tag">
-                <button class="plain" onclick={() => showTag(t)}>{t.name}</button>
+                <button class="plain" class:on={pickState(t) === 'all'} onclick={() => togglePick(t)}>{t.name}</button>
                 <button class="plain x" onclick={() => removeTag(t.id)} aria-label="Remove tag {t.name}">✕</button>
               </span>
             {/each}
@@ -426,9 +449,12 @@
 {#snippet summary()}
   <div class="summary">
     {#if range}
-      <div class="eyebrow">Selected</div>
+      <div class="sel-h">
+        <span class="eyebrow">Selected</span>
+        <button class="small ghost" onclick={() => (selected = new Set())}>Clear</button>
+      </div>
       <div class="big">{formatCount(left)} <span class="muted">photos to cull</span></div>
-      <div class="kv"><span>Range</span><b>{shortRange(range.from, range.to)}</b></div>
+      <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{shortRange(range.from, range.to)}</b></div>
       {#if total - left > 0}<div class="kv"><span>Already culled</span><b>{formatCount(total - left)}</b></div>{/if}
       {#if tagsInRange.length}<div class="kv"><span>Tags</span><b>{tagsInRange.map((t) => t.name).join(', ')}</b></div>{/if}
       <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
@@ -484,10 +510,17 @@
   .confirm .lbl { display: block; font: 500 10.5px ui-monospace, 'SF Mono', monospace; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
   .confirm .row { display: flex; gap: 6px; }
   .calprompt { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  .sug { display: grid; grid-template-columns: minmax(0, 1.1fr) 120px minmax(0, 1.6fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+  .sug { display: grid; grid-template-columns: minmax(0, 1.7fr) 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
   .nm { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
   .nm b { min-width: 0; }
-  .nm b.merged { font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .names { display: grid; gap: 3px; min-width: 0; padding: 3px 0; }
+  .names b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chev { align-self: center; }
+  button.pick { min-width: 78px; }
+  button.pick.some { border-style: dashed; }
+  button.pick.all { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .plain.on { text-decoration: underline; text-underline-offset: 3px; }
+  .sel-h { display: flex; justify-content: space-between; align-items: center; }
   .chev { width: 1.4em; flex: none; color: var(--muted); font-size: 1.1em; text-align: left; }
   .count { flex: none; }
   .sug.child { padding-left: 2.8em; }

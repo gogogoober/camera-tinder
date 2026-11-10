@@ -261,6 +261,9 @@ pub struct Tag {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagSuggestion {
+    /// Stable row id (survives regrouping): pass it back to `suggest_tags` to dismiss the row.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub start_day: String,
     pub end_day: String,

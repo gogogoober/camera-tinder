@@ -286,15 +286,16 @@ impl CullerService {
     }
 
     /// Tags worth offering: calendar events and runs of days from capture times.
-    pub fn suggest_tags(&self) -> Result<Vec<TagSuggestion>> {
+    /// `dismissed` holds row ids (`TagSuggestion::id`) to leave out; the rest is regrouped.
+    pub fn suggest_tags(&self, dismissed: &[String]) -> Result<Vec<TagSuggestion>> {
         let days = self.days()?;
         let existing = self.tags()?;
         let mut out = Vec::new();
         let dated: Vec<&str> = days.iter().filter_map(|d| d.day.as_deref()).collect();
         if let (Some(first), Some(last), Some(cal)) = (dated.first(), dated.last(), self.calendar.read().unwrap().clone()) {
-            out.extend(suggest::from_calendar(&days, &cal.events(first, last)?, &existing));
+            out.extend(suggest::from_calendar(&days, &cal.events(first, last)?, &existing, dismissed));
         }
-        out.extend(suggest::from_gaps(&days, &existing));
+        out.extend(suggest::from_gaps(&days, &existing, dismissed));
         Ok(out)
     }
 
