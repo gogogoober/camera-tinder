@@ -467,7 +467,7 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
 
     let card_id = card.canonicalize().unwrap().to_string_lossy().into_owned();
-    let external = |id: &str| id == card_id && cull_platform_fs::is_reachable(id);
+    let external = |id: &str| id == card_id && Path::new(id).is_dir();
 
     let st = svc.preview_cache_status(&external).unwrap();
     assert_eq!(st.files, 10, "master + thumb for 5 photos");

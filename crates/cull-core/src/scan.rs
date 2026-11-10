@@ -53,7 +53,28 @@ fn local_naive(t: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(t).naive_local()
 }
 
-/// `ingest`, with a crash anywhere inside (a decoder or EXIF bug on a damaged file) reported as a
+/// Read a whole original into memory, the one way the app reads a source file for culling (scan,
+/// preview rebuilds). Refuses files too big to be photos, never reads past the listed size, and
+/// checks the length. With `expected`, also checks it is still the same photo (fingerprint), e.g.
+/// after a card swap another photo can sit at the same path.
+pub(crate) fn read_original(source: &dyn MediaSource, rel_path: &str, size: u64, expected: Option<&str>) -> Result<Vec<u8>> {
+    if size > MAX_PHOTO_BYTES {
+        return Err(CoreError::Other(format!("too large to be a photo ({} MB); not read", size / (1024 * 1024))));
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    source.open(rel_path)?.take(size + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 != size {
+        return Err(CoreError::Other(format!("file changed since it was listed ({} bytes, expected {size})", bytes.len())));
+    }
+    if let Some(expected) = expected
+        && fingerprint(&mut Cursor::new(&bytes[..]), size)? != expected
+    {
+        return Err(CoreError::Other("file has changed since it was scanned; rescan the folder".into()));
+    }
+    Ok(bytes)
+}
+
+/// `ingest`, with a crash anywhere inside (e.g. an EXIF parser bug on a damaged file) reported as a
 /// failure of that one file instead of ending the scan.
 fn ingest_guarded(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta)> {
     catch_unwind(AssertUnwindSafe(|| ingest(source, rel_path, size, previews))).unwrap_or_else(|_| Err(CoreError::Other("crashed while reading this file".into())))
@@ -61,15 +82,7 @@ fn ingest_guarded(source: &dyn MediaSource, rel_path: &str, size: u64, previews:
 
 /// Read one file from the source, once, and derive everything from those bytes.
 fn ingest(source: &dyn MediaSource, rel_path: &str, size: u64, previews: &PreviewCache) -> Result<(String, PhotoMeta)> {
-    if size > MAX_PHOTO_BYTES {
-        return Err(CoreError::Other(format!("too large to be a photo ({} MB); not read", size / (1024 * 1024))));
-    }
-    let mut bytes = Vec::with_capacity(size as usize);
-    // The only source read. Never more than one byte past the listed size, even if the file grew.
-    source.open(rel_path)?.take(size + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 != size {
-        return Err(CoreError::Other(format!("file changed while reading ({} bytes, listed as {size})", bytes.len())));
-    }
+    let bytes = read_original(source, rel_path, size, None)?; // the only read of this file
     let mut cur = Cursor::new(&bytes[..]);
     let fp = fingerprint(&mut cur, size)?;
     let meta = read_meta(&mut cur);
@@ -133,7 +146,7 @@ pub fn scan_source(
     progress(done.load(Ordering::Relaxed));
     let tick = || {
         let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-        if n % PROGRESS_EVERY == 0 || n == total {
+        if n.is_multiple_of(PROGRESS_EVERY) || n == total {
             progress(n);
         }
     };
@@ -191,32 +204,26 @@ pub fn scan_source(
         }
     }
 
-    // Previews for already-indexed photos (nothing to save in the database).
+    // Previews for already-indexed photos (nothing to save in the database). Same photo only:
+    // a file that changed is reported, and re-indexed once its size or date shows the change.
+    // (Decoder crashes are already caught inside the preview cache.)
     if !cancel.load(Ordering::Relaxed) && !backfill.is_empty() {
-        pool.install(|| {
-            backfill.par_iter().for_each(|(rel, size, fp)| {
-                if cancel.load(Ordering::Relaxed) {
-                    return;
-                }
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    let mut bytes = Vec::with_capacity(*size as usize);
-                    // Same photo as indexed only: a changed file is re-indexed on the next scan.
-                    let ok = *size <= MAX_PHOTO_BYTES
-                        && source.open(rel).and_then(|f| Ok(f.take(*size + 1).read_to_end(&mut bytes)?)).is_ok()
-                        && bytes.len() as u64 == *size
-                        && fingerprint(&mut Cursor::new(&bytes[..]), *size).is_ok_and(|f| &f == fp);
-                    if ok {
-                        let _ = previews.store_from_original(fp, &bytes);
+        let failed: Vec<(String, String)> = pool.install(|| {
+            backfill
+                .par_iter()
+                .filter_map(|(rel, size, fp)| {
+                    if cancel.load(Ordering::Relaxed) {
+                        return None;
                     }
-                }));
-                read_backfill.fetch_add(1, Ordering::Relaxed);
-            });
+                    let result = read_original(source, rel, *size, Some(fp)).and_then(|bytes| previews.store_from_original(fp, &bytes));
+                    read_backfill.fetch_add(1, Ordering::Relaxed);
+                    result.err().map(|e| (rel.clone(), e.to_string()))
+                })
+                .collect()
         });
+        report.failed.extend(failed);
     }
 
     report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;
-    if !report.cancelled {
-        store.lock().unwrap().mark_scanned(&src)?;
-    }
     Ok(report)
 }

@@ -54,12 +54,6 @@ impl FsSource {
     }
 }
 
-/// Whether a source with this id (an `FsSource` id is its canonical folder path) can be
-/// reached right now: the SD card is mounted, the drive is plugged in, the folder exists.
-pub fn is_reachable(source_id: &str) -> bool {
-    fs::metadata(source_id).is_ok_and(|m| m.is_dir())
-}
-
 /// Whether this source is reachable *and* lives on a volume other than the Mac's own
 /// drive: an SD card, USB/Thunderbolt drive, disk image or network share.
 ///

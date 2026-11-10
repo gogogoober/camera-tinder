@@ -278,3 +278,24 @@ fn export_refuses_a_destination_that_is_not_a_full_path() {
     }
     assert!(!Path::new("relative-export-folder").exists());
 }
+
+/// Rebuilding previews for already-indexed photos (after "Clear previews") reports files it can't
+/// read, instead of silently leaving them without previews.
+#[test]
+fn a_preview_rebuild_that_fails_is_reported() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("card");
+    card(&root, 2);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    svc.clear_previews(&|_| false).unwrap();
+
+    let locked = root.join("DCIM/DSC_0001.JPG");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(r.failed.len(), 1, "{:?}", r.failed);
+    assert!(r.failed[0].0.ends_with("DSC_0001.JPG"));
+}

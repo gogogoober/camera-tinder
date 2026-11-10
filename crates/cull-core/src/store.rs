@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS sources (
     id           TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     added_at     TEXT NOT NULL,
-    last_scan    TEXT
+    last_scan    TEXT -- unused (never read); kept so the schema matches existing databases
     -- Databases from Nov 2026 builds may also have unused scan_* columns (a removed folder-skip cache).
 );
 
@@ -195,12 +195,6 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT id FROM sources")?;
         let ids = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
         Ok(ids)
-    }
-
-    /// Record when `source_id` was last scanned to the end.
-    pub fn mark_scanned(&self, source_id: &str) -> Result<()> {
-        self.conn.execute("UPDATE sources SET last_scan = ?2 WHERE id = ?1", params![source_id, now()])?;
-        Ok(())
     }
 
     pub fn source_photo_count(&self, source_id: &str) -> Result<u64> {

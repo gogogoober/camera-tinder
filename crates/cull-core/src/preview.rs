@@ -18,7 +18,6 @@ use image::{DynamicImage, ImageDecoder, ImageReader};
 
 
 use crate::error::{CoreError, Result};
-use crate::identity::fingerprint;
 use crate::model::{MediaKind, Photo};
 use crate::ports::{MediaSource, PreviewMaker};
 
@@ -102,10 +101,6 @@ impl PreviewCache {
         *self.maker.write().unwrap() = maker;
     }
 
-    pub fn maker_name(&self) -> &'static str {
-        self.maker.read().unwrap().implementation()
-    }
-
     fn maker(&self) -> Arc<dyn PreviewMaker> {
         self.maker.read().unwrap().clone()
     }
@@ -143,15 +138,8 @@ impl PreviewCache {
             let Some(source) = source else {
                 return Err(CoreError::Other(format!("no preview cached for {} and its source is not connected", photo.file_name)));
             };
-            if photo.size > crate::scan::MAX_PHOTO_BYTES {
-                return Err(CoreError::Other(format!("{} is too large to preview", photo.file_name)));
-            }
-            let mut bytes = Vec::with_capacity(photo.size as usize);
-            source.open(&photo.rel_path)?.take(photo.size + 1).read_to_end(&mut bytes)?;
-            // Only from the very same photo: after a card swap another photo can sit at this path.
-            if bytes.len() as u64 != photo.size || fingerprint(&mut Cursor::new(&bytes[..]), photo.size)? != photo.fingerprint {
-                return Err(CoreError::Other(format!("{} has changed since it was scanned; rescan the folder", photo.file_name)));
-            }
+            let bytes = crate::scan::read_original(source, &photo.rel_path, photo.size, Some(&photo.fingerprint))
+                .map_err(|e| CoreError::Other(format!("{}: {e}", photo.file_name)))?;
             if !self.store_from_original(&photo.fingerprint, &bytes)? {
                 return Err(CoreError::Other(format!("can't decode {}", photo.file_name)));
             }
