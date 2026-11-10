@@ -7,6 +7,7 @@
   import Heatmap from './Heatmap.svelte';
   import Splash from './Splash.svelte';
   import AppShell from './layout/AppShell.svelte';
+  import { withLayoutTransition } from '../transition';
 
   let { onStart }: { onStart: (days: string[]) => void } = $props();
 
@@ -21,6 +22,16 @@
   let cache = $state<PreviewCacheStatus | null>(null);
   let confirmClear = $state(false);
   let advancedOpen = $state(false);
+  /** The right rail shows once there are photos; it slides in (and the main card glides) when that changes. */
+  let rightShown = $state(false);
+  /** Last state asked for: a scan refreshes `days` again before the transition's update runs. */
+  let requested = false;
+  $effect(() => {
+    const want = days.length > 0;
+    if (want === requested) return;
+    requested = want;
+    withLayoutTransition(() => (rightShown = want));
+  });
   let clearing = $state(false);
   let cleared = $state<number | null>(null);
   /** The one source of truth for what gets culled: selected days (`YYYY-MM-DD`). */
@@ -301,7 +312,7 @@
 {/snippet}
 
 <!-- No right rail until there are photos: the splash gets the full width. -->
-<AppShell left={sidebar} right={days.length ? summary : undefined}>
+<AppShell left={sidebar} right={rightShown ? summary : undefined}>
   <section class="main">
     {#if days.length || scanning}
     <header>
@@ -420,19 +431,16 @@
 
 {#snippet summary()}
   <div class="summary">
-    {#if range}
-      <div class="sel-h">
-        <span class="eyebrow">Selected</span>
-        <button class="small ghost" onclick={() => (selected = new Set())}>Clear</button>
-      </div>
-      <div class="big">{formatCount(left)} <span class="muted">photos to triage</span></div>
-      <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{shortRange(range.from, range.to)}</b></div>
-      {#if total - left > 0}<div class="kv"><span>Already triaged</span><b>{formatCount(total - left)}</b></div>{/if}
-      <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
-      <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
-    {:else}
-      <div class="muted">Pick days on the calendar to begin.</div>
-    {/if}
+    <!-- Same layout with or without a selection: zeros and dashes until days are picked. -->
+    <div class="sel-h">
+      <span class="eyebrow">Selected</span>
+      <button class="small ghost" class:hide={!range} onclick={() => (selected = new Set())}>Clear</button>
+    </div>
+    <div class="big" class:none={!range}>{formatCount(left)} <span class="muted">photos to triage</span></div>
+    <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{range ? shortRange(range.from, range.to) : '–'}</b></div>
+    <div class="kv"><span>Already triaged</span><b>{range ? formatCount(total - left) : '–'}</b></div>
+    <div class="kv"><span>Time at your pace</span><b>{left ? `~${minutesFor(left)} min` : '–'}</b></div>
+    <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
   </div>
 {/snippet}
 
@@ -488,6 +496,8 @@
   button.pick.some { border-style: dashed; }
   button.pick.all { background: var(--text); color: var(--bg); border-color: var(--text); }
   .sel-h { display: flex; justify-content: space-between; align-items: center; }
+  .sel-h .hide { visibility: hidden; }
+  .big.none { color: var(--muted); }
   .chev { width: 1.4em; flex: none; color: var(--muted); font-size: 1.1em; text-align: left; }
   .count { flex: none; }
   .sug.child { padding-left: 2.8em; }

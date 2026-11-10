@@ -105,3 +105,17 @@ kbd {
 .chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
 .mono { font-family: ui-monospace, 'SF Mono', monospace; font-variant-numeric: tabular-nums; }
 .eyebrow { font: 500 11px ui-monospace, 'SF Mono', monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+
+/* Layout view transitions (lib/transition.ts): the main surface glides to its new size, a rail
+   that appears slides in from its side, one that leaves fades out. */
+::view-transition-group(*) { animation-duration: 420ms; animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1); }
+::view-transition-old(shell-main), ::view-transition-new(shell-main) { height: 100%; object-fit: cover; object-position: center top; }
+/* Old content leaves fast and the new content arrives as the card settles: reads as motion, not a double exposure. */
+::view-transition-old(shell-main) { animation: vt-out 140ms ease both; }
+::view-transition-new(shell-main) { animation: vt-in 300ms ease 120ms both; }
+@keyframes vt-out { to { opacity: 0; } }
+@keyframes vt-in { from { opacity: 0; } }
+::view-transition-new(shell-right):only-child { animation: rail-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+::view-transition-old(shell-right):only-child { animation: rail-out 260ms ease both; }
+@keyframes rail-in { from { opacity: 0; transform: translateX(24px); } }
+@keyframes rail-out { to { opacity: 0; transform: translateX(24px); } }

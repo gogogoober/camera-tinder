@@ -88,11 +88,13 @@
 
   .rail { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; padding: var(--rail-pad); }
   .rail > :global(*) { flex: 1 0 auto; }
-  .left { grid-area: left; }
-  .right { grid-area: right; }
+  /* Names for view transitions (lib/transition.ts): regions glide when the layout changes. */
+  .left { grid-area: left; view-transition-name: shell-left; }
+  .right { grid-area: right; view-transition-name: shell-right; }
 
   .surface {
     grid-area: main;
+    view-transition-name: shell-main;
     display: grid;
     grid-template: minmax(0, 1fr) / minmax(0, 1fr);
     min-width: 0;
