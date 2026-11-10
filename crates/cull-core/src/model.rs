@@ -142,11 +142,11 @@ pub enum StatusFilter {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
-    /// `YYYY-MM-DD` to restrict to one day (or the start of a range); `None` for all days.
-    pub day: Option<String>,
-    /// Inclusive end of a day range starting at `day`.
+    /// Only photos taken on these days (`YYYY-MM-DD`; `"unknown"` = no capture date).
+    /// `None` = every day; an empty list matches nothing. Any set of days, not just a range:
+    /// the Pick screen sends exactly the days selected on its calendar.
     #[serde(default)]
-    pub day_to: Option<String>,
+    pub days: Option<Vec<String>>,
     #[serde(default)]
     pub status: StatusFilter,
 }

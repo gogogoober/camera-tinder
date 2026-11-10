@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, type Decision, type Photo, type StatusFilter } from '../api';
   import { DECISIONS, ORDER } from '../decisions';
-  import { shortRange } from '../days';
+  import { daysLabel } from '../days';
   import { formatCount, formatDay } from '../format';
   import { dragSelect } from '../select';
   import { viewport } from '../viewport.svelte';
@@ -10,12 +10,12 @@
   import AppShell from './layout/AppShell.svelte';
 
   let {
-    range,
+    days: pickedDays,
     onBack,
     onOpen,
     onExport,
   }: {
-    range: { from: string; to: string } | null;
+    days: string[] | null;
     onBack: () => void;
     onOpen: (photoId: number) => void;
     onExport: () => void;
@@ -45,7 +45,7 @@
   async function load() {
     try {
       const status: StatusFilter = 'all';
-      photos = (await api.plan({ day: range?.from ?? null, dayTo: range?.to ?? null, status })).photos;
+      photos = (await api.plan({ days: pickedDays, status })).photos;
     } catch (e) {
       error = String(e);
     }
@@ -127,7 +127,7 @@
 {#snippet topBar()}
   <header class="top">
     <button onclick={onBack}>{compact ? 'Cull' : '‹ Back to cull'}</button>
-    <b>Review{range ? ` · ${shortRange(range.from, range.to)}` : ''}</b>
+    <b>Review{pickedDays ? ` · ${daysLabel(pickedDays)}` : ''}</b>
     <span class="grow"></span>
     {#if !compact}<span class="muted">Drag to select · click to reopen</span>{/if}
   </header>

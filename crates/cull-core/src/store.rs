@@ -305,20 +305,22 @@ impl Store {
             StatusFilter::Keepers => sql.push_str(" AND d.decision IN ('like', 'favorite')"),
             StatusFilter::Rejects => sql.push_str(" AND d.decision IN ('dislike', 'hate')"),
         }
-        match filter.day.as_deref() {
-            None => {}
-            Some("unknown") => sql.push_str(" AND p.captured_at IS NULL"),
-            Some(day) => match filter.day_to.as_deref() {
-                Some(to) if to != day => {
-                    sql.push_str(" AND substr(p.captured_at, 1, 10) BETWEEN ? AND ?");
-                    args.push(day.to_string());
-                    args.push(to.to_string());
-                }
-                _ => {
-                    sql.push_str(" AND substr(p.captured_at, 1, 10) = ?");
-                    args.push(day.to_string());
-                }
-            },
+        if let Some(days) = &filter.days {
+            let unknown = days.iter().any(|d| d == "unknown");
+            let dated: Vec<&String> = days.iter().filter(|d| *d != "unknown").collect();
+            let mut any = Vec::new();
+            if !dated.is_empty() {
+                any.push(format!("substr(p.captured_at, 1, 10) IN ({})", placeholders(dated.len())));
+                args.extend(dated.into_iter().cloned());
+            }
+            if unknown {
+                any.push("p.captured_at IS NULL".to_string());
+            }
+            if any.is_empty() {
+                sql.push_str(" AND 0");
+            } else {
+                sql.push_str(&format!(" AND ({})", any.join(" OR ")));
+            }
         }
         sql.push_str(" ORDER BY p.captured_at IS NULL, p.captured_at, p.file_name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -595,7 +597,7 @@ mod tests {
         let _d = photo(&s, "4", "a", "x/4.jpg", None);
 
         // Ordered by capture time, unknown last.
-        let all = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::All }).unwrap();
+        let all = s.query(&src, &Filter { days: None, status: StatusFilter::All }).unwrap();
         assert_eq!(all.iter().map(|p| p.file_name.as_str()).collect::<Vec<_>>(), ["2.jpg", "1.jpg", "3.jpg", "4.jpg"]);
 
         s.set_decision(a, Some(Decision::Like)).unwrap();
@@ -604,9 +606,10 @@ mod tests {
 
         let undecided = s.query(&src, &Filter::default()).unwrap();
         assert_eq!(undecided.len(), 1);
-        let keepers = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::Keepers }).unwrap();
+        let keepers = s.query(&src, &Filter { days: None, status: StatusFilter::Keepers }).unwrap();
         assert_eq!(keepers.len(), 2);
-        let day1 = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: None, status: StatusFilter::All }).unwrap();
+        let on = |days: &[&str]| Filter { days: Some(days.iter().map(|d| d.to_string()).collect()), status: StatusFilter::All };
+        let day1 = s.query(&src, &on(&["2026-07-01"])).unwrap();
         assert_eq!(day1.len(), 2);
 
         let st = s.stats(&src).unwrap();
@@ -617,9 +620,13 @@ mod tests {
         assert_eq!(days[0].day.as_deref(), Some("2026-07-01"));
         assert_eq!(days[2].day, None);
 
-        // Day ranges.
-        let range = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: Some("2026-07-02".into()), status: StatusFilter::All }).unwrap();
-        assert_eq!(range.len(), 3);
+        // Any set of days, not just a range; "unknown" = no capture date; empty = nothing.
+        assert_eq!(s.query(&src, &on(&["2026-07-01", "2026-07-02"])).unwrap().len(), 3);
+        let skip = s.query(&src, &on(&["2026-07-02", "2026-07-09"])).unwrap();
+        assert_eq!(skip.iter().map(|p| p.file_name.as_str()).collect::<Vec<_>>(), ["3.jpg"]);
+        assert_eq!(s.query(&src, &on(&["unknown"])).unwrap().len(), 1);
+        assert_eq!(s.query(&src, &on(&["2026-07-02", "unknown"])).unwrap().len(), 2);
+        assert!(s.query(&src, &on(&[])).unwrap().is_empty());
 
         // Undo = restore previous.
         let prev = s.set_decision(c, None).unwrap();

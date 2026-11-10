@@ -38,8 +38,8 @@ export interface DaySummary {
 }
 
 export interface Filter {
-  day: string | null; // "YYYY-MM-DD" (start of a range), "unknown", or null for all
-  dayTo?: string | null; // inclusive end of the range
+  /** Only these days ("YYYY-MM-DD", or "unknown" for no date); null/absent = every day, [] = none. */
+  days?: string[] | null;
   status: StatusFilter;
 }
 

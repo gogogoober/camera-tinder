@@ -432,7 +432,7 @@ impl CullerService {
     // ---- export -------------------------------------------------------
 
     pub fn keepers(&self, opts: ExportOptions) -> Result<Vec<Photo>> {
-        let photos = self.queue(&Filter { day: None, day_to: None, status: StatusFilter::Keepers })?;
+        let photos = self.queue(&Filter { days: None, status: StatusFilter::Keepers })?;
         Ok(photos
             .into_iter()
             .filter(|p| match p.decision {

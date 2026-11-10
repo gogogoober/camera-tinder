@@ -121,11 +121,8 @@ const active = () => photos.filter((p) => sources.some((s) => s.id === p.sourceI
 function query(filter: Filter): Photo[] {
   return active()
     .filter((p) => {
-      if (filter.day == null) return true;
-      if (filter.day === 'unknown') return p.capturedAt == null;
-      const d = p.capturedAt?.slice(0, 10);
-      if (!d) return false;
-      return filter.dayTo ? d >= filter.day && d <= filter.dayTo : d === filter.day;
+      if (filter.days == null) return true;
+      return filter.days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown');
     })
     .filter((p) => {
       switch (filter.status) {
@@ -347,7 +344,7 @@ export const mockApi: CullerApi = {
   async analyzePhotos(request = {}) {
     const list = request.photoIds
       ? photos.filter((p) => request.photoIds!.includes(p.id))
-      : query(request.filter ?? { day: null, status: 'all' });
+      : query(request.filter ?? { status: 'all' });
     const todo = request.force ? list : list.filter((p) => !analysed.has(p.id));
     for (let i = 0; i < todo.length; i++) {
       analysed.set(todo[i].id, mockAnalysis(todo[i]));

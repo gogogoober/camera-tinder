@@ -7,7 +7,7 @@
   import Heatmap from './Heatmap.svelte';
   import AppShell from './layout/AppShell.svelte';
 
-  let { onStart }: { onStart: (range: { from: string; to: string }) => void } = $props();
+  let { onStart }: { onStart: (days: string[]) => void } = $props();
 
   type Range = { from: string; to: string };
 
@@ -39,7 +39,7 @@
 
   const picked = $derived(days.filter((d) => d.day && selected.has(d.day)));
   const pickedDays = $derived(picked.map((d) => d.day as string).sort());
-  /** First to last selected day. Until culling takes a list of days, it gets this span. */
+  /** First to last selected day, for labels only: culling gets exactly `pickedDays`. */
   const range = $derived<Range | null>(pickedDays.length ? { from: pickedDays[0], to: pickedDays[pickedDays.length - 1] } : null);
   const left = $derived(picked.reduce((n, d) => n + d.stats.undecided, 0));
   const total = $derived(picked.reduce((n, d) => n + d.stats.total, 0));
@@ -237,7 +237,7 @@
 
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return;
-    if (e.key === 'Enter' && range && left) onStart(range);
+    if (e.key === 'Enter' && left) onStart(pickedDays);
     if (e.key === 'Escape' && selected.size) selected = new Set();
   }
 </script>
@@ -464,7 +464,7 @@
           <button onclick={addTag}>Tag</button>
         </div>
       {/if}
-      <button class="primary go" onclick={() => range && onStart(range)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
+      <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
     {:else}
       <div class="muted">Pick days on the calendar to begin.</div>
     {/if}

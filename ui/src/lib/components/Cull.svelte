@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, type Decision, type Group, type Photo } from '../api';
   import { DECISIONS, ORDER, decisionForKey } from '../decisions';
-  import { minutesFor, shortRange } from '../days';
+  import { daysLabel, minutesFor } from '../days';
   import { formatCount, formatDay, formatTime, previewEdge } from '../format';
   import { viewport } from '../viewport.svelte';
   import Filmstrip from './Filmstrip.svelte';
@@ -11,12 +11,12 @@
   import AppShell from './layout/AppShell.svelte';
 
   let {
-    range,
+    days,
     focusId = null,
     onExit,
     onReview,
   }: {
-    range: { from: string; to: string };
+    days: string[];
     focusId?: number | null;
     onExit: () => void;
     onReview: () => void;
@@ -83,7 +83,7 @@
   async function load() {
     loading = true;
     try {
-      const plan = await api.plan({ day: range.from, dayTo: range.to, status: 'all' });
+      const plan = await api.plan({ days, status: 'all' });
       photos = plan.photos;
       moments = plan.moments;
       bursts = plan.bursts;
@@ -199,7 +199,7 @@
     }
   }
 
-  const rangeLabel = $derived(shortRange(range.from, range.to));
+  const rangeLabel = $derived(daysLabel(days));
 
   // Days list in the inspector: progress per day, click to jump.
   const dayRows = $derived.by(() => {

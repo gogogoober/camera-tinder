@@ -6,15 +6,14 @@
   import ExportPanel from './lib/components/ExportPanel.svelte';
 
   type View = 'home' | 'cull' | 'review' | 'export';
-  type Range = { from: string; to: string };
-
   let view = $state<View>('home');
-  let range = $state<Range | null>(null);
+  /** The days picked on the Pick screen's calendar; Cull and Review show exactly these. */
+  let days = $state<string[] | null>(null);
   /** Set when a photo is reopened from Review. */
   let focusId = $state<number | null>(null);
 
-  function start(r: Range) {
-    range = r;
+  function start(picked: string[]) {
+    days = picked;
     focusId = null;
     view = 'cull';
   }
@@ -26,14 +25,14 @@
 
 {#if view === 'home'}
   <Home onStart={start} />
-{:else if view === 'cull' && range}
+{:else if view === 'cull' && days}
   {#key focusId}
-    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} />
+    <Cull {days} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} />
   {/key}
 {:else if view === 'review'}
   <Review
-    {range}
-    onBack={() => (view = range ? 'cull' : 'home')}
+    {days}
+    onBack={() => (view = days ? 'cull' : 'home')}
     onOpen={(id) => { focusId = id; view = 'cull'; }}
     onExport={() => (view = 'export')}
   />
