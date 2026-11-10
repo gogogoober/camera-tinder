@@ -24,7 +24,7 @@
     <text x="28" y="156" class="exif">f/2.8 · 1/250 · ISO 100</text>
   </svg>
 
-  <h2>Camera Tinder</h2>
+  <h2>Darkroom</h2>
   <p>Triage your shoots. Pick the days, swipe through the photos, keep the best.</p>
   <button class="primary" onclick={onAdd} disabled={busy}>+ Add photos</button>
 </div>

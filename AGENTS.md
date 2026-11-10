@@ -1,4 +1,8 @@
-# Camera Tinder — agent guide
+# Darkroom — agent guide
+
+(Formerly "Camera Tinder". Internal names keep the old one: crate/package `camera-tinder`,
+identifier `app.cameratinder.desktop`, `camera-tinder.db`. Changing the identifier would move the
+app data folder, so it stays.)
 
 Tinder-style photo culling app. Point it at folders / SD cards, it scans and
 groups photos, you swipe to decide, then export the keepers.
@@ -130,6 +134,9 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
   "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
   de-duplicated per title+day. Mock backend fakes the connect flow.
 
+- macOS window has no title bar (`titleBarStyle: "Overlay"`, traffic lights at 18,22 in tauri.conf.json). AppShell
+  keeps them clear (`ui/src/lib/platform.ts` → `overlayTitlebar`) and marks bare canvas as `data-tauri-drag-region`
+  (needs `core:window:allow-start-dragging`). Preview in the browser mock with `?titlebar`.
 - `use cull_core::*` brings in `cull_core::Result<T>`; use `std::result::Result<T, E>` explicitly
   where two type params are needed (see `CmdResult` in src-tauri).
 - `[profile.dev.package."*"] opt-level = 3` is deliberate: image decoding is 10–20× slower unoptimized.

@@ -1,4 +1,4 @@
-//! cull-core: all of Camera Tinder's logic, with no UI or platform code.
+//! cull-core: all of Darkroom's logic, with no UI or platform code.
 //!
 //! Platforms plug in through the traits in [`ports`] (where photos come from,
 //! where keepers go, how progress is reported). Any UI — Tauri today, SwiftUI

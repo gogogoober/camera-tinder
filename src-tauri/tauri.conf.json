@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Camera Tinder",
+  "productName": "Darkroom",
   "version": "0.1.0",
   "identifier": "app.cameratinder.desktop",
   "build": {
@@ -13,11 +13,14 @@
     "windows": [
       {
         "label": "main",
-        "title": "Camera Tinder",
+        "title": "Darkroom",
         "width": 1280,
         "height": 860,
         "minWidth": 760,
-        "minHeight": 560
+        "minHeight": 560,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 18, "y": 22 }
       }
     ],
     "security": {

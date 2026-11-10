@@ -4,11 +4,16 @@
   always sits on one raised surface. Screens style their content, never the
   page: no page backgrounds, dividers, gutters or column grids in screens.
 
+  On macOS the window has no title bar (overlay style): the frame keeps the
+  traffic lights clear (a top region starts after them; otherwise the rails
+  start below them) and the bare canvas and those spaces drag the window.
+
   Each region's root element is stretched to fill its cell, so give each
   snippet (and the main content) a single root element.
 -->
 <script lang="ts">
   import type { Snippet } from 'svelte';
+  import { overlayTitlebar } from '../../platform';
   import { viewport } from '../../viewport.svelte';
 
   type Props = {
@@ -26,6 +31,10 @@
   let { children, top, left, right, bottom, narrow = false, overflow = 'clip' }: Props = $props();
 
   const compact = $derived(viewport.compact);
+  /** Draw under the macOS traffic lights (desktop layout only). */
+  const chrome = $derived(overlayTitlebar && !compact);
+  /** With no top region, the rails start below the traffic lights. */
+  const railSpace = $derived(chrome && !top);
 
   type Track = [name: string, size: string];
 
@@ -57,14 +66,17 @@
   class="shell"
   class:compact
   class:narrow
+  class:chrome
+  class:bare={chrome && !top && !(left && !compact)}
+  data-tauri-drag-region={chrome ? '' : undefined}
   style:grid-template-areas={layout.areas}
   style:grid-template-rows={layout.rows}
   style:grid-template-columns={layout.columns}
 >
-  {#if top}<div class="region top">{@render top()}</div>{/if}
-  {#if left && !compact}<div class="rail left">{@render left()}</div>{/if}
+  {#if top}<div class="region top" data-tauri-drag-region={chrome ? '' : undefined}>{@render top()}</div>{/if}
+  {#if left && !compact}<div class="rail left">{#if railSpace}<div class="tb-space" data-tauri-drag-region></div>{/if}{@render left()}</div>{/if}
   <div class="surface" class:visible={overflow === 'visible'}>{@render children()}</div>
-  {#if right}<div class="rail right">{@render right()}</div>{/if}
+  {#if right}<div class="rail right">{#if railSpace && !compact}<div class="tb-space" data-tauri-drag-region></div>{/if}{@render right()}</div>{/if}
   {#if bottom}<div class="region bottom">{@render bottom()}</div>{/if}
 </div>
 
@@ -92,6 +104,12 @@
     box-shadow: var(--surface-shadow);
   }
   .surface.visible { overflow: visible; }
+
+  /* macOS overlay title bar: keep the traffic lights clear. */
+  .chrome { --tb-h: 30px; --tb-lights: 74px; }
+  .rail > .tb-space { flex: none; height: var(--tb-h); }
+  .chrome .top { padding-left: var(--tb-lights); min-height: 36px; display: grid; align-items: center; }
+  .chrome.bare { padding-top: calc(var(--gutter) + var(--tb-h)); }
   .narrow .surface { width: min(100%, var(--surface-narrow)); justify-self: center; }
 
   /* Phones: edge to edge, no lift; the right rail becomes a bottom sheet. */

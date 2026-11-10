@@ -269,7 +269,7 @@
             {#if confirmClear && !blocked}
               <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
                 <b id="clear-q">Clear {size} of preview copies?</b>
-                <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
+                <p><span class="lbl">Removed</span>The screen-sized copies Darkroom made so you can browse quickly.</p>
                 <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
                 <p class="muted">Previews are made again the next time you scan a card.</p>
                 <div class="row">
@@ -300,12 +300,13 @@
   </aside>
 {/snippet}
 
-<AppShell left={sidebar} right={summary}>
+<!-- No right rail until there are photos: the splash gets the full width. -->
+<AppShell left={sidebar} right={days.length ? summary : undefined}>
   <section class="main">
     {#if days.length || scanning}
     <header>
       <div>
-        <div class="eyebrow">Camera Tinder</div>
+        <div class="eyebrow">Darkroom</div>
         <h1>What do you want to triage?</h1>
       </div>
       {#if compact}
@@ -356,7 +357,7 @@
             <span class="muted small">Name your shoots from Apple Calendar events. Stays on this device.</span>
             <button class="small primary" disabled={connecting} onclick={connectCalendar}>{connecting ? 'Waiting for macOS…' : 'Connect Calendar'}</button>
           {:else}
-            <span class="muted small">Calendar access is off. Turn it on for Camera Tinder in System Settings → Privacy &amp; Security → Calendars.</span>
+            <span class="muted small">Calendar access is off. Turn it on for Darkroom in System Settings → Privacy &amp; Security → Calendars.</span>
           {/if}
         </div>
       {/if}
@@ -409,7 +410,7 @@
     {/if}
     {#if report && !scanning && (report.skippedUnsupported || report.otherFiles)}
       <p class="leftbehind small">
-        <b>Not handled by Camera Tinder, and not exported:</b>
+        <b>Not handled by Darkroom, and not exported:</b>
         {#if report.skippedUnsupported}{formatCount(report.skippedUnsupported)} RAW{/if}{#if report.skippedUnsupported && report.otherFiles}{", "}{/if}{#if report.otherFiles}{formatCount(report.otherFiles)} other (videos etc.){/if}.
         Copy these yourself before you format the card.
       </p>
