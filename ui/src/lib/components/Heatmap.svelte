@@ -86,7 +86,7 @@
 
   function tip(d: string) {
     const s = byDay.get(d);
-    return s?.stats.total ? `${d} · ${s.stats.total} photos · ${s.stats.undecided} to cull` : `${d} · no photos`;
+    return s?.stats.total ? `${d} · ${s.stats.total} photos · ${s.stats.undecided} to triage` : `${d} · no photos`;
   }
 </script>
 

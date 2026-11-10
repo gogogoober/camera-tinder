@@ -5,6 +5,7 @@
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
+  import Splash from './Splash.svelte';
   import AppShell from './layout/AppShell.svelte';
 
   let { onStart }: { onStart: (days: string[]) => void } = $props();
@@ -19,6 +20,7 @@
   let connecting = $state(false);
   let cache = $state<PreviewCacheStatus | null>(null);
   let confirmClear = $state(false);
+  let advancedOpen = $state(false);
   let clearing = $state(false);
   let cleared = $state<number | null>(null);
   /** The one source of truth for what gets culled: selected days (`YYYY-MM-DD`). */
@@ -229,6 +231,7 @@
 {#snippet sidebar()}
   <aside>
     <div class="eyebrow">Sources</div>
+    <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
     {#each sources as s (s.id)}
       <div class="src">
         <div>
@@ -240,7 +243,6 @@
         </span>
       </div>
     {/each}
-    <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
     {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (photos already scanned aren't read again)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
 
     <div class="eyebrow">Suggestions from</div>
@@ -252,48 +254,59 @@
     {#if stats}
       <div class="eyebrow">Library</div>
       <div class="kv"><span>Photos</span><b>{formatCount(stats.total)}</b></div>
-      <div class="kv"><span>Left to cull</span><b>{formatCount(stats.undecided)}</b></div>
+      <div class="kv"><span>Left to triage</span><b>{formatCount(stats.undecided)}</b></div>
     {/if}
 
     {#if cache}
       {@const blocked = cache.connectedSources.length > 0}
       {@const size = formatBytes(cache.bytes)}
-      <div class="eyebrow">Storage</div>
-      <div class="kv"><span>App previews</span><b>{size}</b></div>
+      <!-- Pinned to the bottom of the rail; opens upward. -->
+      <div class="advanced" class:open={advancedOpen}>
+        {#if advancedOpen}
+          <div class="adv-panel" id="adv-panel">
+            <div class="kv"><span>App previews</span><b>{size}</b></div>
 
-      {#if confirmClear && !blocked}
-        <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
-          <b id="clear-q">Clear {size} of preview copies?</b>
-          <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
-          <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
-          <p class="muted">Previews are made again the next time you scan a card.</p>
-          <div class="row">
-            <button class="small primary" disabled={clearing || scanning} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
-            <button class="small ghost" disabled={clearing} onclick={() => (confirmClear = false)}>Cancel</button>
+            {#if confirmClear && !blocked}
+              <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
+                <b id="clear-q">Clear {size} of preview copies?</b>
+                <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
+                <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
+                <p class="muted">Previews are made again the next time you scan a card.</p>
+                <div class="row">
+                  <button class="small primary" disabled={clearing || scanning} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>
+                  <button class="small ghost" disabled={clearing} onclick={() => (confirmClear = false)}>Cancel</button>
+                </div>
+              </div>
+            {:else}
+              <button class="small clear" disabled={blocked || scanning || cache.bytes === 0} title={scanning ? "Wait for the scan to finish" : undefined} onclick={clearPreviews}>Clear previews</button>
+              <p class="muted small note">Frees space the app used for its own preview copies. Never touches your photos.</p>
+              {#if blocked}
+                <p class="small note wait">
+                  <b>Unplug first:</b> {cache.connectedSources.join(', ')}. Clearing waits until your cards and external drives are disconnected,
+                  so making previews again can't read from them.
+                </p>
+              {:else if cleared !== null}
+                <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos and decisions are unchanged.</p>
+              {/if}
+            {/if}
           </div>
-        </div>
-      {:else}
-        <button class="small clear" disabled={blocked || scanning || cache.bytes === 0} title={scanning ? "Wait for the scan to finish" : undefined} onclick={clearPreviews}>Clear previews</button>
-        <p class="muted small note">Frees space the app used for its own preview copies. Never touches your photos.</p>
-        {#if blocked}
-          <p class="small note wait">
-            <b>Unplug first:</b> {cache.connectedSources.join(', ')}. Clearing waits until your cards and external drives are disconnected,
-            so making previews again can't read from them.
-          </p>
-        {:else if cleared !== null}
-          <p class="small note">Cleared {formatBytes(cleared)} of preview copies. Your photos and decisions are unchanged.</p>
         {/if}
-      {/if}
+        <button class="plain adv-toggle" aria-expanded={advancedOpen} aria-controls="adv-panel" onclick={() => (advancedOpen = !advancedOpen)}>
+          <span>{advancedOpen ? '▾' : '▴'} Advanced</span>
+          <span class="mono muted">Cache: {size}</span>
+        </button>
+      </div>
     {/if}
   </aside>
 {/snippet}
 
 <AppShell left={sidebar} right={summary}>
   <section class="main">
+    {#if days.length || scanning}
     <header>
       <div>
         <div class="eyebrow">Camera Tinder</div>
-        <h1>What do you want to cull?</h1>
+        <h1>What do you want to triage?</h1>
       </div>
       {#if compact}
         <div class="mbtns">
@@ -302,6 +315,7 @@
         </div>
       {/if}
     </header>
+    {/if}
 
     {#if scanning}
       <div class="scan">
@@ -314,10 +328,7 @@
     {/if}
 
     {#if !days.length && !scanning}
-      <p class="muted empty">
-        Point Camera Tinder at a folder of photos or a mounted SD card, for example <code>/Volumes/NIKON Z 6</code>.
-        The calendar fills in once photos are scanned.
-      </p>
+      <Splash onAdd={addFolder} busy={scanning} />
     {:else}
       <div class="group">
         <span class="eyebrow">Time you have</span>
@@ -334,7 +345,7 @@
         <span class="eyebrow">Calendar · click or drag to pick days</span>
         <Heatmap {days} {selected} onChange={(next) => (selected = next)} />
         <div class="legend muted small">
-          Photos still to cull: <i class="sw none"></i>none <i class="sw l1"></i><i class="sw l2"></i><i class="sw l3"></i><i class="sw l4"></i>many <i class="sw done"></i>all done
+          Photos still to triage: <i class="sw none"></i>none <i class="sw l1"></i><i class="sw l2"></i><i class="sw l3"></i><i class="sw l4"></i>many <i class="sw done"></i>all done
         </div>
       </div>
 
@@ -413,11 +424,11 @@
         <span class="eyebrow">Selected</span>
         <button class="small ghost" onclick={() => (selected = new Set())}>Clear</button>
       </div>
-      <div class="big">{formatCount(left)} <span class="muted">photos to cull</span></div>
+      <div class="big">{formatCount(left)} <span class="muted">photos to triage</span></div>
       <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{shortRange(range.from, range.to)}</b></div>
-      {#if total - left > 0}<div class="kv"><span>Already culled</span><b>{formatCount(total - left)}</b></div>{/if}
+      {#if total - left > 0}<div class="kv"><span>Already triaged</span><b>{formatCount(total - left)}</b></div>{/if}
       <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
-      <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
+      <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
     {:else}
       <div class="muted">Pick days on the calendar to begin.</div>
     {/if}
@@ -426,6 +437,11 @@
 
 <style>
   aside { display: flex; flex-direction: column; gap: 8px; }
+  .advanced { margin-top: auto; padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+  .adv-panel { display: flex; flex-direction: column; gap: 8px; padding-bottom: 4px; }
+  .adv-toggle { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; padding: 8px 0 0; border-top: 1px solid var(--border); border-radius: 0; font-size: 12.5px; color: var(--muted); text-align: left; }
+  .adv-toggle:hover { color: var(--text); background: transparent; }
+  .advanced.open .adv-toggle { color: var(--text); }
   aside .eyebrow { margin-top: 12px; }
   aside .eyebrow:first-child { margin-top: 0; }
   .src { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); }
@@ -442,12 +458,10 @@
   .mbtns { display: flex; gap: 6px; flex: none; }
   h1 { font-size: 24px; margin: 2px 0 0; letter-spacing: -0.01em; }
   .group { display: grid; gap: 8px; }
-  .empty { max-width: 56ch; }
   .scan { display: grid; gap: 8px; }
   .scan-h { display: flex; align-items: center; gap: 10px; }
   .scan-h .grow { flex: 1; min-width: 0; }
   .src-btns { display: flex; gap: 2px; flex: none; }
-  code { font-size: 13px; }
   .legend { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; background: color-mix(in srgb, var(--accent) var(--c, 0%), var(--cell0)); }
   .sw.l1 { --c: 16%; } .sw.l2 { --c: 36%; } .sw.l3 { --c: 62%; } .sw.l4 { --c: 94%; }

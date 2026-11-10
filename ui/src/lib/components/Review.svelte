@@ -126,7 +126,7 @@
 
 {#snippet topBar()}
   <header class="top">
-    <button onclick={onBack}>{compact ? 'Cull' : '‹ Back to cull'}</button>
+    <button onclick={onBack}>{compact ? 'Triage' : '‹ Back to triage'}</button>
     <b>Review{pickedDays ? ` · ${daysLabel(pickedDays)}` : ''}</b>
     <span class="grow"></span>
     {#if !compact}<span class="muted">Drag to select · click to reopen</span>{/if}
