@@ -50,7 +50,7 @@ export function structure(triage: TriageItem[]): Structure {
 
 /** The photos of the group that photo `i` belongs to (just `[i]` when it is on its own). */
 export function groupOf(s: Structure, i: number): number[] {
-  const g = s.groupAt[i];
+  const g = s.groupAt[i] ?? null; // no triage for this photo (feature off, or plan not loaded): it's a single
   return g === null ? [i] : (s.members.get(g) ?? [i]);
 }
 
@@ -120,4 +120,9 @@ export function nextRescueMark(mark: RescueMark | undefined): RescueMark | undef
 /** A chip row: nothing selected means no filter (everything shows); otherwise a photo must match one. */
 export function matchesChips<T>(selected: Set<T>, value: T | undefined): boolean {
   return selected.size === 0 || (value !== undefined && selected.has(value));
+}
+
+/** Is `triage` the plan for exactly these photos, in this order? (Guards swapping in a newer triage.) */
+export function sameOrder(photos: Pick<Photo, 'id'>[], triage: Pick<TriageItem, 'photoId'>[]): boolean {
+  return photos.length === triage.length && photos.every((p, i) => triage[i].photoId === p.id);
 }

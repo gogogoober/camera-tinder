@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Decision, type Group, type Photo, type Place, type TriageItem } from '../api';
+  import { api, type CoreEvent, type Decision, type Group, type Photo, type Place, type TriageItem } from '../api';
   import { DECISIONS, ORDER, decisionForKey } from '../decisions';
   import { minutesFor, shortRange } from '../days';
   import { formatCount, formatDay, formatTime, previewEdge } from '../format';
@@ -11,6 +11,7 @@
     groupOf,
     nextStop,
     nextUndecidedFrame,
+    sameOrder,
     setAsideLeft,
     stepFrame,
     stopOf,
@@ -92,10 +93,31 @@
   }
 
   onMount(() => {
+    const off = api.onEvent(onCoreEvent);
     load();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      clearTimeout(refreshTimer);
+      void off.then((f) => f());
+    };
   });
+
+  // Analysis keeps running in the background. If some photos weren't analysed when this screen opened,
+  // pick up new results (bursts, set-aside photos) every few seconds as they arrive, without moving the cursor.
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+  function onCoreEvent(e: CoreEvent) {
+    if (e.type !== 'analysisProgress' || refreshTimer || !triage.some((t) => !t.analyzed)) return;
+    refreshTimer = setTimeout(async () => {
+      refreshTimer = undefined;
+      try {
+        const plan = await api.plan({ day: range.from, dayTo: range.to, status: 'all' });
+        if (sameOrder(photos, plan.triage)) triage = plan.triage; // same photos only: a scan may have changed the list
+      } catch {
+        // The next progress event tries again.
+      }
+    }, 3000);
+  }
 
   async function load() {
     loading = true;

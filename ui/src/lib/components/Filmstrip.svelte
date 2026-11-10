@@ -42,7 +42,7 @@
       const i = idx - back + k;
       const p = photos[i];
       if (!p) return { i, p: null, kind: 'empty' as const, divider: false };
-      const kind = s.setAside[i] ? ('sweep' as const) : s.groupAt[i] === null ? ('single' as const) : stopOf(s, i) === i ? ('stack' as const) : ('hidden' as const);
+      const kind = s.setAside[i] ? ('sweep' as const) : s.groupAt[i] == null ? ('single' as const) : stopOf(s, i) === i ? ('stack' as const) : ('hidden' as const);
       return { i, p, kind, divider: k > 0 && photos[i - 1] != null && momentOf[i - 1] !== momentOf[i] };
     }).filter((it) => it.kind !== 'hidden'),
   );

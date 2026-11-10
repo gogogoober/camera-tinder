@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { firstUndecidedFrame, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { firstUndecidedFrame, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -65,4 +65,19 @@ test('an empty chip row shows everything; a selected row narrows', () => {
   assert.equal(matchesChips(new Set(['a']), 'a'), true);
   assert.equal(matchesChips(new Set(['a']), 'b'), false);
   assert.equal(matchesChips(new Set(['a']), undefined), false);
+});
+
+test('a newer triage is only taken for the very same photos in the same order', () => {
+  const ph = [{ id: 1 }, { id: 2 }];
+  assert.equal(sameOrder(ph, [{ photoId: 1 }, { photoId: 2 }]), true);
+  assert.equal(sameOrder(ph, [{ photoId: 2 }, { photoId: 1 }]), false);
+  assert.equal(sameOrder(ph, [{ photoId: 1 }]), false, 'a scan added or removed photos');
+});
+
+test('with no triage at all the screen behaves like plain swiping (feature off, or not loaded yet)', () => {
+  const none = structure([]);
+  const three = [{ decision: null }, { decision: 'like' as const }, { decision: null }];
+  assert.deepEqual([0, 1, 2].map((i) => isStop(none, i)), [true, true, true]);
+  assert.equal(nextStop(none, three, 0), 2, 'skips the decided one');
+  assert.deepEqual(setAsideLeft(none, three), []);
 });

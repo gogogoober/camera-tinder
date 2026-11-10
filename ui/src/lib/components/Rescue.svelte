@@ -1,3 +1,9 @@
+<script module lang="ts">
+  import type { RescueMark } from '../triage';
+  // Marks survive leaving the screen (Esc, back to Cull) for the session; only Done applies them.
+  const remembered = new Map<number, RescueMark>();
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type Decision, type OutcomeEntry, type Photo, type Tag, type TriageItem } from '../api';
@@ -5,7 +11,7 @@
   import { DECISIONS } from '../decisions';
   import { short, shortRange } from '../days';
   import { formatCount, previewEdge } from '../format';
-  import { ISSUE_LABELS, matchesChips, nextRescueMark, type RescueMark } from '../triage';
+  import { ISSUE_LABELS, matchesChips, nextRescueMark } from '../triage';
   import { viewport } from '../viewport.svelte';
   import AppShell from './layout/AppShell.svelte';
 
@@ -22,7 +28,7 @@
   let rows = $state<Row[]>([]);
   let tags = $state<Tag[]>([]);
   let triageVersion = '';
-  let marks = $state(new Map<number, RescueMark>());
+  let marks = $state(new Map<number, RescueMark>(remembered));
   let chosenEvents = $state(new Set<string>());
   let chosenReasons = $state(new Set<IssueKind>());
   let enlarged = $state<Photo | null>(null);
@@ -40,6 +46,8 @@
       rows = plan.photos
         .map((photo, i) => ({ photo, item: plan.triage[i], day: photo.capturedAt?.slice(0, 10) ?? 'unknown' }))
         .filter((r) => r.item?.question === 'sweep' && !r.photo.decision);
+      const ids = new Set(rows.map((r) => r.photo.id));
+      marks = new Map([...marks].filter(([id]) => ids.has(id))); // forget marks for photos decided elsewhere
     } catch (e) {
       error = String(e);
     } finally {
@@ -98,6 +106,8 @@
     if (next) m.set(r.photo.id, next);
     else m.delete(r.photo.id);
     marks = m;
+    remembered.clear();
+    m.forEach((v, k) => remembered.set(k, v));
   }
 
   function press(r: Row) {
@@ -132,6 +142,7 @@
         if (ids.length) await api.decideMany(ids, d);
       }
       await api.logOutcomes(outcomes);
+      remembered.clear();
       onDone();
     } catch (e) {
       error = String(e);

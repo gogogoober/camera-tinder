@@ -1,5 +1,6 @@
 //! `CullerService`: the one facade every UI talks to.
 
+use std::panic::AssertUnwindSafe;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
@@ -40,6 +41,9 @@ impl EventSink for WakeOnSaved<'_> {
         self.inner.emit(event);
     }
 }
+
+/// One photo's analysis in a batch: its results, or why it couldn't be analysed.
+type PhotoSteps = std::result::Result<(PhotoId, Vec<StepResult>), (PhotoId, String)>;
 
 pub struct CullerService {
     store: Mutex<Store>,
@@ -97,6 +101,8 @@ impl CullerService {
         sources.retain(|s| s.id() != source.id());
         sources.push(source.clone());
         drop(sources);
+        // Photos scanned in an earlier session may still need analysis.
+        self.wake_analysis();
         self.source_info(source.as_ref())
     }
 
@@ -395,7 +401,7 @@ impl CullerService {
             if stop.load(Ordering::Relaxed) {
                 break;
             }
-            let results: Vec<std::result::Result<(PhotoId, Vec<StepResult>), (PhotoId, String)>> = pool.install(|| {
+            let results: Vec<PhotoSteps> = pool.install(|| {
                 batch
                     .par_iter()
                     .map(|(photo, steps)| {
@@ -405,7 +411,10 @@ impl CullerService {
                         // No source: a photo without a cached master is skipped, never read from the card.
                         let bytes = self.previews.get(photo, None, MASTER_EDGE).map_err(|e| (photo.id, e.to_string()))?;
                         let img = AnalysisImage::from_jpeg(bytes);
-                        Ok((photo.id, run_photo(&pipeline, steps, photo.id, &img, stop).0))
+                        // A decoder or engine bug on one damaged photo must not end the pass (or the worker).
+                        std::panic::catch_unwind(AssertUnwindSafe(|| run_photo(&pipeline, steps, photo.id, &img, stop).0))
+                            .map(|results| (photo.id, results))
+                            .map_err(|_| (photo.id, "analysis crashed on this photo".to_string()))
                     })
                     .collect()
             });

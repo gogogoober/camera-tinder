@@ -192,3 +192,56 @@ fn asking_for_one_kind_computes_only_the_step_that_writes_it() {
     assert_eq!((r.analyzed, r.up_to_date), (1, 0));
     assert!(svc.photo_analysis(id).unwrap().exposure.is_some());
 }
+
+/// A blur engine that crashes, like a decoder bug on a damaged photo would.
+struct CrashingBlur;
+impl cull_core::analysis::BlurAnalyzer for CrashingBlur {
+    fn implementation(&self) -> &'static str {
+        "test.crashing_blur"
+    }
+    fn blur(&self, _: &cull_core::analysis::AnalysisImage) -> cull_core::Result<cull_core::analysis::Blur> {
+        panic!("engine bug");
+    }
+}
+
+#[test]
+fn a_crashing_engine_fails_its_photos_but_not_the_pass_or_the_worker() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+    let mut broken = cull_core::analysis::Analyzers::rust();
+    broken.blur = Some(Arc::new(CrashingBlur));
+    svc.set_analyzers(broken);
+    svc.start_analysis_worker(Arc::new(NullSink));
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+
+    let r = svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap();
+    assert_eq!(r.failed.len(), 4, "every photo reported, none lost: {r:?}");
+    std::thread::sleep(std::time::Duration::from_millis(500)); // the worker met the crash too
+
+    // Fix the engine: the same worker (still alive) finishes the job.
+    svc.set_analyzers(cull_core::analysis::Analyzers::rust());
+    svc.wake_analysis();
+    wait_until("analysis after the engine was fixed", || all_analysed(&svc));
+}
+
+#[test]
+fn adding_a_folder_wakes_the_worker_for_photos_scanned_in_an_earlier_session() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let (db, cache) = (tmp.path().join("db").join("app.db"), tmp.path().join("cache"));
+    {
+        let first = CullerService::open(&db, &cache).unwrap();
+        first.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+        first.scan(&Default::default(), &NullSink).unwrap();
+    }
+    // A new launch: the worker's first pass sees no sources yet, so nothing happens until one is added.
+    let svc = Arc::new(CullerService::open(&db, &cache).unwrap());
+    svc.start_analysis_worker(Arc::new(NullSink));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    wait_until("analysis after add_source", || all_analysed(&svc));
+}

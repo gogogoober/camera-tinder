@@ -6,6 +6,7 @@
 //! and the worker. Stop is sticky: it lasts until [`CullerService::resume_analysis`] or a restart,
 //! so new import batches don't quietly start analysis again.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::time::Duration;
@@ -61,8 +62,11 @@ impl CullerService {
                 if !woken || control.stop.load(Ordering::Relaxed) {
                     continue;
                 }
-                if let Err(e) = svc.analyze_pending(sink.as_ref()) {
-                    eprintln!("background analysis failed: {e}");
+                // Whatever goes wrong in a pass, the thread must survive for the next wake.
+                match std::panic::catch_unwind(AssertUnwindSafe(|| svc.analyze_pending(sink.as_ref()))) {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => eprintln!("background analysis failed: {e}"),
+                    Err(_) => eprintln!("background analysis crashed; will retry on the next wake"),
                 }
             }
         });
