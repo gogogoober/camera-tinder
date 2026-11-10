@@ -31,7 +31,7 @@
   const LONG_PRESS_MS = 450;
 
   let rows = $state<Row[]>([]);
-  /** Calendar events touching the picked days (the old saved tags are gone; events come from suggestions). */
+  /** Calendar events (from the suggestions) that touch the picked days. */
   let events = $state<TagSuggestion[]>([]);
   let triageVersion = '';
   let marks = $state(new Map<number, RescueMark>(remembered));
