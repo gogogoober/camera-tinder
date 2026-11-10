@@ -17,6 +17,7 @@
   let dx = $state(0);
   let dy = $state(0);
   let dragging = $state(false);
+  let failed = $state(false);
   let start = { x: 0, y: 0 };
 
   const intent = $derived(decisionForDrag(dx, dy));
@@ -55,13 +56,19 @@
   role="img"
   aria-label={photo.fileName}
 >
-  <img class="photo-fill" src={api.previewUrl(photo.id, edge)} alt={photo.fileName} draggable="false" />
+  {#if failed}
+    <div class="missing"><b>Preview not available</b><span>{photo.fileName}: the original is gone and no copy was cached.</span></div>
+  {:else}
+    <img class="photo-fill" src={api.previewUrl(photo.id, edge)} alt={photo.fileName} draggable="false" onerror={() => (failed = true)} />
+  {/if}
   {#if intent}
     <div class="stamp {intent}" style:opacity={strength}>{DECISIONS[intent].stamp}</div>
   {/if}
 </div>
 
 <style>
+  .missing { position: absolute; inset: 0; display: grid; place-content: center; gap: 6px; text-align: center; color: var(--muted); font-size: 13px; padding: 24px; }
+  .missing b { color: var(--text); font-weight: 500; }
   .card {
     position: absolute;
     inset: 0;

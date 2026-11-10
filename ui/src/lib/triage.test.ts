@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { burstStripLayout, drawnItems, firstUndecidedFrame, leaveNext, loopNext, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { burstStripLayout, drawnItems, firstUndecidedFrame, leaveNext, loopNext, loopPrev, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -116,6 +116,13 @@ test('loopNext loops inside a group (decided frames included) and never leaves i
   assert.equal(loopNext(s, photos(), 4), 2, 'wraps from the last frame to the first');
   assert.equal(loopNext(s, photos([2, 3]), 3), 4);
   assert.equal(loopNext(s, photos([2, 3]), 4), 2, 'still loops over decided frames');
+});
+
+test('loopPrev mirrors loopNext: previous frame in a group, previous stop on a single, both wrapping', () => {
+  assert.equal(loopPrev(s, 3), 2);
+  assert.equal(loopPrev(s, 2), 4, 'wraps from the first frame to the last');
+  assert.equal(loopPrev(s, 5), 2, 'back from a single lands on the previous stop');
+  assert.equal(loopPrev(s, 0), 5, 'wraps to the end');
 });
 
 test('loopNext on a single goes to the next undecided stop and wraps to the start', () => {

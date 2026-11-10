@@ -116,6 +116,8 @@ pub fn scan_source(
             }
         })
         .collect();
+    // Every path the listing showed (any kind), to notice rows whose file has since vanished.
+    let listed_paths: std::collections::HashSet<String> = candidates.iter().map(|(e, _)| e.rel_path.clone()).collect();
     let total = candidates.len() as u64;
     report.found = total;
 
@@ -222,6 +224,13 @@ pub fn scan_source(
                 .collect()
         });
         report.failed.extend(failed);
+    }
+
+    // A complete scan of a non-empty listing: forget rows for files that are gone and have nothing left to
+    // show (a regenerated test folder, deleted photos). An empty listing is never trusted (unmounted volume).
+    if !cancel.load(Ordering::Relaxed) && !listed_paths.is_empty() {
+        let set: std::collections::HashSet<&str> = listed_paths.iter().map(String::as_str).collect();
+        store.lock().unwrap().forget_vanished(&src, &set, &|fp| previews.has_master(fp))?;
     }
 
     report.cancelled = read_new.into_inner() < misses.len() as u64 || read_backfill.into_inner() < backfill.len() as u64;

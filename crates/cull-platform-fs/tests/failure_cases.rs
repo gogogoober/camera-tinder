@@ -441,3 +441,32 @@ fn decisions_survive_a_restart() {
     decisions.sort_by_key(|d| format!("{d:?}"));
     assert_eq!(decisions, [None, Some(Decision::Favorite), Some(Decision::Hate)]);
 }
+
+/// A folder is regenerated (some files gone) and previews were cleared. The rows of the vanished files have
+/// nothing to show and must not come back as broken photos; photos that still exist stay, with their decisions.
+#[test]
+fn photos_whose_files_vanished_and_have_no_preview_are_forgotten_by_the_next_scan() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("folder");
+    card(&root, 6);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let all = || svc.queue(&Filter { status: StatusFilter::All, ..Default::default() }).unwrap();
+    assert_eq!(all().len(), 6);
+    svc.decide(all()[0].id, Decision::Favorite).unwrap();
+
+    // Two files vanish while their previews are still cached: they stay viewable, so they stay.
+    fs::remove_file(root.join("DCIM/DSC_0004.JPG")).unwrap();
+    fs::remove_file(root.join("DCIM/DSC_0005.JPG")).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!(all().len(), 6, "still viewable from the cache");
+
+    // Previews cleared: now they have nothing to show, and the next scan forgets them.
+    svc.clear_previews(&|_| false).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let left = all();
+    assert_eq!(left.len(), 4);
+    assert!(left.iter().all(|p| svc.preview(p.id, 256).is_ok()), "every photo left can be shown");
+    assert!(left.iter().any(|p| p.decision == Some(Decision::Favorite)), "decisions of photos that remain are kept");
+}
