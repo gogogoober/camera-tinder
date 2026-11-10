@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError};
 use rayon::prelude::*;
 
 use crate::analysis::grouping::{Candidate, similar_groups};
+use crate::analysis::pipeline::{Pipeline, StepResult, run_photo, stale_steps};
 use crate::analysis::issues::issues;
 use crate::analysis::{
     AnalysisImage, AnalysisKind, AnalyzeReport, AnalyzeRequest, AnalyzerInfo, Analyzers, GroupingOptions, PhotoAnalysis, PhotoIssues, SimilarGroup,
@@ -328,24 +329,20 @@ impl CullerService {
 
     /// Compute (and store) analysis results. Only missing or stale results are computed
     /// unless `force`. Blocking and CPU-heavy: call it off the UI thread.
+    ///
+    /// Reads only the cached master previews, never the originals: a photo without one is
+    /// reported in `failed` (a later scan rebuilds the preview).
     pub fn analyze(&self, req: &AnalyzeRequest, sink: &dyn EventSink) -> Result<AnalyzeReport> {
-        let analyzers = self.analyzers.read().unwrap().clone();
-        let available = analyzers.available();
-        let kinds: Vec<AnalysisKind> = if req.kinds.is_empty() { available.clone() } else { req.kinds.iter().copied().filter(|k| available.contains(k)).collect() };
+        let pipeline = Pipeline::from_analyzers(self.analyzers.read().unwrap().clone()).only(&req.kinds);
         let photos = self.photos_for(req.photo_ids.as_deref(), req.filter.as_ref())?;
         let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
         let mut report = AnalyzeReport { photos: photos.len() as u64, ..Default::default() };
 
-        let index = self.store.lock().unwrap().analysis_index(&ids)?;
-        let todo: Vec<(Photo, Vec<AnalysisKind>)> = photos
+        let index = self.store.lock().unwrap().result_index(&ids)?;
+        let todo: Vec<(Photo, Vec<usize>)> = photos
             .into_iter()
             .filter_map(|p| {
-                let stored = index.get(&p.id);
-                let stale: Vec<AnalysisKind> = kinds
-                    .iter()
-                    .copied()
-                    .filter(|k| req.force || stored.and_then(|s| s.get(k)).map(String::as_str) != analyzers.implementation(*k))
-                    .collect();
+                let stale = stale_steps(&pipeline, index.get(&p.id), req.force);
                 (!stale.is_empty()).then_some((p, stale))
             })
             .collect();
@@ -355,19 +352,16 @@ impl CullerService {
         let mut done = 0u64;
         sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
         let pool = rayon::ThreadPoolBuilder::new().num_threads(ANALYZE_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
-        let input_kinds = [AnalysisKind::Faces, AnalysisKind::Saliency];
+        let stop = AtomicBool::new(false);
         for batch in todo.chunks(ANALYZE_BATCH) {
-            let batch_ids: Vec<PhotoId> = batch.iter().map(|(p, _)| p.id).collect();
-            // Stored inputs (faces, saliency) so dependants don't recompute them.
-            let prior = if req.force { Default::default() } else { self.store.lock().unwrap().load_analyses(&batch_ids, Some(&input_kinds))? };
-            let results: Vec<std::result::Result<PhotoAnalysis, (PhotoId, String)>> = pool.install(|| {
+            let results: Vec<std::result::Result<(PhotoId, Vec<StepResult>), (PhotoId, String)>> = pool.install(|| {
                 batch
                     .par_iter()
-                    .map(|(photo, kinds)| {
-                        let source = self.source(&photo.source_id).ok();
-                        let bytes = self.previews.get(photo, source.as_deref(), MASTER_EDGE).map_err(|e| (photo.id, e.to_string()))?;
+                    .map(|(photo, steps)| {
+                        // No source: a photo without a cached master is skipped, never read from the card.
+                        let bytes = self.previews.get(photo, None, MASTER_EDGE).map_err(|e| (photo.id, e.to_string()))?;
                         let img = AnalysisImage::from_jpeg(bytes);
-                        Ok(analyzers.run(photo.id, &img, kinds, prior.get(&photo.id)))
+                        Ok((photo.id, run_photo(&pipeline, steps, photo.id, &img, &stop).0))
                     })
                     .collect()
             });
@@ -375,10 +369,10 @@ impl CullerService {
             store.transaction(|s| {
                 for r in &results {
                     match r {
-                        Ok(a) => {
-                            report.kind_errors += a.errors.len() as u64;
+                        Ok((id, step_results)) => {
+                            report.kind_errors += step_results.iter().filter(|x| x.result.is_err()).count() as u64;
                             report.analyzed += 1;
-                            s.save_analysis(a)?;
+                            s.save_results(*id, step_results)?;
                         }
                         Err(f) => report.failed.push(f.clone()),
                     }
@@ -394,7 +388,9 @@ impl CullerService {
 
     /// Everything stored for one photo, including its similarity embedding.
     pub fn photo_analysis(&self, id: PhotoId) -> Result<PhotoAnalysis> {
-        Ok(self.store.lock().unwrap().load_analyses(&[id], None)?.remove(&id).unwrap_or_else(|| PhotoAnalysis::new(id)))
+        let mut a = self.store.lock().unwrap().load_analyses(&[id], None)?.remove(&id).unwrap_or_else(|| PhotoAnalysis::new(id));
+        a.retain_current(&self.analyzers.read().unwrap());
+        Ok(a)
     }
 
     /// Stored analyses for the photos matching `filter`, in queue order, without the
@@ -404,7 +400,15 @@ impl CullerService {
         let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
         let kinds: Vec<AnalysisKind> = AnalysisKind::ALL.into_iter().filter(|k| *k != AnalysisKind::Similarity).collect();
         let mut map = self.store.lock().unwrap().load_analyses(&ids, Some(&kinds))?;
-        Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
+        let analyzers = self.analyzers.read().unwrap().clone();
+        Ok(ids
+            .iter()
+            .filter_map(|id| map.remove(id))
+            .map(|mut a| {
+                a.retain_current(&analyzers);
+                a
+            })
+            .collect())
     }
 
     /// Reject reasons for the photos matching `filter` (only photos with at least one), in
@@ -423,7 +427,9 @@ impl CullerService {
     pub fn similar_groups(&self, filter: &Filter, options: &GroupingOptions) -> Result<Vec<SimilarGroup>> {
         let photos = self.queue(filter)?;
         let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
-        let map = self.store.lock().unwrap().load_analyses(&ids, None)?;
+        let mut map = self.store.lock().unwrap().load_analyses(&ids, None)?;
+        let analyzers = self.analyzers.read().unwrap().clone();
+        map.values_mut().for_each(|a| a.retain_current(&analyzers));
         let candidates: Vec<Candidate> = photos.iter().filter_map(|p| Some(Candidate { captured_at: p.captured_at, analysis: map.get(&p.id)? })).collect();
         Ok(similar_groups(&candidates, options))
     }

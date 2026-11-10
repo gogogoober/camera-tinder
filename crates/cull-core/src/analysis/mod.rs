@@ -33,6 +33,7 @@ pub mod horizon;
 pub mod image;
 pub mod issues;
 pub mod noise;
+pub mod pipeline;
 pub mod ranking;
 pub mod saliency;
 pub mod similarity;
@@ -238,6 +239,19 @@ impl PhotoAnalysis {
             }
             if let Some(i) = other.implementations.get(&kind) {
                 self.implementations.insert(kind, i.clone());
+            }
+        }
+    }
+
+    /// Forget results whose stored implementation isn't the one registered now (an engine was swapped
+    /// or removed). Rows stay in the database; they are just not read. Re-running overwrites them.
+    pub fn retain_current(&mut self, analyzers: &Analyzers) {
+        for kind in AnalysisKind::ALL {
+            let stored = self.implementations.get(&kind).map(String::as_str);
+            if stored.is_some() && stored != analyzers.implementation(kind) {
+                self.clear(kind);
+                self.errors.remove(&kind);
+                self.implementations.remove(&kind);
             }
         }
     }

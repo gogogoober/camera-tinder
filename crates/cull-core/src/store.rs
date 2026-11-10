@@ -10,6 +10,7 @@ use std::path::Path;
 use chrono::{Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
+use crate::analysis::pipeline::StepResult;
 use crate::analysis::{AnalysisKind, PhotoAnalysis};
 use crate::error::{CoreError, Result};
 use crate::model::*;
@@ -397,38 +398,54 @@ impl Store {
 
     /// Store every result (or error) in `a`, replacing earlier rows for those kinds.
     pub fn save_analysis(&self, a: &PhotoAnalysis) -> Result<()> {
+        let results: Vec<StepResult> = a
+            .implementations
+            .iter()
+            .map(|(kind, implementation)| StepResult {
+                kind: kind.as_str().to_string(),
+                implementation: implementation.clone(),
+                result: match a.errors.get(kind) {
+                    Some(e) => Err(e.clone()),
+                    None => Ok(a.result_json(*kind).unwrap_or(serde_json::Value::Null)),
+                },
+            })
+            .collect();
+        self.save_results(a.photo_id, &results)
+    }
+
+    /// Store step results (one row per kind, replacing an older row of the same kind).
+    pub fn save_results(&self, photo_id: PhotoId, results: &[StepResult]) -> Result<()> {
         let at = now();
         let mut stmt = self.conn.prepare_cached(
             "INSERT INTO analysis (photo_id, kind, implementation, result, error, computed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(photo_id, kind) DO UPDATE SET implementation = excluded.implementation, result = excluded.result,
                  error = excluded.error, computed_at = excluded.computed_at",
         )?;
-        for (kind, implementation) in &a.implementations {
-            let result = a.result_json(*kind).map(|v| v.to_string());
-            let error = a.errors.get(kind);
-            stmt.execute(params![a.photo_id, kind.as_str(), implementation, result, error, at])?;
+        for r in results {
+            let (result, error) = match &r.result {
+                Ok(v) if v.is_null() => (None, None),
+                Ok(v) => (Some(v.to_string()), None),
+                Err(e) => (None, Some(e.clone())),
+            };
+            stmt.execute(params![photo_id, r.kind, r.implementation, result, error, at])?;
         }
         Ok(())
     }
 
-    /// `(photo, kind) → implementation` for the given photos, without loading results.
-    pub fn analysis_index(&self, ids: &[PhotoId]) -> Result<HashMap<PhotoId, HashMap<AnalysisKind, String>>> {
-        let mut out: HashMap<PhotoId, HashMap<AnalysisKind, String>> = HashMap::new();
+    /// Every stored (kind → implementation) per photo, including kinds this build doesn't know.
+    pub fn result_index(&self, ids: &[PhotoId]) -> Result<HashMap<PhotoId, HashMap<String, String>>> {
+        let mut out: HashMap<PhotoId, HashMap<String, String>> = HashMap::new();
         for chunk in ids.chunks(500) {
             let mut stmt = self.conn.prepare(&format!("SELECT photo_id, kind, implementation FROM analysis WHERE photo_id IN ({})", placeholders(chunk.len())))?;
             let rows = stmt.query_map(params_from_iter(chunk), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
             for row in rows {
                 let (id, kind, implementation) = row?;
-                if let Some(kind) = AnalysisKind::parse(&kind) {
-                    out.entry(id).or_default().insert(kind, implementation);
-                }
+                out.entry(id).or_default().insert(kind, implementation);
             }
         }
         Ok(out)
     }
 
-    /// Stored analyses for `ids` (every id gets an entry, possibly empty). `kinds` limits
-    /// which results are loaded (`None` = all; skip `Similarity` to avoid large vectors).
     pub fn load_analyses(&self, ids: &[PhotoId], kinds: Option<&[AnalysisKind]>) -> Result<HashMap<PhotoId, PhotoAnalysis>> {
         let mut out: HashMap<PhotoId, PhotoAnalysis> = ids.iter().map(|id| (*id, PhotoAnalysis::new(*id))).collect();
         for chunk in ids.chunks(500) {

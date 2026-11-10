@@ -447,6 +447,35 @@ fn cache_files(cache: &Path) -> Vec<String> {
 }
 
 #[test]
+fn analysis_reads_cached_previews_only_never_the_card() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    make_card(&card);
+    let cache = tmp.path().join("cache");
+    let src = Counting::new(&card);
+    let svc = CullerService::in_memory(&cache).unwrap();
+    svc.add_source(src.clone()).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    src.take();
+
+    // Card still plugged in. Delete every cached preview of one photo (masters are the big files).
+    let q = svc.queue(&Filter::default()).unwrap();
+    let victim = &q[0];
+    for e in fs::read_dir(&cache).unwrap() {
+        let path = e.unwrap().path();
+        if path.file_name().unwrap().to_string_lossy().contains(&victim.fingerprint) {
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    let report = svc.analyze(&Default::default(), &NullSink).unwrap();
+    assert_eq!(report.failed.len(), 1, "the photo without a preview is reported, not rebuilt from the card: {report:?}");
+    assert_eq!(report.failed[0].0, victim.id);
+    assert_eq!(report.analyzed as usize, q.len() - 1);
+    assert_eq!(src.take(), Vec::<String>::new(), "analysis must not open the card");
+}
+
+#[test]
 fn clearing_previews_waits_until_external_sources_are_unplugged() {
     // The platform decides what "external" means; here the test plays the platform:
     // the card is external (blocks while plugged in), the Pictures folder is internal.

@@ -23,10 +23,13 @@ cached master preview (2048 px JPEG, upright)        ← analysis never reads th
   AnalysisImage  (lazy, shared decodes: full RGB/grey ≤2048 px, working RGB/grey ≤640 px, JPEG bytes)
         │
         ▼
-  Analyzers::run(photo_id, &img, kinds, prior)       ← registry: one engine per kind, dependency order
-        │
-        ▼
-  PhotoAnalysis  ──save──▶  SQLite `analysis` table (photo_id, kind, implementation, result JSON, error)
+  pipeline::Pipeline (analysis/pipeline.rs)           ← list of independent PhotoSteps (blur, …, `subjects` = faces→eyes/framing,
+        │                                                saliency→subject focus). Photos run in parallel, a photo's steps in order.
+        ▼                                                Each step calls Analyzers::run for its kinds.
+  StepResult per kind  ──save──▶  SQLite `analysis` table (photo_id, kind, implementation, result JSON, error)
+        │                          A result counts only while its implementation id matches the registered step
+        ▼                          (PhotoAnalysis::retain_current); rows of removed/replaced engines stay, ignored.
+  PhotoAnalysis
         │
         ├─▶ issues::issues()            → reject reasons ("eyes closed", "blurry") for problem tabs
         ├─▶ grouping::similar_groups()  → near-duplicate rows, best first
@@ -169,6 +172,11 @@ photos in parallel (`ANALYZE_THREADS`) and saves every 16 (`ANALYZE_BATCH`).
    `svc.set_analyzers(analyzers)`.
 3. Done. Stored results from the old engine are now stale (different id) and recompute on
    the next `analyze`. Result types, issues, grouping, the UI: all unchanged.
+
+A **new step** (a new kind of analysis the pipeline runs) is one `steps.push(...)` line in
+`Pipeline::from_analyzers` (`analysis/pipeline.rs`). Steps never read each other's output; analyzers that
+depend on each other (faces → eyes) go inside one step. `analyze()` passes no source folder, so a photo
+whose cached preview is missing is reported in `failed` and never read from the card.
 
 A **new feature** means: a module with result type + trait (+ engine), a variant in `AnalysisKind`
 (+ `ALL`, `as_str`, `inputs`), a field in `PhotoAnalysis` and `Analyzers` (+ the `per_kind!` list,

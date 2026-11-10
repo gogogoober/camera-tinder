@@ -70,3 +70,29 @@ fn analyze_store_issues_groups() {
     want.sort();
     assert_eq!(ids, want);
 }
+
+#[test]
+fn results_of_a_replaced_engine_are_not_read_but_stay_stored() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    write(&card.join("a.jpg"), |x, y| scene(x, y, 0));
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap();
+    let id = svc.queue(&Filter::default()).unwrap()[0].id;
+    assert!(svc.photo_analysis(id).unwrap().blur.is_some());
+
+    // Remove the blur engine: its stored row is ignored, not deleted.
+    let mut analyzers = cull_core::analysis::Analyzers::rust();
+    analyzers.blur = None;
+    svc.set_analyzers(analyzers);
+    assert!(svc.photo_analysis(id).unwrap().blur.is_none());
+    assert!(svc.photo_analysis(id).unwrap().exposure.is_some(), "other results are still read");
+    assert_eq!(svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap().up_to_date, 1, "nothing to recompute");
+
+    // Put it back: the old row is current again, with no recomputation.
+    svc.set_analyzers(cull_core::analysis::Analyzers::rust());
+    assert!(svc.photo_analysis(id).unwrap().blur.is_some());
+    assert_eq!(svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap().up_to_date, 1);
+}

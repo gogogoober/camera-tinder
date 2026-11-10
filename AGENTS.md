@@ -45,7 +45,8 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   preview.rs               Preview cache (2048 master + 256 thumb at scan; other sizes from the master);
                            RustPreviewMaker = portable decode → rotate → downscale → JPEG
   analysis/                Static photo analysis: one module per feature (trait + result + engines), the
-                           Analyzers registry, issues, near-duplicate grouping, ranking. See docs/photo-analysis.md
+                           Analyzers registry, pipeline.rs (independent per-photo steps), issues, near-duplicate grouping, ranking.
+                           See docs/photo-analysis.md; the smart-triage build plan is docs/triage-build-plan.md
   api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags, analyze…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
 crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
