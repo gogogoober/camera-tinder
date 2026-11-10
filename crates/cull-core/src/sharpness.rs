@@ -10,11 +10,11 @@
 
 use std::io::{BufRead, Seek};
 
-use image::{DynamicImage, ImageDecoder, ImageReader};
+use image::{DynamicImage, GrayImage, ImageDecoder, ImageReader};
 
 /// Long edge the image is shrunk to before measuring, so scores are
 /// comparable across 12 MP and 45 MP cameras and the maths stays fast.
-const MEASURE_EDGE: u32 = 640;
+pub const MEASURE_EDGE: u32 = 640;
 /// Variance at which the score reads 50.
 const HALF_SCORE_VARIANCE: f64 = 150.0;
 
@@ -33,23 +33,38 @@ pub fn score_image(img: &DynamicImage) -> u8 {
         img.clone()
     };
     let grey = small.to_luma8();
-    let (w, h) = (grey.width() as usize, grey.height() as usize);
-    if w < 3 || h < 3 {
+    if grey.width() < 3 || grey.height() < 3 {
         return 0;
+    }
+    squash(laplacian_variance(&grey, 0, 0, grey.width(), grey.height()))
+}
+
+/// Variance of the 4-neighbour Laplacian inside `x..x+w`, `y..y+h` of `grey`.
+/// Shared with `analysis::blur` and `analysis::subject_focus`.
+pub fn laplacian_variance(grey: &GrayImage, x: u32, y: u32, w: u32, h: u32) -> f64 {
+    let (iw, ih) = (grey.width() as usize, grey.height() as usize);
+    let (x0, y0) = ((x as usize).max(1), (y as usize).max(1));
+    let (x1, y1) = (((x + w) as usize).min(iw - 1), ((y + h) as usize).min(ih - 1));
+    if x1 <= x0 || y1 <= y0 {
+        return 0.0;
     }
     let px = grey.as_raw();
     let (mut sum, mut sum_sq, mut n) = (0.0f64, 0.0f64, 0.0f64);
-    for y in 1..h - 1 {
-        for x in 1..w - 1 {
-            let c = px[y * w + x] as f64;
-            let lap = px[(y - 1) * w + x] as f64 + px[(y + 1) * w + x] as f64 + px[y * w + x - 1] as f64 + px[y * w + x + 1] as f64 - 4.0 * c;
+    for yy in y0..y1 {
+        for xx in x0..x1 {
+            let c = px[yy * iw + xx] as f64;
+            let lap = px[(yy - 1) * iw + xx] as f64 + px[(yy + 1) * iw + xx] as f64 + px[yy * iw + xx - 1] as f64 + px[yy * iw + xx + 1] as f64 - 4.0 * c;
             sum += lap;
             sum_sq += lap * lap;
             n += 1.0;
         }
     }
     let mean = sum / n;
-    let variance = (sum_sq / n - mean * mean).max(0.0);
+    (sum_sq / n - mean * mean).max(0.0)
+}
+
+/// Map a Laplacian variance to the 0–100 sharpness scale.
+pub fn squash(variance: f64) -> u8 {
     (100.0 * variance / (variance + HALF_SCORE_VARIANCE)).round().clamp(0.0, 100.0) as u8
 }
 

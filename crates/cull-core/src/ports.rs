@@ -56,6 +56,8 @@ pub enum CoreEvent {
     ScanProgress { source_id: String, done: u64, total: u64 },
     #[serde(rename_all = "camelCase")]
     ExportProgress { done: u64, total: u64 },
+    #[serde(rename_all = "camelCase")]
+    AnalysisProgress { done: u64, total: u64 },
 }
 
 /// Progress reporting, delivered to whatever UI exists.

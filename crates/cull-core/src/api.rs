@@ -3,16 +3,27 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
+use rayon::prelude::*;
+
+use crate::analysis::grouping::{Candidate, similar_groups};
+use crate::analysis::issues::issues;
+use crate::analysis::{
+    AnalysisImage, AnalysisKind, AnalyzeReport, AnalyzeRequest, AnalyzerInfo, Analyzers, GroupingOptions, PhotoAnalysis, PhotoIssues, SimilarGroup,
+};
 use crate::error::{CoreError, Result};
 use crate::model::*;
 use crate::moments::{MOMENT_GAP_SECS, bursts, group_by_gap};
 use crate::ports::{CalendarSource, EventSink, ExportItem, ExportTarget, MediaSource};
-use crate::preview::PreviewCache;
+use crate::preview::{MASTER_EDGE, PreviewCache};
 use crate::scan::scan_source;
 use crate::store::Store;
 use crate::suggest;
 
 const UNDO_DEPTH: usize = 500;
+/// Photos analysed at once. Each holds a decoded 2048 px master (~12 MB) while it runs.
+const ANALYZE_THREADS: usize = 4;
+/// Photos per progress event / database transaction.
+const ANALYZE_BATCH: usize = 16;
 
 pub struct CullerService {
     store: Mutex<Store>,
@@ -22,6 +33,7 @@ pub struct CullerService {
     /// One entry per user action; a bulk decision is a single entry.
     undo: Mutex<Vec<Vec<(PhotoId, Option<Decision>)>>>,
     calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
+    analyzers: RwLock<Arc<Analyzers>>,
 }
 
 impl CullerService {
@@ -43,6 +55,7 @@ impl CullerService {
             previews: PreviewCache::new(cache_dir.to_path_buf())?,
             undo: Mutex::new(Vec::new()),
             calendar: RwLock::new(None),
+            analyzers: RwLock::new(Arc::new(Analyzers::rust())),
         })
     }
 
@@ -238,6 +251,130 @@ impl CullerService {
         }
         out.extend(suggest::from_gaps(&days, &existing));
         Ok(out)
+    }
+
+    // ---- photo analysis ---------------------------------------------
+    // See docs/photo-analysis.md. Analysis reads the cached master previews, never the originals.
+
+    /// Platforms add engines here (e.g. `cull_platform_apple::vision::analyzers()`).
+    /// Defaults to `Analyzers::rust()`.
+    pub fn set_analyzers(&self, analyzers: Analyzers) {
+        *self.analyzers.write().unwrap() = Arc::new(analyzers);
+    }
+
+    /// Which implementation serves each analysis kind on this platform.
+    pub fn analyzer_info(&self) -> Vec<AnalyzerInfo> {
+        self.analyzers.read().unwrap().info()
+    }
+
+    fn photos_for(&self, ids: Option<&[PhotoId]>, filter: Option<&Filter>) -> Result<Vec<Photo>> {
+        match (ids, filter) {
+            (Some(ids), _) => ids.iter().map(|id| self.photo(*id)).collect(),
+            (None, Some(f)) => self.queue(f),
+            (None, None) => self.queue(&Filter { status: StatusFilter::All, ..Default::default() }),
+        }
+    }
+
+    /// Compute (and store) analysis results. Only missing or stale results are computed
+    /// unless `force`. Blocking and CPU-heavy: call it off the UI thread.
+    pub fn analyze(&self, req: &AnalyzeRequest, sink: &dyn EventSink) -> Result<AnalyzeReport> {
+        let analyzers = self.analyzers.read().unwrap().clone();
+        let available = analyzers.available();
+        let kinds: Vec<AnalysisKind> = if req.kinds.is_empty() { available.clone() } else { req.kinds.iter().copied().filter(|k| available.contains(k)).collect() };
+        let photos = self.photos_for(req.photo_ids.as_deref(), req.filter.as_ref())?;
+        let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
+        let mut report = AnalyzeReport { photos: photos.len() as u64, ..Default::default() };
+
+        let index = self.store.lock().unwrap().analysis_index(&ids)?;
+        let todo: Vec<(Photo, Vec<AnalysisKind>)> = photos
+            .into_iter()
+            .filter_map(|p| {
+                let stored = index.get(&p.id);
+                let stale: Vec<AnalysisKind> = kinds
+                    .iter()
+                    .copied()
+                    .filter(|k| req.force || stored.and_then(|s| s.get(k)).map(String::as_str) != analyzers.implementation(*k))
+                    .collect();
+                (!stale.is_empty()).then_some((p, stale))
+            })
+            .collect();
+        report.up_to_date = report.photos - todo.len() as u64;
+
+        let total = todo.len() as u64;
+        let mut done = 0u64;
+        sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(ANALYZE_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
+        let input_kinds = [AnalysisKind::Faces, AnalysisKind::Saliency];
+        for batch in todo.chunks(ANALYZE_BATCH) {
+            let batch_ids: Vec<PhotoId> = batch.iter().map(|(p, _)| p.id).collect();
+            // Stored inputs (faces, saliency) so dependants don't recompute them.
+            let prior = if req.force { Default::default() } else { self.store.lock().unwrap().load_analyses(&batch_ids, Some(&input_kinds))? };
+            let results: Vec<std::result::Result<PhotoAnalysis, (PhotoId, String)>> = pool.install(|| {
+                batch
+                    .par_iter()
+                    .map(|(photo, kinds)| {
+                        let source = self.source(&photo.source_id).ok();
+                        let bytes = self.previews.get(photo, source.as_deref(), MASTER_EDGE).map_err(|e| (photo.id, e.to_string()))?;
+                        let img = AnalysisImage::from_jpeg(bytes);
+                        Ok(analyzers.run(photo.id, &img, kinds, prior.get(&photo.id)))
+                    })
+                    .collect()
+            });
+            let mut store = self.store.lock().unwrap();
+            store.transaction(|s| {
+                for r in &results {
+                    match r {
+                        Ok(a) => {
+                            report.kind_errors += a.errors.len() as u64;
+                            report.analyzed += 1;
+                            s.save_analysis(a)?;
+                        }
+                        Err(f) => report.failed.push(f.clone()),
+                    }
+                }
+                Ok(())
+            })?;
+            drop(store);
+            done += batch.len() as u64;
+            sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
+        }
+        Ok(report)
+    }
+
+    /// Everything stored for one photo, including its similarity embedding.
+    pub fn photo_analysis(&self, id: PhotoId) -> Result<PhotoAnalysis> {
+        Ok(self.store.lock().unwrap().load_analyses(&[id], None)?.remove(&id).unwrap_or_else(|| PhotoAnalysis::new(id)))
+    }
+
+    /// Stored analyses for the photos matching `filter`, in queue order, without the
+    /// (large) similarity embeddings.
+    pub fn analyses(&self, filter: &Filter) -> Result<Vec<PhotoAnalysis>> {
+        let photos = self.queue(filter)?;
+        let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
+        let kinds: Vec<AnalysisKind> = AnalysisKind::ALL.into_iter().filter(|k| *k != AnalysisKind::Similarity).collect();
+        let mut map = self.store.lock().unwrap().load_analyses(&ids, Some(&kinds))?;
+        Ok(ids.iter().filter_map(|id| map.remove(id)).collect())
+    }
+
+    /// Reject reasons for the photos matching `filter` (only photos with at least one), in
+    /// queue order. Powers "problem" views: blurry, eyes closed, dark, …
+    pub fn photo_issues(&self, filter: &Filter) -> Result<Vec<PhotoIssues>> {
+        Ok(self
+            .analyses(filter)?
+            .iter()
+            .map(|a| PhotoIssues { photo_id: a.photo_id, issues: issues(a) })
+            .filter(|p| !p.issues.is_empty())
+            .collect())
+    }
+
+    /// Near-duplicate groups among the photos matching `filter`, each ordered best-first.
+    /// Needs `perceptualHash` and/or `similarity` results (run `analyze` first).
+    pub fn similar_groups(&self, filter: &Filter, options: &GroupingOptions) -> Result<Vec<SimilarGroup>> {
+        let photos = self.queue(filter)?;
+        let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
+        let map = self.store.lock().unwrap().load_analyses(&ids, None)?;
+        let candidates: Vec<Candidate> = photos.iter().filter_map(|p| Some(Candidate { captured_at: p.captured_at, analysis: map.get(&p.id)? })).collect();
+        Ok(similar_groups(&candidates, options))
     }
 
     // ---- export -------------------------------------------------------

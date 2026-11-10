@@ -4,6 +4,7 @@
 //! where keepers go, how progress is reported). Any UI — Tauri today, SwiftUI
 //! via UniFFI tomorrow — talks only to [`CullerService`].
 
+pub mod analysis;
 pub mod api;
 pub mod error;
 pub mod identity;

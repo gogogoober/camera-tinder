@@ -4,11 +4,13 @@
 //! are stored per photo (by content fingerprint) plus an append-only log, so
 //! history is kept even for Dislike/Hate (for a future "clean up rejects").
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::{Local, NaiveDateTime};
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 
+use crate::analysis::{AnalysisKind, PhotoAnalysis};
 use crate::error::{CoreError, Result};
 use crate::model::*;
 
@@ -65,6 +67,18 @@ CREATE TABLE IF NOT EXISTS tags (
     start_day TEXT NOT NULL,
     end_day   TEXT NOT NULL,
     source    TEXT NOT NULL
+);
+
+-- Photo analysis results, one row per photo and kind (see analysis/mod.rs).
+-- `implementation` names the engine; when it changes the row is stale and recomputed.
+CREATE TABLE IF NOT EXISTS analysis (
+    photo_id       INTEGER NOT NULL REFERENCES photos(id),
+    kind           TEXT NOT NULL,
+    implementation TEXT NOT NULL,
+    result         TEXT,
+    error          TEXT,
+    computed_at    TEXT NOT NULL,
+    PRIMARY KEY (photo_id, kind)
 );
 
 -- Full history (NULL decision = cleared via undo).
@@ -386,6 +400,78 @@ impl Store {
 
     pub fn needs_sharpness(&self, id: PhotoId) -> Result<bool> {
         Ok(self.conn.query_row("SELECT sharpness IS NULL FROM photos WHERE id = ?1", [id], |r| r.get(0))?)
+    }
+
+    // ---- analysis -----------------------------------------------------
+
+    /// Store every result (or error) in `a`, replacing earlier rows for those kinds.
+    pub fn save_analysis(&self, a: &PhotoAnalysis) -> Result<()> {
+        let at = now();
+        let mut stmt = self.conn.prepare_cached(
+            "INSERT INTO analysis (photo_id, kind, implementation, result, error, computed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(photo_id, kind) DO UPDATE SET implementation = excluded.implementation, result = excluded.result,
+                 error = excluded.error, computed_at = excluded.computed_at",
+        )?;
+        for (kind, implementation) in &a.implementations {
+            let result = a.result_json(*kind).map(|v| v.to_string());
+            let error = a.errors.get(kind);
+            stmt.execute(params![a.photo_id, kind.as_str(), implementation, result, error, at])?;
+        }
+        Ok(())
+    }
+
+    /// `(photo, kind) → implementation` for the given photos, without loading results.
+    pub fn analysis_index(&self, ids: &[PhotoId]) -> Result<HashMap<PhotoId, HashMap<AnalysisKind, String>>> {
+        let mut out: HashMap<PhotoId, HashMap<AnalysisKind, String>> = HashMap::new();
+        for chunk in ids.chunks(500) {
+            let mut stmt = self.conn.prepare(&format!("SELECT photo_id, kind, implementation FROM analysis WHERE photo_id IN ({})", placeholders(chunk.len())))?;
+            let rows = stmt.query_map(params_from_iter(chunk), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))?;
+            for row in rows {
+                let (id, kind, implementation) = row?;
+                if let Some(kind) = AnalysisKind::parse(&kind) {
+                    out.entry(id).or_default().insert(kind, implementation);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stored analyses for `ids` (every id gets an entry, possibly empty). `kinds` limits
+    /// which results are loaded (`None` = all; skip `Similarity` to avoid large vectors).
+    pub fn load_analyses(&self, ids: &[PhotoId], kinds: Option<&[AnalysisKind]>) -> Result<HashMap<PhotoId, PhotoAnalysis>> {
+        let mut out: HashMap<PhotoId, PhotoAnalysis> = ids.iter().map(|id| (*id, PhotoAnalysis::new(*id))).collect();
+        for chunk in ids.chunks(500) {
+            let mut stmt = self.conn.prepare(&format!(
+                "SELECT photo_id, kind, implementation, result, error FROM analysis WHERE photo_id IN ({})",
+                placeholders(chunk.len())
+            ))?;
+            let rows = stmt.query_map(params_from_iter(chunk), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?))
+            })?;
+            for row in rows {
+                let (id, kind, implementation, result, error) = row?;
+                let Some(kind) = AnalysisKind::parse(&kind) else { continue };
+                if kinds.is_some_and(|k| !k.contains(&kind)) {
+                    continue;
+                }
+                let a = out.entry(id).or_insert_with(|| PhotoAnalysis::new(id));
+                a.implementations.insert(kind, implementation);
+                match (result, error) {
+                    (Some(json), _) => match serde_json::from_str(&json).map_err(|e| e.to_string()).and_then(|v| a.set_result_json(kind, v).map_err(|e| e.to_string())) {
+                        Ok(()) => {}
+                        // A result written by an older format: report it like an error so it is recomputed on `force`.
+                        Err(e) => {
+                            a.errors.insert(kind, format!("unreadable stored result: {e}"));
+                        }
+                    },
+                    (None, Some(e)) => {
+                        a.errors.insert(kind, e);
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+        Ok(out)
     }
 
     // ---- tags ---------------------------------------------------------

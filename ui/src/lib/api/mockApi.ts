@@ -1,12 +1,21 @@
 import type { CullerApi } from './CullerApi';
 import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
 import { SOFT_THRESHOLD } from './types';
+import type { PhotoAnalysis } from './analysisTypes';
+import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues } from './mockAnalysis';
 
 /**
  * In-memory fake backend so the UI can be built and tested in a plain browser
  * (`npm run dev:mock`), with no Rust build in the loop. It mimics cull-core:
  * capture-ordered queues, moments/bursts, sharpness scores, tags and suggestions.
  */
+
+/** Shape of a photo nobody has analysed yet. */
+const EMPTY = {
+  blur: null, exposure: null, contrast: null, noise: null, colorCast: null, accidental: null, perceptualHash: null,
+  similarity: null, faces: null, eyes: null, faceFraming: null, faceQuality: null, saliency: null, subjectFocus: null,
+  aesthetics: null, horizon: null, errors: {},
+};
 
 const listeners = new Set<(e: CoreEvent) => void>();
 const sources: SourceInfo[] = [];
@@ -18,6 +27,8 @@ let tagId = 2;
 let calendar: CalendarStatus = 'notDetermined';
 let cacheBytes = 0;
 const undoStack: [number, Decision | null][][] = [];
+/** Photos "analysed" so far (results are generated deterministically from the id). */
+const analysed = new Map<number, PhotoAnalysis>();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function rng(seed: number) {
@@ -268,6 +279,37 @@ export const mockApi: CullerApi = {
       await sleep(5);
     }
     return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [] };
+  },
+
+  async analyzerInfo() {
+    return MOCK_ANALYZERS;
+  },
+  async analyzePhotos(request = {}) {
+    const list = request.photoIds
+      ? photos.filter((p) => request.photoIds!.includes(p.id))
+      : query(request.filter ?? { day: null, status: 'all' });
+    const todo = request.force ? list : list.filter((p) => !analysed.has(p.id));
+    for (let i = 0; i < todo.length; i++) {
+      analysed.set(todo[i].id, mockAnalysis(todo[i]));
+      if (i % 200 === 0 || i === todo.length - 1) {
+        listeners.forEach((cb) => cb({ type: 'analysisProgress', done: i + 1, total: todo.length }));
+        await sleep(20);
+      }
+    }
+    return { photos: list.length, analyzed: todo.length, upToDate: list.length - todo.length, kindErrors: 0, failed: [] };
+  },
+  async photoAnalysis(id) {
+    return analysed.get(id) ?? { ...mockAnalysis(photos.find((p) => p.id === id)!), implementations: {}, ...EMPTY };
+  },
+  async photoAnalyses(filter) {
+    return query(filter).flatMap((p) => (analysed.has(p.id) ? [analysed.get(p.id)!] : []));
+  },
+  async photoIssues(filter) {
+    return (await this.photoAnalyses(filter)).map(mockIssues).filter((i) => i.issues.length > 0);
+  },
+  async similarGroups(filter) {
+    const list = query(filter).filter((p) => analysed.has(p.id));
+    return mockGroups(list, groupByGap(list, 3, 2), (p) => analysed.get(p.id)!);
   },
 
   previewUrl(id) {

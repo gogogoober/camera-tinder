@@ -23,6 +23,11 @@ groups photos, you swipe to decide, then export the keepers.
 
 ## Architecture
 
+> **Photo analysis (blur, exposure, closed eyes, faces, near-duplicates, aesthetics…):** read
+> [`docs/photo-analysis.md`](docs/photo-analysis.md) before touching it or building UI on it. It lists
+> every feature, its trait/result type/engines, how to call it (Rust, Tauri, TS), where the files are,
+> how to swap an engine, measured timings and known limits.
+
 Rust + Tauri 2 + Svelte 5 (TypeScript). The rule: **all logic in `cull-core`; platforms and UI are
 thin, swappable layers.**
 
@@ -38,9 +43,13 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   moments.rs               Group by capture-time gap: moments (15 min) and bursts (3 s)
   suggest.rs               Tag suggestions without AI: runs of shooting days, calendar events
   preview.rs               Decode → EXIF-rotate → downscale → JPEG; disk cache; capped concurrency
-  api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags…)
+  analysis/                Static photo analysis: one module per feature (trait + result + engines), the
+                           Analyzers registry, issues, near-duplicate grouping, ranking. See docs/photo-analysis.md
+  api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags, analyze…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
-crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission.
+crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
+                           vision.rs = Apple Vision analysis engines (faces, eyes input, aesthetics, feature print…);
+                           examples/analyze.rs = run/time/calibrate all analyzers on a folder
                            src-tauri/Info.plist holds the calendar usage strings (embedded in dev builds too)
   tests/end_to_end.rs      Full flow on real JPEGs (scan, cull, undo, export, card→laptop move)
   examples/make_samples.rs Generates synthetic JPEGs (dates via mtime)
@@ -79,6 +88,7 @@ cargo test --workspace              # core + end-to-end tests
 npm run check                       # svelte-check / TypeScript
 npm run build                       # frontend build → dist/
 cargo run -p cull-platform-fs --example make_samples -- <dir> [count]
+cargo run -p cull-platform-apple --example analyze -- test-photos [--rust-only|--calibrate|--pairs|--json]
 ```
 
 Test photos: `test-photos/` (gitignored) — 117 real Lorem Picsum images, no EXIF, mtimes spread
@@ -119,7 +129,9 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - [ ] Hours-of-day timeline option; learned pace; persist dismissed suggestions.
 - [ ] Verify photo-alignment fix for portrait images in the real app.
 - [ ] **M2:** smart session planner (bursts/sessions/trips, time-budget batching, learned pace).
-- [ ] Burst stacks + near-duplicate detection (perceptual hash).
+- [x] Photo analysis back end (docs/photo-analysis.md): 16 analyzers (Rust + Apple Vision), stored per photo,
+      issues ("eyes closed", "blurry"…), near-duplicate groups best-first. Commands + TS API + mock wired.
+- [ ] Photo analysis UX: when to run `analyzePhotos`, problem tabs, duplicate rows. Tune eyes/noise on real photos.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
 - [ ] iOS (`tauri ios init`, SD-card MediaSource, share-sheet export). Later: cloud sync, Android, Lightroom.

@@ -178,6 +178,44 @@ async fn export_keepers(app: AppHandle, state: State<'_, AppState>, dest: String
     .await
 }
 
+// ---- photo analysis (see docs/photo-analysis.md) ----------------------
+
+#[tauri::command]
+fn analyzer_info(state: State<'_, AppState>) -> Vec<analysis::AnalyzerInfo> {
+    state.0.analyzer_info()
+}
+
+/// Compute missing/stale analysis results. Emits `analysisProgress` core events.
+#[tauri::command]
+async fn analyze_photos(app: AppHandle, state: State<'_, AppState>, request: analysis::AnalyzeRequest) -> CmdResult<analysis::AnalyzeReport> {
+    let svc = state.0.clone();
+    blocking(move || svc.analyze(&request, &TauriSink(app))).await
+}
+
+#[tauri::command]
+async fn photo_analysis(state: State<'_, AppState>, id: PhotoId) -> CmdResult<analysis::PhotoAnalysis> {
+    let svc = state.0.clone();
+    blocking(move || svc.photo_analysis(id)).await
+}
+
+#[tauri::command]
+async fn photo_analyses(state: State<'_, AppState>, filter: Filter) -> CmdResult<Vec<analysis::PhotoAnalysis>> {
+    let svc = state.0.clone();
+    blocking(move || svc.analyses(&filter)).await
+}
+
+#[tauri::command]
+async fn photo_issues(state: State<'_, AppState>, filter: Filter) -> CmdResult<Vec<analysis::PhotoIssues>> {
+    let svc = state.0.clone();
+    blocking(move || svc.photo_issues(&filter)).await
+}
+
+#[tauri::command]
+async fn similar_groups(state: State<'_, AppState>, filter: Filter, options: Option<analysis::GroupingOptions>) -> CmdResult<Vec<analysis::SimilarGroup>> {
+    let svc = state.0.clone();
+    blocking(move || svc.similar_groups(&filter, &options.unwrap_or_default())).await
+}
+
 /// `preview://localhost/<photoId>?edge=<px>` → cached, downscaled JPEG.
 /// Images go over a URL scheme, never through JSON commands, so they stay fast.
 fn handle_preview(app: &AppHandle, uri: &tauri::http::Uri) -> Response<Vec<u8>> {
@@ -215,6 +253,9 @@ pub fn run() {
             if let Some(cal) = cull_platform_apple::EventKitCalendar::new() {
                 svc.set_calendar(Some(Arc::new(cal)));
             }
+            // Apple Vision engines for faces, eyes, aesthetics, similarity… (Rust ones elsewhere).
+            #[cfg(target_os = "macos")]
+            svc.set_analyzers(cull_platform_apple::vision::analyzers());
             app.manage(AppState(svc));
             Ok(())
         })
@@ -243,7 +284,13 @@ pub fn run() {
             preview_cache_status,
             clear_previews,
             connect_calendar,
-            export_keepers
+            export_keepers,
+            analyzer_info,
+            analyze_photos,
+            photo_analysis,
+            photo_analyses,
+            photo_issues,
+            similar_groups
         ])
         .run(tauri::generate_context!())
         .expect("error while running Camera Tinder");

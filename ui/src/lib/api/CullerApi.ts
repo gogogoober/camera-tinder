@@ -1,4 +1,7 @@
 import type {
+  AnalyzeReport,
+  AnalyzeRequest,
+  AnalyzerInfo,
   CalendarStatus,
   CoreEvent,
   DaySummary,
@@ -6,10 +9,14 @@ import type {
   ExportOptions,
   ExportReport,
   Filter,
+  GroupingOptions,
+  PhotoAnalysis,
+  PhotoIssues,
   Photo,
   Plan,
   PreviewCacheStatus,
   ScanReport,
+  SimilarGroup,
   SourceInfo,
   Stats,
   Tag,
@@ -61,6 +68,20 @@ export interface CullerApi {
   clearPreviews(): Promise<number>;
 
   exportKeepers(dest: string, options: ExportOptions): Promise<ExportReport>;
+
+  // Photo analysis — see docs/photo-analysis.md.
+  /** Which engine serves each analysis kind on this platform (null = unavailable). */
+  analyzerInfo(): Promise<AnalyzerInfo[]>;
+  /** Compute missing/stale results (emits `analysisProgress`). Results persist. */
+  analyzePhotos(request?: AnalyzeRequest): Promise<AnalyzeReport>;
+  /** Everything stored for one photo, including its similarity embedding. */
+  photoAnalysis(id: number): Promise<PhotoAnalysis>;
+  /** Stored results for a filter, queue order, without embeddings. */
+  photoAnalyses(filter: Filter): Promise<PhotoAnalysis[]>;
+  /** Reject reasons (blurry, eyes closed, …) for photos that have any, queue order. */
+  photoIssues(filter: Filter): Promise<PhotoIssues[]>;
+  /** Near-duplicate groups, each best-first. Needs analyzePhotos first. */
+  similarGroups(filter: Filter, options?: GroupingOptions): Promise<SimilarGroup[]>;
 
   /** URL for a display-sized preview, usable directly in <img src>. */
   previewUrl(id: number, edge?: number): string;

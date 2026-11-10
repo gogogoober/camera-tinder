@@ -38,6 +38,13 @@ export const tauriApi: CullerApi = {
 
   exportKeepers: (dest, options) => invoke('export_keepers', { dest, options }),
 
+  analyzerInfo: () => invoke('analyzer_info'),
+  analyzePhotos: (request = {}) => invoke('analyze_photos', { request }),
+  photoAnalysis: (id) => invoke('photo_analysis', { id }),
+  photoAnalyses: (filter) => invoke('photo_analyses', { filter }),
+  photoIssues: (filter) => invoke('photo_issues', { filter }),
+  similarGroups: (filter, options) => invoke('similar_groups', { filter, options: options ?? null }),
+
   // preview://localhost/<id> on macOS/iOS, http://preview.localhost/<id> on Windows/Android.
   previewUrl: (id, edge = 2048) => `${convertFileSrc(String(id), 'preview')}?edge=${edge}`,
   onEvent: (cb) => listen<CoreEvent>('core-event', (e) => cb(e.payload)),

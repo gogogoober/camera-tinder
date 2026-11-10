@@ -194,11 +194,11 @@ pub fn decode(bytes: &[u8]) -> Result<DynamicImage> {
     Ok(img)
 }
 
-fn shrink(img: &DynamicImage, edge: u32) -> DynamicImage {
+pub(crate) fn shrink(img: &DynamicImage, edge: u32) -> DynamicImage {
     if img.width() > edge || img.height() > edge { img.thumbnail(edge, edge) } else { img.clone() }
 }
 
-fn encode(img: &DynamicImage) -> Result<Vec<u8>> {
+pub(crate) fn encode(img: &DynamicImage) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     JpegEncoder::new_with_quality(&mut out, 85).encode_image(&img.to_rgb8())?;
     Ok(out)

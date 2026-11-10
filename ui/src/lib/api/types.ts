@@ -71,7 +71,8 @@ export interface ExportReport {
 
 export type CoreEvent =
   | { type: 'scanProgress'; sourceId: string; done: number; total: number }
-  | { type: 'exportProgress'; done: number; total: number };
+  | { type: 'exportProgress'; done: number; total: number }
+  | { type: 'analysisProgress'; done: number; total: number };
 
 /** Half-open index range [start, end) into a plan's photo list. */
 export interface Group {
@@ -115,3 +116,5 @@ export interface PreviewCacheStatus {
   /** Photo sources reachable right now. Clearing is refused until this is empty. */
   connectedSources: string[];
 }
+
+export * from './analysisTypes';

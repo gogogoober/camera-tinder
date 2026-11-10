@@ -1,4 +1,4 @@
-//! Apple platform adapters. Today: Calendar via EventKit (macOS).
+//! Apple platform adapters: Calendar via EventKit, photo analysis via Vision (macOS).
 //!
 //! iOS reuses the same EventKit API; only the entitlement/Info.plist differs.
 
@@ -14,3 +14,7 @@ pub enum Access {
     Denied,
     Granted,
 }
+
+/// Photo analysis engines backed by Apple Vision (see `docs/photo-analysis.md`).
+#[cfg(target_os = "macos")]
+pub mod vision;
