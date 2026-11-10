@@ -73,7 +73,7 @@ Data locations (macOS): DB at app data dir `camera-tinder.db`; previews at app c
 
 ```sh
 source ~/.cargo/env                 # Rust may not be on PATH in fresh shells
-npm run tauri dev                   # run the desktop app (Vite on :1420)
+npm start                           # run the desktop app (loads ~/.cargo/env, then tauri dev; Vite on :1420)
 npm run dev:mock                    # UI only, in a browser, with the mock backend (ui-mock-alt: port 1421, alongside tauri dev)
 cargo test --workspace              # core + end-to-end tests
 npm run check                       # svelte-check / TypeScript
