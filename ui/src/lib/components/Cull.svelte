@@ -290,7 +290,7 @@
     <button onclick={onExit}>{compact ? 'Done' : '‹ Pick'}</button>
     <div class="title">
       <b>{rangeLabel}</b>
-      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min{setAsideCount ? ` · ${setAsideCount} set aside` : ''}</span>
+      <span class="mono muted">moment {momentNo}/{moments.length} · {formatCount(decided)}/{formatCount(photos.length)} · ~{minutesFor(left)} min{setAsideCount && !compact ? ` · ${setAsideCount} set aside` : ''}</span>
     </div>
     {#if !compact}
       <div class="prog"><div style:width="{photos.length ? (100 * decided) / photos.length : 0}%"></div></div>
