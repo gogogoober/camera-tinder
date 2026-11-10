@@ -96,10 +96,35 @@ export function nextUndecidedFrame(s: Structure, photos: Decided[], i: number): 
   return null;
 }
 
-/** The previous (-1) or next (+1) member of the group, without wrapping; null at the ends. */
-export function stepFrame(s: Structure, i: number, dir: 1 | -1): number | null {
+/** The previous (-1) or next (+1) member of the group; null at the ends, or when it is a single. With `wrap`, the ends loop. */
+export function stepFrame(s: Structure, i: number, dir: 1 | -1, wrap = false): number | null {
   const g = groupOf(s, i);
-  return g[g.indexOf(i) + dir] ?? null;
+  const at = g.indexOf(i);
+  if (!wrap) return g[at + dir] ?? null;
+  return g.length > 1 ? g[(at + dir + g.length) % g.length] : null;
+}
+
+/**
+ * Space ("next"): always loops inside the context it is in, and never leaves it unrated.
+ * In a group: the next frame, wrapping, decided frames included (to compare against a pick).
+ * On a single: the next stop that still has something to decide, wrapping to the start of the list.
+ * Returns the photo index to show, or null when there is nowhere to go.
+ */
+export function loopNext(s: Structure, photos: Decided[], i: number): number | null {
+  const g = groupOf(s, i);
+  if (g.length > 1) return stepFrame(s, i, 1, true);
+  const stop = nextStop(s, photos, i);
+  return stop < 0 ? null : firstUndecidedFrame(s, photos, stop);
+}
+
+/**
+ * Enter / S ("leave"): out of the current group (or off this single) to the next stop that still has
+ * something to decide, leaving what is here unrated. Wraps to the start of the list; the group it left
+ * comes round again. null when nothing is left to decide.
+ */
+export function leaveNext(s: Structure, photos: Decided[], i: number): number | null {
+  const stop = nextStop(s, photos, groupOf(s, i).at(-1)!);
+  return stop < 0 ? null : firstUndecidedFrame(s, photos, stop);
 }
 
 /** Set-aside photos nobody has decided yet. */

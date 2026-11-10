@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { burstStripLayout, drawnItems, firstUndecidedFrame, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { burstStripLayout, drawnItems, firstUndecidedFrame, leaveNext, loopNext, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -109,4 +109,35 @@ test('burst strip: fits 10 frames, grows 15% per 5 more, then scrolls rather tha
   assert.ok(many.rowWidth <= 700);
   const narrow = burstStripLayout(4, 200);
   assert.ok(narrow.rowWidth <= 200, 'a phone never overflows the available width');
+});
+
+test('loopNext loops inside a group (decided frames included) and never leaves it', () => {
+  assert.equal(loopNext(s, photos(), 2), 3);
+  assert.equal(loopNext(s, photos(), 4), 2, 'wraps from the last frame to the first');
+  assert.equal(loopNext(s, photos([2, 3]), 3), 4);
+  assert.equal(loopNext(s, photos([2, 3]), 4), 2, 'still loops over decided frames');
+});
+
+test('loopNext on a single goes to the next undecided stop and wraps to the start', () => {
+  assert.equal(loopNext(s, photos(), 0), 2);
+  assert.equal(loopNext(s, photos(), 5), 0, 'wraps to the beginning');
+  assert.equal(loopNext(s, photos([0]), 5), 2, 'skips stops already decided');
+  assert.equal(loopNext(s, photos([2, 3, 4]), 0), 5);
+  assert.equal(loopNext(s, photos([2]), 0), 3, 'lands on the first undecided frame of a group');
+});
+
+test('loopNext stays put when nothing else is left, and [ ] can wrap', () => {
+  assert.equal(loopNext(s, photos([0, 2, 3, 4]), 5), 5, 'the last undecided single loops onto itself');
+  assert.equal(loopNext(s, photos([0, 2, 3, 4, 5]), 5), null);
+  assert.equal(stepFrame(s, 2, -1, true), 4);
+  assert.equal(stepFrame(s, 4, 1, true), 2);
+  assert.equal(stepFrame(s, 0, 1, true), null);
+});
+
+test('leaveNext leaves the burst for the next undecided stop, wrapping to the start', () => {
+  assert.equal(leaveNext(s, photos(), 3), 5, 'out of the burst, from any frame');
+  assert.equal(leaveNext(s, photos(), 5), 0, 'wraps to the beginning');
+  assert.equal(leaveNext(s, photos([0, 5]), 5), 2, 'the burst left unrated comes round again, at its first undecided frame');
+  assert.equal(leaveNext(s, photos([2]), 0), 3);
+  assert.equal(leaveNext(s, photos([0, 2, 3, 4, 5]), 5), null);
 });

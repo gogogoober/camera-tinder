@@ -8,6 +8,8 @@
   import {
     ISSUE_LABELS,
     firstUndecidedFrame,
+    leaveNext,
+    loopNext,
     groupOf,
     nextStop,
     nextUndecidedFrame,
@@ -240,10 +242,18 @@
     }
   }
 
-  /** Skip: the next frame of a group, else the next stop. Does nothing while a set-aside photo is open. */
+  /** Next (Space): loops inside the current burst, or over the undecided photos; never leaves one unrated. */
   function skip() {
     if (!current || opened !== null) return;
-    idx = stepFrame(s, idx, 1) ?? land(nextStop(s, photos, groupOf(s, idx).at(-1)!));
+    const n = loopNext(s, photos, idx);
+    if (n !== null) idx = n;
+  }
+
+  /** Leave (Enter / S): out of the burst, or off this photo, to the next undecided one, leaving it unrated. */
+  function leave() {
+    if (!current || opened !== null) return;
+    const n = leaveNext(s, photos, idx);
+    if (n !== null) idx = n;
   }
 
   /** A click on the filmstrip: set-aside photos open in place; anything else moves the cursor there. */
@@ -273,8 +283,11 @@
     } else if (e.key === ' ') {
       e.preventDefault();
       skip();
+    } else if (e.key === 'Enter' || e.key === 's') {
+      e.preventDefault();
+      leave();
     } else if (e.key === '[' || e.key === ']') {
-      const frame = opened === null ? stepFrame(s, idx, e.key === ']' ? 1 : -1) : null;
+      const frame = opened === null ? stepFrame(s, idx, e.key === ']' ? 1 : -1, true) : null;
       if (frame !== null) idx = frame;
     } else if (e.key === 'Escape') {
       if (opened !== null) opened = null;
@@ -457,12 +470,12 @@
         {#each ORDER as d (d)}
           <button class="round {d}" onclick={() => decide(d)} disabled={!current} aria-label={DECISIONS[d].label}>{DECISIONS[d].icon}</button>
         {/each}
-        <button class="round sm" onclick={skip} disabled={!current} aria-label="Skip">»</button>
+        <button class="round sm" onclick={skip} disabled={!current} aria-label="Next">»</button>
       </div>
     {:else}
       <div class="keys muted">
         <span><kbd>←</kbd> ✕ nope</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
-        <span><kbd>space</kbd> skip</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
+        <span><kbd>space</kbd> next</span><span><kbd>enter</kbd> / <kbd>s</kbd> {members ? 'leave burst' : 'skip'}</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
       </div>
     {/if}
   </div>
