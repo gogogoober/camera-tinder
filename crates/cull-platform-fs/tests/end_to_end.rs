@@ -34,6 +34,7 @@ fn scan_cull_export_rescan() {
 
     let queue = svc.queue(&Filter::default()).unwrap();
     assert_eq!(queue.len(), 3);
+    assert!(queue.iter().all(|p| p.sharpness.is_some()), "sharpness is scored during scan");
 
     // Preview: downscaled, valid JPEG, cached.
     let bytes = svc.preview(queue[0].id, 1024).unwrap();
@@ -44,9 +45,10 @@ fn scan_cull_export_rescan() {
     svc.decide(queue[0].id, Decision::Like).unwrap();
     svc.decide(queue[1].id, Decision::Hate).unwrap();
     svc.decide(queue[2].id, Decision::Dislike).unwrap();
-    let undone = svc.undo().unwrap().unwrap();
-    assert_eq!(undone.id, queue[2].id);
-    assert_eq!(undone.decision, None);
+    let undone = svc.undo().unwrap();
+    assert_eq!(undone.len(), 1);
+    assert_eq!(undone[0].id, queue[2].id);
+    assert_eq!(undone[0].decision, None);
     svc.decide(queue[2].id, Decision::Favorite).unwrap();
 
     let s = svc.stats().unwrap();

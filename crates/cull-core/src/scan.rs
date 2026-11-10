@@ -16,6 +16,7 @@ use rayon::prelude::*;
 use crate::error::Result;
 use crate::identity::fingerprint;
 use crate::metadata::{PhotoMeta, read_meta};
+use crate::sharpness;
 use crate::model::{MediaKind, ScanReport};
 use crate::ports::{CoreEvent, EventSink, MediaEntry, MediaSource};
 use crate::store::{NewPhoto, Store};
@@ -32,11 +33,17 @@ fn local_naive(t: SystemTime) -> NaiveDateTime {
     DateTime::<Local>::from(t).naive_local()
 }
 
-fn analyze(source: &dyn MediaSource, entry: &MediaEntry) -> Result<(String, PhotoMeta)> {
+fn analyze(source: &dyn MediaSource, entry: &MediaEntry) -> Result<(String, PhotoMeta, Option<u8>)> {
     let mut r = BufReader::with_capacity(64 * 1024, source.open(&entry.rel_path)?);
     let fp = fingerprint(&mut r, entry.size)?;
     let meta = read_meta(&mut r);
-    Ok((fp, meta))
+    Ok((fp, meta, measure(source, &entry.rel_path)))
+}
+
+/// Sharpness needs a full decode, so it is read separately; failure just means "unknown".
+fn measure(source: &dyn MediaSource, rel_path: &str) -> Option<u8> {
+    let file = source.open(rel_path).ok()?;
+    sharpness::score(BufReader::with_capacity(256 * 1024, file))
 }
 
 pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn EventSink) -> Result<ScanReport> {
@@ -60,11 +67,18 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
 
     // Pass 1: skip files we've already indexed and that haven't changed.
     let mut misses = Vec::new();
+    // Already-indexed photos from before sharpness existed get scored too.
+    let mut unscored: Vec<(i64, String)> = Vec::new();
     store.lock().unwrap().transaction(|s| {
         for (e, k) in candidates {
             let mt = mtime_secs(e.modified);
             match s.lookup_file(&src, &e.rel_path, e.size, mt)? {
-                Some(id) => s.touch_photo(id, &src, &e.rel_path)?,
+                Some(id) => {
+                    s.touch_photo(id, &src, &e.rel_path)?;
+                    if s.needs_sharpness(id)? {
+                        unscored.push((id, e.rel_path.clone()));
+                    }
+                }
                 None => misses.push((e, k, mt)),
             }
         }
@@ -87,12 +101,17 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
         })
         .collect();
 
+    let backfilled: Vec<(i64, u8)> = unscored
+        .into_par_iter()
+        .filter_map(|(id, rel)| measure(source, &rel).map(|score| (id, score)))
+        .collect();
+
     // Pass 3: persist.
     let mut st = store.lock().unwrap();
     st.transaction(|s| {
         for (e, kind, mt, result) in analyzed {
             match result {
-                Ok((fp, meta)) => {
+                Ok((fp, meta, sharp)) => {
                     let captured_at = meta.captured_at.or_else(|| e.modified.map(local_naive));
                     let (id, is_new) = s.upsert_photo(&NewPhoto {
                         fingerprint: &fp,
@@ -102,6 +121,7 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
                         size: e.size,
                         captured_at,
                         camera: meta.camera.as_deref(),
+                        sharpness: sharp,
                     })?;
                     s.record_file(&src, &e.rel_path, e.size, mt, id)?;
                     if is_new {
@@ -110,6 +130,9 @@ pub fn scan_source(store: &Mutex<Store>, source: &dyn MediaSource, sink: &dyn Ev
                 }
                 Err(err) => report.failed.push((e.rel_path, err.to_string())),
             }
+        }
+        for (id, score) in backfilled {
+            s.set_photo_sharpness(id, score)?;
         }
         Ok(())
     })?;

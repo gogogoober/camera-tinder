@@ -1,19 +1,39 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type ScanReport, type SourceInfo, type Stats } from '../api';
+  import { api, type DaySummary, type ScanReport, type SourceInfo, type Stats, type Tag, type TagSuggestion } from '../api';
+  import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatCount } from '../format';
+  import { viewport } from '../viewport.svelte';
+  import Heatmap from './Heatmap.svelte';
 
-  let { onStart }: { onStart: () => void } = $props();
+  let { onStart }: { onStart: (range: { from: string; to: string }) => void } = $props();
+
+  type Range = { from: string; to: string };
 
   let sources = $state<SourceInfo[]>([]);
   let stats = $state<Stats | null>(null);
+  let days = $state<DaySummary[]>([]);
+  let tags = $state<Tag[]>([]);
+  let suggestions = $state<TagSuggestion[]>([]);
+  let range = $state<Range | null>(null);
+  let budget = $state(15);
+  let order = $state<'oldest' | 'newest'>('oldest');
+  let tagName = $state('');
   let report = $state<ScanReport | null>(null);
   let scanning = $state(false);
   let progress = $state({ done: 0, total: 0 });
   let error = $state<string | null>(null);
 
+  const BUDGETS = [5, 15, 30, 60];
+
+  const inRange = $derived(range ? days.filter((d) => d.day && d.day >= range!.from && d.day <= range!.to) : []);
+  const left = $derived(inRange.reduce((n, d) => n + d.stats.undecided, 0));
+  const total = $derived(inRange.reduce((n, d) => n + d.stats.total, 0));
+  const tagsInRange = $derived(range ? tags.filter((t) => t.startDay <= range!.to && t.endDay >= range!.from) : []);
+  const compact = $derived(viewport.compact);
+
   onMount(() => {
-    refresh();
+    refresh().then(() => applyBudget());
     const off = api.onEvent((e) => {
       if (e.type === 'scanProgress') progress = { done: e.done, total: e.total };
     });
@@ -21,7 +41,43 @@
   });
 
   async function refresh() {
-    [sources, stats] = await Promise.all([api.listSources(), api.stats()]);
+    [sources, stats, days, tags, suggestions] = await Promise.all([api.listSources(), api.stats(), api.days(), api.tags(), api.suggestTags()]);
+  }
+
+  function applyBudget() {
+    const r = rangeForBudget(days, budget, order);
+    if (r) range = r;
+  }
+
+  function pickBudget(m: number) {
+    budget = m;
+    applyBudget();
+  }
+  function pickOrder(o: 'oldest' | 'newest') {
+    order = o;
+    applyBudget();
+  }
+
+  function showTag(t: { startDay: string; endDay: string }) {
+    range = { from: t.startDay, to: t.endDay };
+  }
+
+  async function acceptSuggestion(s: TagSuggestion) {
+    await api.addTag(s.name, s.startDay, s.endDay, s.source);
+    await refresh();
+  }
+  function dismissSuggestion(s: TagSuggestion) {
+    suggestions = suggestions.filter((x) => x !== s);
+  }
+  async function addTag() {
+    if (!range) return;
+    await api.addTag(tagName.trim() || 'Untitled', range.from, range.to, 'manual');
+    tagName = '';
+    await refresh();
+  }
+  async function removeTag(id: number) {
+    await api.removeTag(id);
+    await refresh();
   }
 
   async function addFolder() {
@@ -47,6 +103,7 @@
     } finally {
       scanning = false;
       await refresh();
+      applyBudget();
     }
   }
 
@@ -54,41 +111,57 @@
     await api.removeSource(id);
     await refresh();
   }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.target instanceof HTMLInputElement) return;
+    if (e.key === 'Enter' && range && left) onStart(range);
+  }
 </script>
 
-<main>
-  <header>
-    <h1>Camera <span>Tinder</span></h1>
-    <p class="muted">Swipe through your shoot. Keep the good ones.</p>
-  </header>
+<svelte:window onkeydown={onKey} />
 
-  <section class="panel">
-    <div class="row">
-      <h2>Folders & cards</h2>
-      <div class="actions">
-        {#if sources.length}
-          <button onclick={scan} disabled={scanning}>Rescan</button>
-        {/if}
-        <button class="primary" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
+<div class="pick" class:compact>
+  <aside>
+    <div class="eyebrow">Sources</div>
+    {#each sources as s (s.id)}
+      <div class="src">
+        <div>
+          <strong>{s.name}</strong>
+          <div class="muted small">{formatCount(s.photoCount)} photos</div>
+        </div>
+        <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
       </div>
-    </div>
+    {/each}
+    <button class="add" onclick={addFolder} disabled={scanning}>+ Add folder or SD card</button>
+    {#if sources.length}<button class="ghost left" onclick={scan} disabled={scanning}>Rescan</button>{/if}
 
-    {#if sources.length === 0}
-      <p class="muted empty">Point Camera Tinder at a folder of photos or a mounted SD card (e.g. <code>/Volumes/NIKON Z 6</code>).</p>
-    {:else}
-      <ul>
-        {#each sources as s (s.id)}
-          <li>
-            <div>
-              <strong>{s.name}</strong>
-              <div class="muted path">{s.id}</div>
-            </div>
-            <span class="muted">{formatCount(s.photoCount)} photos</span>
-            <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
-          </li>
-        {/each}
-      </ul>
+    <div class="eyebrow">Auto-tags</div>
+    <ul class="how muted small">
+      <li><span>⋯</span> Runs of shooting days</li>
+      <li><span>▦</span> Calendar (when connected)</li>
+      <li><span>◐</span> Soft photos flagged at scan</li>
+    </ul>
+
+    {#if stats}
+      <div class="eyebrow">Library</div>
+      <div class="kv"><span>Photos</span><b>{formatCount(stats.total)}</b></div>
+      <div class="kv"><span>Left to cull</span><b>{formatCount(stats.undecided)}</b></div>
     {/if}
+  </aside>
+
+  <section class="main">
+    <header>
+      <div>
+        <div class="eyebrow">Camera Tinder</div>
+        <h1>What do you want to cull?</h1>
+      </div>
+      {#if compact}
+        <div class="mbtns">
+          <button onclick={addFolder} disabled={scanning}>+ Add</button>
+          {#if sources.length}<button class="ghost" onclick={scan} disabled={scanning}>Rescan</button>{/if}
+        </div>
+      {/if}
+    </header>
 
     {#if scanning}
       <div class="scan">
@@ -97,51 +170,148 @@
       </div>
     {/if}
 
-    {#if report && !scanning}
-      <p class="muted report">
-        Found {formatCount(report.found)} photos ({formatCount(report.new)} new).
-        {#if report.skippedUnsupported}{formatCount(report.skippedUnsupported)} RAW files skipped for now; RAW culling is coming next.{/if}
-        {#if report.failed.length}<span class="error">{report.failed.length} couldn't be read.</span>{/if}
+    {#if !days.length && !scanning}
+      <p class="muted empty">
+        Point Camera Tinder at a folder of photos or a mounted SD card, for example <code>/Volumes/NIKON Z 6</code>.
+        The calendar fills in once photos are scanned.
       </p>
+    {:else}
+      <div class="group">
+        <span class="eyebrow">Time you have</span>
+        <div class="chips">
+          {#each BUDGETS as m (m)}
+            <button class="chip" class:on={budget === m} onclick={() => pickBudget(m)}>{m} min</button>
+          {/each}
+          <button class="chip" class:on={order === 'oldest'} onclick={() => pickOrder('oldest')}>Oldest first</button>
+          <button class="chip" class:on={order === 'newest'} onclick={() => pickOrder('newest')}>Newest first</button>
+        </div>
+      </div>
+
+      {#if compact && tags.length}
+        <div class="chips scroll">
+          {#each tags as t (t.id)}
+            <button class="chip" class:on={range?.from === t.startDay && range?.to === t.endDay} onclick={() => showTag(t)}>{t.name}</button>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="group heat">
+        <span class="eyebrow">Tags and calendar · drag to pick days</span>
+        <Heatmap {days} {tags} {suggestions} {range} layout={compact ? 'months' : 'weeks'} onRange={(r) => (range = r)} onTag={showTag} />
+        <div class="legend muted small">
+          Photos still to cull: <i class="sw none"></i>none <i class="sw l1"></i><i class="sw l2"></i><i class="sw l3"></i><i class="sw l4"></i>many <i class="sw done"></i>all done
+        </div>
+      </div>
+
+      {#if suggestions.length}
+        <div class="group">
+          <span class="eyebrow">Suggested tags · {suggestions.length}</span>
+          {#each suggestions as s (s.name + s.startDay)}
+            <div class="sug">
+              <b>{s.name}</b>
+              <span class="mono small">{shortRange(s.startDay, s.endDay)}</span>
+              <span class="muted small why">{s.reason}</span>
+              <span class="btns">
+                <button class="small" onclick={() => showTag(s)}>Show</button>
+                <button class="small primary" onclick={() => acceptSuggestion(s)}>Add</button>
+                <button class="small ghost" onclick={() => dismissSuggestion(s)} aria-label="Dismiss">✕</button>
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      {#if tags.length && !compact}
+        <div class="group">
+          <span class="eyebrow">Your tags</span>
+          <div class="chips">
+            {#each tags as t (t.id)}
+              <span class="chip tag">
+                <button class="plain" onclick={() => showTag(t)}>{t.name}</button>
+                <button class="plain x" onclick={() => removeTag(t.id)} aria-label="Remove tag {t.name}">✕</button>
+              </span>
+            {/each}
+          </div>
+        </div>
+      {/if}
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
+    {#if report && !scanning && report.skippedUnsupported}
+      <p class="muted small">{formatCount(report.skippedUnsupported)} RAW files skipped for now; RAW culling is coming next.</p>
+    {/if}
   </section>
 
-  {#if stats && stats.total > 0}
-    <section class="panel start">
-      <div>
-        <div class="big">{formatCount(stats.undecided)}</div>
-        <div class="muted">left to cull of {formatCount(stats.total)}</div>
-      </div>
-      <div class="tally">
-        <span style:color="var(--like)">♥ {stats.like}</span>
-        <span style:color="var(--favorite)">★ {stats.favorite}</span>
-        <span style:color="var(--dislike)">✕ {stats.dislike}</span>
-        <span style:color="var(--hate)">☠ {stats.hate}</span>
-      </div>
-      <button class="primary go" onclick={onStart} disabled={scanning}>Start swiping →</button>
-    </section>
-  {/if}
-</main>
+  <div class="summary">
+    {#if range}
+      <div class="eyebrow">Selected</div>
+      <div class="big">{formatCount(left)} <span class="muted">photos to cull</span></div>
+      <div class="kv"><span>Range</span><b>{shortRange(range.from, range.to)}</b></div>
+      {#if total - left > 0}<div class="kv"><span>Already culled</span><b>{formatCount(total - left)}</b></div>{/if}
+      {#if tagsInRange.length}<div class="kv"><span>Tags</span><b>{tagsInRange.map((t) => t.name).join(', ')}</b></div>{/if}
+      <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
+      {#if !compact}
+        <div class="tagform">
+          <input placeholder="Name these days, e.g. Grandma's 80th" bind:value={tagName} onkeydown={(e) => e.key === 'Enter' && addTag()} />
+          <button onclick={addTag}>Tag</button>
+        </div>
+      {/if}
+      <button class="primary go" onclick={() => range && onStart(range)} disabled={!left || scanning}>Start culling{compact ? '' : ' ↵'}</button>
+    {:else}
+      <div class="muted">Pick days on the calendar to begin.</div>
+    {/if}
+  </div>
+</div>
 
 <style>
-  main { max-width: 760px; margin: 0 auto; padding: 48px 24px; height: 100%; overflow-y: auto; }
-  header { margin-bottom: 28px; }
-  h1 { font-size: 34px; margin: 0 0 4px; letter-spacing: -0.02em; }
-  h1 span { color: var(--accent); }
-  h2 { font-size: 16px; margin: 0; }
-  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 16px; }
-  .row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
-  .actions { display: flex; gap: 8px; }
-  .empty { margin: 16px 0 0; }
-  ul { list-style: none; padding: 0; margin: 16px 0 0; }
-  li { display: grid; grid-template-columns: 1fr auto auto; gap: 12px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); }
-  .path { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 440px; }
-  .scan { margin-top: 16px; display: grid; gap: 8px; }
-  .report { margin: 14px 0 0; }
-  .start { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
-  .big { font-size: 40px; font-weight: 700; letter-spacing: -0.02em; }
-  .tally { display: flex; gap: 14px; font-weight: 600; }
-  .go { margin-left: auto; padding: 12px 22px; font-size: 16px; }
+  .pick { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; height: 100%; }
+  aside { background: var(--panel); border-right: 1px solid var(--border); padding: 16px 14px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
+  aside .eyebrow { margin-top: 12px; }
+  aside .eyebrow:first-child { margin-top: 0; }
+  .src { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); }
+  .add { text-align: left; }
+  .left { justify-self: start; text-align: left; color: var(--muted); }
+  .how { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .how span { font-family: ui-monospace, 'SF Mono', monospace; margin-right: 6px; }
+  .small { font-size: 12.5px; }
+  .kv { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 7px; }
+  .kv b { color: var(--text); font-weight: 500; font-family: ui-monospace, 'SF Mono', monospace; text-align: right; }
+
+  .main { padding: 22px 24px; display: flex; flex-direction: column; gap: 16px; overflow-y: auto; min-width: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .mbtns { display: flex; gap: 6px; flex: none; }
+  h1 { font-size: 24px; margin: 2px 0 0; letter-spacing: -0.01em; }
+  .group { display: grid; gap: 8px; }
+  .empty { max-width: 56ch; }
+  .scan { display: grid; gap: 8px; }
   code { font-size: 13px; }
+  .legend { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; background: color-mix(in srgb, var(--accent) var(--c, 0%), var(--cell0)); }
+  .sw.l1 { --c: 16%; } .sw.l2 { --c: 36%; } .sw.l3 { --c: 62%; } .sw.l4 { --c: 94%; }
+  .sw.none { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+  .sw.done { background: transparent; box-shadow: inset 0 0 0 1.5px var(--done); }
+
+  .sug { display: grid; grid-template-columns: minmax(0, 1.1fr) 120px minmax(0, 1.6fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+  .why { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .btns { display: flex; gap: 6px; }
+  button.small { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
+  .chip.tag { display: inline-flex; padding: 0; gap: 0; }
+  .plain { background: transparent; border: 0; padding: 4px 6px 4px 11px; }
+  .plain.x { padding: 4px 9px 4px 4px; color: var(--muted); }
+
+  .summary { background: var(--panel); border-left: 1px solid var(--border); padding: 18px; display: flex; flex-direction: column; gap: 11px; }
+  .big { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .big .muted { font-size: 14px; font-weight: 500; letter-spacing: 0; }
+  .tagform { display: flex; gap: 6px; margin-top: 4px; }
+  .tagform input { flex: 1; min-width: 0; font: inherit; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
+  .go { margin-top: auto; padding: 12px; font-size: 16px; }
+
+  /* Phones: one column; the summary becomes a bottom sheet. */
+  .pick.compact { display: flex; flex-direction: column; }
+  .pick.compact aside { display: none; }
+  .pick.compact .main { flex: 1; min-height: 0; padding: 14px 16px 8px; gap: 10px; }
+  .pick.compact .summary { border-left: 0; border-top: 1px solid var(--border); border-radius: 20px 20px 0 0; padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
+  .pick.compact .go { margin-top: 4px; }
+  .pick.compact .sug { grid-template-columns: 1fr auto; }
+  .pick.compact .sug .why, .pick.compact .sug .mono { display: none; }
+  .chips.scroll { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
 </style>

@@ -19,11 +19,18 @@ export const tauriApi: CullerApi = {
   scan: () => invoke('scan'),
 
   queue: (filter) => invoke('queue', { filter }),
+  plan: (filter) => invoke('plan', { filter }),
   days: () => invoke('days'),
   stats: () => invoke('stats'),
 
   decide: (id, decision) => invoke('decide', { id, decision }),
+  decideMany: (ids, decision) => invoke('decide_many', { ids, decision }),
   undo: () => invoke('undo'),
+
+  tags: () => invoke('tags'),
+  addTag: (name, startDay, endDay, source = 'manual') => invoke('add_tag', { name, startDay, endDay, source }),
+  removeTag: (id) => invoke('remove_tag', { id }),
+  suggestTags: () => invoke('suggest_tags'),
 
   exportKeepers: (dest, options) => invoke('export_keepers', { dest, options }),
 

@@ -32,6 +32,12 @@ pub trait MediaSource: Send + Sync {
     fn open(&self, rel_path: &str) -> Result<Box<dyn ReadSeek>>;
 }
 
+/// Where calendar events come from (macOS/iOS EventKit later). Optional.
+pub trait CalendarSource: Send + Sync {
+    /// Events overlapping `from..=to` (`YYYY-MM-DD`), reduced to the days they cover.
+    fn events(&self, from: &str, to: &str) -> Result<Vec<crate::suggest::CalendarEvent>>;
+}
+
 pub struct ExportItem<'a> {
     pub photo: &'a Photo,
     pub source: &'a dyn MediaSource,

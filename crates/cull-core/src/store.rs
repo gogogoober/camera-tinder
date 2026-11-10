@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS photos (
     size        INTEGER NOT NULL,
     captured_at TEXT,
     camera      TEXT,
-    last_seen   TEXT NOT NULL
+    last_seen   TEXT NOT NULL,
+    sharpness   INTEGER
 );
 CREATE INDEX IF NOT EXISTS photos_source   ON photos(source_id);
 CREATE INDEX IF NOT EXISTS photos_captured ON photos(captured_at);
@@ -57,6 +58,15 @@ CREATE TABLE IF NOT EXISTS decisions (
     decided_at TEXT NOT NULL
 );
 
+-- Named runs of days ("Lisbon").
+CREATE TABLE IF NOT EXISTS tags (
+    id        INTEGER PRIMARY KEY,
+    name      TEXT NOT NULL,
+    start_day TEXT NOT NULL,
+    end_day   TEXT NOT NULL,
+    source    TEXT NOT NULL
+);
+
 -- Full history (NULL decision = cleared via undo).
 CREATE TABLE IF NOT EXISTS decision_log (
     id       INTEGER PRIMARY KEY,
@@ -75,6 +85,7 @@ pub struct NewPhoto<'a> {
     pub size: u64,
     pub captured_at: Option<NaiveDateTime>,
     pub camera: Option<&'a str>,
+    pub sharpness: Option<u8>,
 }
 
 pub struct Store {
@@ -89,7 +100,7 @@ fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
 
-const PHOTO_COLS: &str = "p.id, p.fingerprint, p.source_id, p.rel_path, p.file_name, p.kind, p.size, p.captured_at, p.camera, d.decision";
+const PHOTO_COLS: &str = "p.id, p.fingerprint, p.source_id, p.rel_path, p.file_name, p.kind, p.size, p.captured_at, p.camera, d.decision, p.sharpness";
 
 fn row_to_photo(row: &Row) -> rusqlite::Result<Photo> {
     let kind: String = row.get(5)?;
@@ -106,6 +117,7 @@ fn row_to_photo(row: &Row) -> rusqlite::Result<Photo> {
         captured_at: captured.and_then(|s| NaiveDateTime::parse_from_str(&s, TIME_FMT).ok()),
         camera: row.get(8)?,
         decision: decision.as_deref().and_then(Decision::parse),
+        sharpness: row.get::<_, Option<i64>>(10)?.map(|v| v.clamp(0, 100) as u8),
     })
 }
 
@@ -133,6 +145,11 @@ impl Store {
 
     fn init(conn: Connection) -> Result<Self> {
         conn.execute_batch(SCHEMA)?;
+        // Databases created before sharpness existed need the column added.
+        let has_sharpness = conn.prepare("PRAGMA table_info(photos)")?.query_map([], |r| r.get::<_, String>(1))?.any(|c| c.is_ok_and(|c| c == "sharpness"));
+        if !has_sharpness {
+            conn.execute_batch("ALTER TABLE photos ADD COLUMN sharpness INTEGER")?;
+        }
         Ok(Self { conn })
     }
 
@@ -177,11 +194,12 @@ impl Store {
             .optional()?;
         let file_name = p.rel_path.rsplit('/').next().unwrap_or(p.rel_path);
         let id: PhotoId = self.conn.query_row(
-            "INSERT INTO photos (fingerprint, source_id, rel_path, file_name, kind, size, captured_at, camera, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO photos (fingerprint, source_id, rel_path, file_name, kind, size, captured_at, camera, last_seen, sharpness)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(fingerprint) DO UPDATE SET
                 source_id = excluded.source_id, rel_path = excluded.rel_path,
-                file_name = excluded.file_name, last_seen = excluded.last_seen
+                file_name = excluded.file_name, last_seen = excluded.last_seen,
+                sharpness = COALESCE(excluded.sharpness, photos.sharpness)
              RETURNING id",
             params![
                 p.fingerprint,
@@ -192,7 +210,8 @@ impl Store {
                 p.size as i64,
                 p.captured_at.map(|t| t.format(TIME_FMT).to_string()),
                 p.camera,
-                now()
+                now(),
+                p.sharpness.map(i64::from)
             ],
             |r| r.get(0),
         )?;
@@ -261,10 +280,17 @@ impl Store {
         match filter.day.as_deref() {
             None => {}
             Some("unknown") => sql.push_str(" AND p.captured_at IS NULL"),
-            Some(day) => {
-                sql.push_str(" AND substr(p.captured_at, 1, 10) = ?");
-                args.push(day.to_string());
-            }
+            Some(day) => match filter.day_to.as_deref() {
+                Some(to) if to != day => {
+                    sql.push_str(" AND substr(p.captured_at, 1, 10) BETWEEN ? AND ?");
+                    args.push(day.to_string());
+                    args.push(to.to_string());
+                }
+                _ => {
+                    sql.push_str(" AND substr(p.captured_at, 1, 10) = ?");
+                    args.push(day.to_string());
+                }
+            },
         }
         sql.push_str(" ORDER BY p.captured_at IS NULL, p.captured_at, p.file_name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -309,25 +335,73 @@ impl Store {
         Ok(d.as_deref().and_then(Decision::parse))
     }
 
+    fn apply_decision(&self, id: PhotoId, decision: Option<Decision>, at: &str) -> Result<Option<Decision>> {
+        let previous = self.decision(id)?;
+        match decision {
+            Some(d) => self.conn.execute(
+                "INSERT INTO decisions (photo_id, decision, decided_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(photo_id) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at",
+                params![id, d.as_str(), at],
+            )?,
+            None => self.conn.execute("DELETE FROM decisions WHERE photo_id = ?1", [id])?,
+        };
+        self.conn.execute(
+            "INSERT INTO decision_log (photo_id, decision, previous, at) VALUES (?1, ?2, ?3, ?4)",
+            params![id, decision.map(Decision::as_str), previous.map(Decision::as_str), at],
+        )?;
+        Ok(previous)
+    }
+
     /// Set (or clear, with `None`) a decision. Returns the previous one.
     pub fn set_decision(&mut self, id: PhotoId, decision: Option<Decision>) -> Result<Option<Decision>> {
+        Ok(self.set_many(&[(id, decision)])?.remove(0))
+    }
+
+    /// Apply many decisions in one transaction. Returns each photo's previous decision, in order.
+    pub fn set_many(&mut self, items: &[(PhotoId, Option<Decision>)]) -> Result<Vec<Option<Decision>>> {
         self.transaction(|s| {
-            let previous = s.decision(id)?;
             let at = now();
-            match decision {
-                Some(d) => s.conn.execute(
-                    "INSERT INTO decisions (photo_id, decision, decided_at) VALUES (?1, ?2, ?3)
-                     ON CONFLICT(photo_id) DO UPDATE SET decision = excluded.decision, decided_at = excluded.decided_at",
-                    params![id, d.as_str(), at],
-                )?,
-                None => s.conn.execute("DELETE FROM decisions WHERE photo_id = ?1", [id])?,
-            };
-            s.conn.execute(
-                "INSERT INTO decision_log (photo_id, decision, previous, at) VALUES (?1, ?2, ?3, ?4)",
-                params![id, decision.map(Decision::as_str), previous.map(Decision::as_str), at],
-            )?;
-            Ok(previous)
+            items.iter().map(|(id, d)| s.apply_decision(*id, *d, &at)).collect()
         })
+    }
+
+    pub fn set_photo_sharpness(&self, id: PhotoId, score: u8) -> Result<()> {
+        self.conn.execute("UPDATE photos SET sharpness = ?2 WHERE id = ?1", params![id, i64::from(score)])?;
+        Ok(())
+    }
+
+    pub fn needs_sharpness(&self, id: PhotoId) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT sharpness IS NULL FROM photos WHERE id = ?1", [id], |r| r.get(0))?)
+    }
+
+    // ---- tags ---------------------------------------------------------
+
+    pub fn tags(&self) -> Result<Vec<Tag>> {
+        let mut stmt = self.conn.prepare("SELECT id, name, start_day, end_day, source FROM tags ORDER BY start_day, end_day, id")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Tag {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                start_day: r.get(2)?,
+                end_day: r.get(3)?,
+                source: TagSource::parse(&r.get::<_, String>(4)?),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn add_tag(&self, name: &str, start_day: &str, end_day: &str, source: TagSource) -> Result<Tag> {
+        let id: i64 = self.conn.query_row(
+            "INSERT INTO tags (name, start_day, end_day, source) VALUES (?1, ?2, ?3, ?4) RETURNING id",
+            params![name, start_day, end_day, source.as_str()],
+            |r| r.get(0),
+        )?;
+        Ok(Tag { id, name: name.into(), start_day: start_day.into(), end_day: end_day.into(), source })
+    }
+
+    pub fn remove_tag(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
+        Ok(())
     }
 }
 
@@ -345,6 +419,7 @@ mod tests {
                 size: 10,
                 captured_at: when.map(|w| NaiveDateTime::parse_from_str(w, TIME_FMT).unwrap()),
                 camera: Some("NIKON Z 6"),
+                sharpness: None,
             })
             .unwrap()
             .0
@@ -374,7 +449,7 @@ mod tests {
         let _d = photo(&s, "4", "a", "x/4.jpg", None);
 
         // Ordered by capture time, unknown last.
-        let all = s.query(&src, &Filter { day: None, status: StatusFilter::All }).unwrap();
+        let all = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::All }).unwrap();
         assert_eq!(all.iter().map(|p| p.file_name.as_str()).collect::<Vec<_>>(), ["2.jpg", "1.jpg", "3.jpg", "4.jpg"]);
 
         s.set_decision(a, Some(Decision::Like)).unwrap();
@@ -383,9 +458,9 @@ mod tests {
 
         let undecided = s.query(&src, &Filter::default()).unwrap();
         assert_eq!(undecided.len(), 1);
-        let keepers = s.query(&src, &Filter { day: None, status: StatusFilter::Keepers }).unwrap();
+        let keepers = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::Keepers }).unwrap();
         assert_eq!(keepers.len(), 2);
-        let day1 = s.query(&src, &Filter { day: Some("2026-07-01".into()), status: StatusFilter::All }).unwrap();
+        let day1 = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: None, status: StatusFilter::All }).unwrap();
         assert_eq!(day1.len(), 2);
 
         let st = s.stats(&src).unwrap();
@@ -396,9 +471,34 @@ mod tests {
         assert_eq!(days[0].day.as_deref(), Some("2026-07-01"));
         assert_eq!(days[2].day, None);
 
+        // Day ranges.
+        let range = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: Some("2026-07-02".into()), status: StatusFilter::All }).unwrap();
+        assert_eq!(range.len(), 3);
+
         // Undo = restore previous.
         let prev = s.set_decision(c, None).unwrap();
         assert_eq!(prev, Some(Decision::Favorite));
         assert_eq!(s.decision(c).unwrap(), None);
+    }
+
+    #[test]
+    fn bulk_decisions_and_tags() {
+        let mut s = Store::open_in_memory().unwrap();
+        let a = photo(&s, "1", "a", "x/1.jpg", Some("2026-07-01T10:00:00"));
+        let b = photo(&s, "2", "a", "x/2.jpg", Some("2026-07-01T10:00:01"));
+        s.set_decision(a, Some(Decision::Like)).unwrap();
+        let prev = s.set_many(&[(a, Some(Decision::Dislike)), (b, Some(Decision::Dislike))]).unwrap();
+        assert_eq!(prev, vec![Some(Decision::Like), None]);
+        assert_eq!(s.decision(b).unwrap(), Some(Decision::Dislike));
+
+        let t = s.add_tag("Hike", "2026-07-01", "2026-07-03", TagSource::Manual).unwrap();
+        assert_eq!(s.tags().unwrap().len(), 1);
+        s.remove_tag(t.id).unwrap();
+        assert!(s.tags().unwrap().is_empty());
+
+        s.set_photo_sharpness(a, 12).unwrap();
+        assert_eq!(s.photo(a).unwrap().sharpness, Some(12));
+        assert!(!s.needs_sharpness(a).unwrap());
+        assert!(s.needs_sharpness(b).unwrap());
     }
 }

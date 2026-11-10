@@ -2,10 +2,22 @@
   import { isMock } from './lib/api';
   import Home from './lib/components/Home.svelte';
   import Cull from './lib/components/Cull.svelte';
+  import Review from './lib/components/Review.svelte';
   import ExportPanel from './lib/components/ExportPanel.svelte';
 
-  type View = 'home' | 'cull' | 'export';
+  type View = 'home' | 'cull' | 'review' | 'export';
+  type Range = { from: string; to: string };
+
   let view = $state<View>('home');
+  let range = $state<Range | null>(null);
+  /** Set when a photo is reopened from Review. */
+  let focusId = $state<number | null>(null);
+
+  function start(r: Range) {
+    range = r;
+    focusId = null;
+    view = 'cull';
+  }
 </script>
 
 {#if isMock}
@@ -13,11 +25,20 @@
 {/if}
 
 {#if view === 'home'}
-  <Home onStart={() => (view = 'cull')} />
-{:else if view === 'cull'}
-  <Cull onExit={() => (view = 'home')} onExport={() => (view = 'export')} />
+  <Home onStart={start} />
+{:else if view === 'cull' && range}
+  {#key focusId}
+    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} />
+  {/key}
+{:else if view === 'review'}
+  <Review
+    {range}
+    onBack={() => (view = range ? 'cull' : 'home')}
+    onOpen={(id) => { focusId = id; view = 'cull'; }}
+    onExport={() => (view = 'export')}
+  />
 {:else}
-  <ExportPanel onBack={() => (view = 'cull')} />
+  <ExportPanel onBack={() => (view = 'review')} />
 {/if}
 
 <style>
@@ -33,5 +54,6 @@
     border-radius: 6px;
     background: #ffb02033;
     color: #ffb020;
+    pointer-events: none;
   }
 </style>

@@ -6,9 +6,13 @@ import type {
   ExportReport,
   Filter,
   Photo,
+  Plan,
   ScanReport,
   SourceInfo,
   Stats,
+  Tag,
+  TagSource,
+  TagSuggestion,
 } from './types';
 
 /**
@@ -28,12 +32,22 @@ export interface CullerApi {
   scan(): Promise<ScanReport>;
 
   queue(filter: Filter): Promise<Photo[]>;
+  /** The queue plus its moments and bursts, for the cull screen. */
+  plan(filter: Filter): Promise<Plan>;
   days(): Promise<DaySummary[]>;
   stats(): Promise<Stats>;
 
   decide(id: number, decision: Decision): Promise<void>;
-  /** Reverts the last decision; returns that photo (now undecided or restored). */
-  undo(): Promise<Photo | null>;
+  /** One decision for many photos, undone together by a single undo. */
+  decideMany(ids: number[], decision: Decision): Promise<void>;
+  /** Reverts the last action (one photo or a batch); returns the photos, now restored. Empty if nothing to undo. */
+  undo(): Promise<Photo[]>;
+
+  tags(): Promise<Tag[]>;
+  addTag(name: string, startDay: string, endDay: string, source?: TagSource): Promise<Tag>;
+  removeTag(id: number): Promise<void>;
+  /** Guesses from calendar events and runs of shooting days. */
+  suggestTags(): Promise<TagSuggestion[]>;
 
   exportKeepers(dest: string, options: ExportOptions): Promise<ExportReport>;
 

@@ -8,12 +8,12 @@ export interface DecisionMeta {
   arrow: string;
 }
 
-/** ← no · → like · ↑ favorite · ↓ hate */
+/** ← nope · → keep (stored as `like`) · ↑ favorite · ↓ hate */
 export const DECISIONS: Record<Decision, DecisionMeta> = {
   dislike: { label: 'Nope', stamp: 'NOPE', icon: '✕', key: 'ArrowLeft', arrow: '←' },
-  like: { label: 'Like', stamp: 'LIKE', icon: '♥', key: 'ArrowRight', arrow: '→' },
+  like: { label: 'Keep', stamp: 'KEEP', icon: '✓', key: 'ArrowRight', arrow: '→' },
   favorite: { label: 'Favorite', stamp: 'FAVORITE', icon: '★', key: 'ArrowUp', arrow: '↑' },
-  hate: { label: 'Hate', stamp: 'HATE', icon: '☠', key: 'ArrowDown', arrow: '↓' },
+  hate: { label: 'Hate', stamp: 'HATE', icon: '⊘', key: 'ArrowDown', arrow: '↓' },
 };
 
 export const ORDER: Decision[] = ['dislike', 'hate', 'favorite', 'like'];

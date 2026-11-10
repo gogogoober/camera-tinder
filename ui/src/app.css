@@ -1,24 +1,49 @@
 :root {
-  --bg: #0e0e11;
-  --panel: #17171c;
-  --panel-2: #202027;
-  --border: #2a2a33;
-  --text: #ececf1;
-  --muted: #8d8d99;
-  --accent: #ff4f6d;
+  /* Light first; dark below. Same names as the design studies. */
+  --bg: #f1efea;
+  --panel: #fbfaf7;
+  --panel-2: #e9e6df;
+  --border: #d6d1c7;
+  --text: #1d1b18;
+  --muted: #6b655b;
+  --accent: #e0561b;
+  --accent-fg: #ffffff;
+  --cell0: #e4e0d7;
+  --done: #9aa59a;
 
-  --dislike: #ff5c5c;
-  --like: #2fd47c;
-  --favorite: #3fa3ff;
-  --hate: #b261ff;
+  --dislike: #6a7391;
+  --like: #2c9a55;
+  --favorite: #c79300;
+  --hate: #cf2f36;
+  --soft: #cf2f36;
 
   --radius: 14px;
-  color-scheme: dark;
+  color-scheme: light dark;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   font-size: 15px;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #100f0d;
+    --panel: #1a1815;
+    --panel-2: #262320;
+    --border: #38342e;
+    --text: #ece8e1;
+    --muted: #9a9488;
+    --accent: #ff7a45;
+    --accent-fg: #1a0d05;
+    --cell0: #25221e;
+    --done: #59645a;
+    --dislike: #8f98b3;
+    --like: #5fc77f;
+    --favorite: #f2cf4a;
+    --hate: #ee5258;
+    --soft: #ee5258;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -36,10 +61,11 @@ button {
   padding: 8px 14px;
   cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: #3d3d49; background: #26262e; }
+button:hover:not(:disabled) { border-color: var(--muted); }
 button:disabled { opacity: 0.45; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: white; font-weight: 600; }
-button.primary:hover:not(:disabled) { background: #ff6680; border-color: #ff6680; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button.ghost { background: transparent; border-color: transparent; }
 button.ghost:hover:not(:disabled) { background: var(--panel-2); }
 
@@ -57,3 +83,9 @@ kbd {
   border-radius: 5px;
   color: var(--muted);
 }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { border-radius: 99px; padding: 4px 11px; font-size: 13px; background: var(--panel); white-space: nowrap; }
+.chip.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+.mono { font-family: ui-monospace, 'SF Mono', monospace; font-variant-numeric: tabular-nums; }
+.eyebrow { font: 500 11px ui-monospace, 'SF Mono', monospace; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }

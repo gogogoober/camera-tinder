@@ -33,16 +33,22 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   identity.rs              Content fingerprint: xxh3-128 of size + first 64KiB + last 16KiB
   metadata.rs              EXIF (kamadak-exif): capture time, camera
   store.rs                 SQLite (rusqlite bundled): photos, file_index, decisions, decision_log
-  scan.rs                  3-pass scan: cached lookups → parallel (rayon) analyze → one txn insert
+  scan.rs                  3-pass scan: cached lookups → parallel (rayon) analyze (+ sharpness) → one txn insert
+  sharpness.rs             Blur score 0–100 (variance of Laplacian on a 640px grey copy; < 22 = "soft")
+  moments.rs               Group by capture-time gap: moments (15 min) and bursts (3 s)
+  suggest.rs               Tag suggestions without AI: runs of shooting days, calendar events
   preview.rs               Decode → EXIF-rotate → downscale → JPEG; disk cache; capped concurrency
-  api.rs                   CullerService — the ONLY facade any UI uses
+  api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
   tests/end_to_end.rs      Full flow on real JPEGs (scan, cull, undo, export, card→laptop move)
   examples/make_samples.rs Generates synthetic JPEGs (dates via mtime)
 src-tauri/                 Thin adapter: commands → CullerService; `preview://` URI scheme;
                            lib + #[mobile_entry_point] already set up for `tauri ios init`
 ui/src/lib/api/            CullerApi.ts (interface) + tauriApi.ts + mockApi.ts; index.ts picks one
-ui/src/lib/components/     Home (sources/scan), Cull (swipe screen), SwipeCard, ExportPanel
+ui/src/lib/components/     Home (Pick: heatmap + tags + time budget), Heatmap, Cull (loupe / card stack),
+                           MomentsBar, Filmstrip, SwipeCard, Review (grid + drag-select), ExportPanel
+ui/src/lib/select.ts       dragSelect action: drag across [data-i] items to multi-select
+ui/src/lib/days.ts         day math, heat levels, time-budget → day range
 ```
 
 Key design decisions:
@@ -78,6 +84,14 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 
 ## Gotchas learned
 
+- UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
+- One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
+  (month calendar, card stack, round buttons). All logic is shared.
+- Sharpness is computed at scan time (full decode, parallel) and backfilled for older rows on rescan.
+  Plain skies/fog can score low; the UI only *suggests* rejects.
+- `CalendarSource` (ports.rs) has no implementation yet; EventKit would plug in via `set_calendar`.
+- A burst "keep one" is two backend calls (Nope the rest, Keep one), so it takes two undos.
+
 - `use cull_core::*` brings in `cull_core::Result<T>`; use `std::result::Result<T, E>` explicitly
   where two type params are needed (see `CmdResult` in src-tauri).
 - `[profile.dev.package."*"] opt-level = 3` is deliberate: image decoding is 10–20× slower unoptimized.
@@ -93,9 +107,11 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 
 - [x] **M1:** add folders → scan → swipe JPEGs (4 decisions, undo, skip, day + status filters)
       → export keepers to a folder. Decisions persist across restarts.
-- [ ] UI polish (owner: "UI in general needs help"). Ideas offered, awaiting priorities: bigger photo
-      area / overlay info, up-next filmstrip, better day sidebar, stronger swipe feedback,
-      first-run key hint, nicer home + SD card auto-detect.
+- [x] **UI second pass (from the design studies):** GitHub-style heatmap with tag lanes + suggestions,
+      time-budget picker, moments timeline, filmstrip, soft-photo triage, burst compare, drag-select,
+      Review screen. Verified in the mock browser (`npm run dev:mock`), not yet in the real Tauri app.
+- [ ] Calendar (EventKit), GPS place names, night/colour image hints as tag sources.
+- [ ] Hours-of-day timeline option; learned pace; persist dismissed suggestions.
 - [ ] Verify photo-alignment fix for portrait images in the real app.
 - [ ] **M2:** smart session planner (bursts/sessions/trips, time-budget batching, learned pace).
 - [ ] Burst stacks + near-duplicate detection (perceptual hash).

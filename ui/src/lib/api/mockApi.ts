@@ -1,40 +1,94 @@
 import type { CullerApi } from './CullerApi';
-import type { CoreEvent, DaySummary, Decision, Photo, SourceInfo, Stats } from './types';
+import type { CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
+import { SOFT_THRESHOLD } from './types';
 
 /**
  * In-memory fake backend so the UI can be built and tested in a plain browser
- * (`npm run dev:mock`), with no Rust build in the loop.
+ * (`npm run dev:mock`), with no Rust build in the loop. It mimics cull-core:
+ * capture-ordered queues, moments/bursts, sharpness scores, tags and suggestions.
  */
 
 const listeners = new Set<(e: CoreEvent) => void>();
 const sources: SourceInfo[] = [];
 let photos: Photo[] = [];
-const undoStack: [number, Decision | null][] = [];
+let tags: Tag[] = [
+  { id: 1, name: 'Lisbon', startDay: '2026-06-12', endDay: '2026-06-19', source: 'place' },
+];
+let tagId = 2;
+const undoStack: [number, Decision | null][][] = [];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function rng(seed: number) {
+  let s = seed >>> 0 || 1;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+const pad = (n: number) => String(n).padStart(2, '0');
+const dayStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/** Trips with a base number of photos per day. Everything else is a light scatter. */
+const TRIPS: [string, string, number][] = [
+  ['2026-06-12', '2026-06-19', 140],
+  ['2026-08-01', '2026-08-03', 150],
+  ['2026-09-19', '2026-09-19', 300],
+  ['2026-10-17', '2026-10-18', 120],
+  ['2026-11-01', '2026-11-08', 60],
+];
 
 function makePhotos(sourceId: string, startId: number): Photo[] {
   const out: Photo[] = [];
-  const days = ['2026-07-01', '2026-07-02', '2026-07-03', '2026-07-05'];
   let id = startId;
-  days.forEach((day, d) => {
-    const count = [72, 140, 45, 98][d];
-    for (let i = 0; i < count; i++) {
-      const mins = 8 * 60 + i * 4;
-      const t = `${day}T${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}:00`;
-      out.push({
-        id: id++,
-        fingerprint: `mock${id}`,
-        sourceId,
-        relPath: `DCIM/100MOCK/DSC_${String(id).padStart(4, '0')}.JPG`,
-        fileName: `DSC_${String(id).padStart(4, '0')}.JPG`,
-        kind: 'jpeg',
-        size: 8_000_000,
-        capturedAt: t,
-        camera: id % 3 === 0 ? 'FUJIFILM X-T5' : 'NIKON Z 6_2',
-        decision: null,
-      });
+  const first = new Date(2026, 4, 17);
+  for (let i = 0; i < 175; i++) {
+    const d = new Date(first.getFullYear(), first.getMonth(), first.getDate() + i);
+    const day = dayStr(d);
+    const r = rng(i * 31 + 5);
+    const trip = TRIPS.find(([a, b]) => day >= a && day <= b);
+    let count = 0;
+    if (trip) count = Math.round(trip[2] * (0.4 + r() * 1.1));
+    else {
+      const v = r();
+      count = v < 0.55 ? 0 : v < 0.9 ? 3 + Math.floor(r() * 22) : 30 + Math.floor(r() * 50);
     }
-  });
+    // Moments of a few photos, spread over the day, some with bursts.
+    let t = 7 * 3600 + Math.floor(r() * 3600);
+    let made = 0;
+    while (made < count) {
+      const size = Math.min(count - made, 3 + Math.floor(r() * 20));
+      for (let k = 0; k < size; ) {
+        const burst = size - k >= 2 && r() < 0.16 ? Math.min(2 + Math.floor(r() * 4), size - k) : 1;
+        for (let j = 0; j < burst; j++, k++) {
+          const sec = Math.min(t, 23 * 3600 + 59 * 60);
+          out.push({
+            id,
+            fingerprint: `mock${id}`,
+            sourceId,
+            relPath: `DCIM/100MOCK/DSC_${String(id).padStart(4, '0')}.JPG`,
+            fileName: `DSC_${String(id).padStart(4, '0')}.JPG`,
+            kind: 'jpeg',
+            size: 8_000_000,
+            capturedAt: `${day}T${pad(Math.floor(sec / 3600))}:${pad(Math.floor(sec / 60) % 60)}:${pad(sec % 60)}`,
+            camera: id % 3 === 0 ? 'FUJIFILM X-T5' : 'NIKON Z f',
+            decision: null,
+            sharpness: r() < 0.12 ? Math.round(4 + r() * 16) : Math.round(30 + r() * 70),
+          });
+          id++;
+          t += burst > 1 ? 1 : 4 + Math.floor(r() * 45);
+        }
+        if (burst > 1) t += 5 + Math.floor(r() * 30);
+      }
+      made += size;
+      t += 15 * 60 + Math.floor(r() * 3600);
+    }
+  }
+  // Pre-cull everything before August and half the wedding, like a real library.
+  for (const p of out) {
+    const day = p.capturedAt!.slice(0, 10);
+    if (day < '2026-08-01' || (day >= '2026-08-04' && day < '2026-09-19')) p.decision = 'like';
+  }
   return out;
 }
 
@@ -48,6 +102,41 @@ function statsOf(list: Photo[]): Stats {
 }
 
 const active = () => photos.filter((p) => sources.some((s) => s.id === p.sourceId));
+
+function query(filter: Filter): Photo[] {
+  return active()
+    .filter((p) => {
+      if (filter.day == null) return true;
+      if (filter.day === 'unknown') return p.capturedAt == null;
+      const d = p.capturedAt?.slice(0, 10);
+      if (!d) return false;
+      return filter.dayTo ? d >= filter.day && d <= filter.dayTo : d === filter.day;
+    })
+    .filter((p) => {
+      switch (filter.status) {
+        case 'undecided': return p.decision == null;
+        case 'keepers': return p.decision === 'like' || p.decision === 'favorite';
+        case 'rejects': return p.decision === 'dislike' || p.decision === 'hate';
+        default: return true;
+      }
+    })
+    .sort((a, b) => (a.capturedAt ?? '9').localeCompare(b.capturedAt ?? '9'))
+    .map((p) => ({ ...p }));
+}
+
+function groupByGap(list: Photo[], gapSecs: number, minSize = 1): Group[] {
+  const ms = (p: Photo) => (p.capturedAt ? new Date(p.capturedAt).getTime() : NaN);
+  const out: Group[] = [];
+  let start = 0;
+  for (let i = 1; i <= list.length; i++) {
+    const split = i === list.length || Math.abs(ms(list[i]) - ms(list[i - 1])) > gapSecs * 1000;
+    if (split) {
+      if (i - start >= minSize) out.push({ start, end: i });
+      start = i;
+    }
+  }
+  return out;
+}
 
 export const mockApi: CullerApi = {
   async pickSourceFolder() {
@@ -74,9 +163,9 @@ export const mockApi: CullerApi = {
     for (const s of sources) {
       if (photos.some((p) => p.sourceId === s.id)) continue;
       const fresh = makePhotos(s.id, photos.length + 1);
-      for (let done = 0; done <= fresh.length; done += 25) {
+      for (let done = 0; done <= fresh.length; done += 250) {
         listeners.forEach((cb) => cb({ type: 'scanProgress', sourceId: s.id, done: Math.min(done, fresh.length), total: fresh.length }));
-        await sleep(40);
+        await sleep(30);
       }
       photos = photos.concat(fresh);
       added += fresh.length;
@@ -85,17 +174,11 @@ export const mockApi: CullerApi = {
   },
 
   async queue(filter) {
-    return active()
-      .filter((p) => filter.day == null || (filter.day === 'unknown' ? p.capturedAt == null : p.capturedAt?.startsWith(filter.day)))
-      .filter((p) => {
-        switch (filter.status) {
-          case 'undecided': return p.decision == null;
-          case 'keepers': return p.decision === 'like' || p.decision === 'favorite';
-          case 'rejects': return p.decision === 'dislike' || p.decision === 'hate';
-          default: return true;
-        }
-      })
-      .map((p) => ({ ...p }));
+    return query(filter);
+  },
+  async plan(filter): Promise<Plan> {
+    const list = query(filter);
+    return { photos: list, moments: groupByGap(list, 15 * 60), bursts: groupByGap(list, 3, 2) };
   },
   async days() {
     const byDay = new Map<string | null, Photo[]>();
@@ -103,29 +186,60 @@ export const mockApi: CullerApi = {
       const d = p.capturedAt?.slice(0, 10) ?? null;
       byDay.set(d, [...(byDay.get(d) ?? []), p]);
     }
-    return [...byDay.entries()].map(([day, list]): DaySummary => ({ day, stats: statsOf(list) }));
+    return [...byDay.entries()].map(([day, list]): DaySummary => ({ day, stats: statsOf(list) })).sort((a, b) => (a.day ?? '9').localeCompare(b.day ?? '9'));
   },
   async stats() {
     return statsOf(active());
   },
 
   async decide(id, decision) {
-    const p = photos.find((p) => p.id === id)!;
-    undoStack.push([id, p.decision]);
-    p.decision = decision;
+    return this.decideMany([id], decision);
+  },
+  async decideMany(ids, decision) {
+    const batch: [number, Decision | null][] = [];
+    for (const id of ids) {
+      const p = photos.find((p) => p.id === id);
+      if (!p) continue;
+      batch.push([id, p.decision]);
+      p.decision = decision;
+    }
+    if (batch.length) undoStack.push(batch);
   },
   async undo() {
-    const last = undoStack.pop();
-    if (!last) return null;
-    const p = photos.find((p) => p.id === last[0])!;
-    p.decision = last[1];
-    return { ...p };
+    const batch = undoStack.pop();
+    if (!batch) return [];
+    return batch.map(([id, prev]) => {
+      const p = photos.find((p) => p.id === id)!;
+      p.decision = prev;
+      return { ...p };
+    });
+  },
+
+  async tags() {
+    return tags.map((t) => ({ ...t }));
+  },
+  async addTag(name, startDay, endDay, source = 'manual') {
+    const t: Tag = { id: tagId++, name, startDay, endDay, source };
+    tags.push(t);
+    return t;
+  },
+  async removeTag(id) {
+    tags = tags.filter((t) => t.id !== id);
+  },
+  async suggestTags(): Promise<TagSuggestion[]> {
+    const all: TagSuggestion[] = [
+      { name: 'Hike', startDay: '2026-08-01', endDay: '2026-08-03', source: 'gap', reason: 'Shot 3 days in a row', photoCount: 0 },
+      { name: "Maya's wedding", startDay: '2026-09-19', endDay: '2026-09-19', source: 'calendar', reason: 'Calendar event, 2 pm – 11 pm', photoCount: 0 },
+      { name: 'Cabin weekend', startDay: '2026-10-17', endDay: '2026-10-18', source: 'calendar', reason: 'All-day calendar event', photoCount: 0 },
+      { name: 'Nov 1 – Nov 8', startDay: '2026-11-01', endDay: '2026-11-08', source: 'gap', reason: 'Shot 8 days in a row', photoCount: 0 },
+    ];
+    return all.filter((s) => !tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay));
   },
 
   async exportKeepers(dest, options) {
     const keep = active().filter((p) => (p.decision === 'like' && options.includeLikes) || (p.decision === 'favorite' && options.includeFavorites));
-    for (let i = 1; i <= keep.length; i++) {
-      if (i % 10 === 0 || i === keep.length) listeners.forEach((cb) => cb({ type: 'exportProgress', done: i, total: keep.length }));
+    for (let i = 1; i <= keep.length; i += 50) {
+      listeners.forEach((cb) => cb({ type: 'exportProgress', done: Math.min(i, keep.length), total: keep.length }));
       await sleep(5);
     }
     return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [] };
@@ -133,12 +247,16 @@ export const mockApi: CullerApi = {
 
   previewUrl(id) {
     const hue = (id * 47) % 360;
+    const soft = (photos.find((p) => p.id === id)?.sharpness ?? 100) < SOFT_THRESHOLD;
     const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1000" viewBox="0 0 1500 1000">
       <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
         <stop offset="0" stop-color="hsl(${hue},55%,55%)"/><stop offset="1" stop-color="hsl(${(hue + 60) % 360},50%,25%)"/>
-      </linearGradient></defs>
-      <rect width="1500" height="1000" fill="url(#g)"/>
-      <circle cx="${300 + ((id * 97) % 900)}" cy="${250 + ((id * 53) % 400)}" r="160" fill="hsla(${(hue + 180) % 360},70%,75%,.55)"/>
+      </linearGradient>${soft ? '<filter id="b"><feGaussianBlur stdDeviation="14"/></filter>' : ''}</defs>
+      <g ${soft ? 'filter="url(#b)"' : ''}>
+        <rect width="1500" height="1000" fill="url(#g)"/>
+        <circle cx="${300 + ((id * 97) % 900)}" cy="${250 + ((id * 53) % 400)}" r="160" fill="hsla(${(hue + 180) % 360},70%,75%,.55)"/>
+        <path d="M0 760 L260 560 L520 720 L820 500 L1180 720 L1500 600 V1000 H0Z" fill="hsla(${hue},30%,12%,.8)"/>
+      </g>
       <text x="60" y="940" font-family="system-ui" font-size="64" fill="white" opacity=".85">mock photo #${id}</text>
     </svg>`;
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;

@@ -87,7 +87,12 @@ pub struct Photo {
     pub captured_at: Option<NaiveDateTime>,
     pub camera: Option<String>,
     pub decision: Option<Decision>,
+    /// 0–100, higher is sharper. `None` until analysed. See `sharpness.rs`.
+    pub sharpness: Option<u8>,
 }
+
+/// Photos scoring below this are suggested as likely rejects.
+pub const SOFT_THRESHOLD: u8 = 22;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,8 +135,11 @@ pub enum StatusFilter {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
-    /// `YYYY-MM-DD` to restrict to one day; `None` for all days.
+    /// `YYYY-MM-DD` to restrict to one day (or the start of a range); `None` for all days.
     pub day: Option<String>,
+    /// Inclusive end of a day range starting at `day`.
+    #[serde(default)]
+    pub day_to: Option<String>,
     #[serde(default)]
     pub status: StatusFilter,
 }
@@ -165,4 +173,78 @@ impl Default for ExportOptions {
     fn default() -> Self {
         Self { include_likes: true, include_favorites: true }
     }
+}
+
+/// A half-open index range `[start, end)` into a plan's photo list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Group {
+    pub start: usize,
+    pub end: usize,
+}
+
+/// A queue of photos plus how they cluster in time.
+/// `moments` split on gaps of minutes; `bursts` are runs shot seconds apart (size >= 2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Plan {
+    pub photos: Vec<Photo>,
+    pub moments: Vec<Group>,
+    pub bursts: Vec<Group>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TagSource {
+    Manual,
+    Calendar,
+    Place,
+    Gap,
+    Image,
+}
+
+impl TagSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Calendar => "calendar",
+            Self::Place => "place",
+            Self::Gap => "gap",
+            Self::Image => "image",
+        }
+    }
+
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "calendar" => Self::Calendar,
+            "place" => Self::Place,
+            "gap" => Self::Gap,
+            "image" => Self::Image,
+            _ => Self::Manual,
+        }
+    }
+}
+
+/// A named run of days ("Lisbon", "Maya's wedding").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+    /// `YYYY-MM-DD`, inclusive.
+    pub start_day: String,
+    pub end_day: String,
+    pub source: TagSource,
+}
+
+/// A guess at a tag the user can accept or dismiss.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TagSuggestion {
+    pub name: String,
+    pub start_day: String,
+    pub end_day: String,
+    pub source: TagSource,
+    pub reason: String,
+    pub photo_count: u64,
 }

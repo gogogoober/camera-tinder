@@ -9,12 +9,16 @@ pub mod error;
 pub mod identity;
 pub mod metadata;
 pub mod model;
+pub mod moments;
 pub mod ports;
 pub mod preview;
 pub mod scan;
+pub mod sharpness;
 pub mod store;
+pub mod suggest;
 
 pub use api::CullerService;
 pub use error::{CoreError, Result};
 pub use model::*;
 pub use ports::*;
+pub use suggest::CalendarEvent;
