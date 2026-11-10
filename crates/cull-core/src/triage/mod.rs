@@ -246,6 +246,20 @@ mod tests {
     }
 
     #[test]
+    fn a_borderline_reject_issue_stays_a_judge_but_keeps_its_badge() {
+        use crate::analysis::{Exposure, ExposureVerdict};
+        let photos = [photo(1, "2026-01-01T10:00:00"), photo(2, "2026-01-01T11:00:00")];
+        let dark = |id, mean| {
+            let mut a = sharp(id, if id == 1 { SCENE_A } else { SCENE_B });
+            a.exposure = Some(Exposure { mean, shadows_clipped: 0.1, highlights_clipped: 0.0, p05: 0.0, p95: 0.5, verdict: ExposureVerdict::Underexposed });
+            a
+        };
+        let items = run(&photos, vec![dark(1, 0.24), dark(2, 0.05)]);
+        assert_eq!((items[0].question, items[0].hints.clone()), (Question::Judge, vec![IssueKind::Underexposed]), "mildly dark: ask, with a badge");
+        assert_eq!((items[1].question, items[1].reasons.clone()), (Question::Sweep, vec![IssueKind::Underexposed]), "very dark: set aside");
+    }
+
+    #[test]
     fn a_photo_without_results_is_just_a_judge() {
         let photos = [photo(1, "2026-01-01T10:00:00")];
         let items = build(&photos, &HashMap::new());

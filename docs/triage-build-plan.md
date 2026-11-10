@@ -52,7 +52,7 @@ crates/cull-core/src/
     grouping.rs        EDIT GroupingOptions.burst_gap_secs (default None)
   triage/
     mod.rs             NEW  types (TriageItem, Question, GroupKind…), PLAN_VERSION, build()
-    route.rs           NEW  REJECT_KINDS, HINT_KINDS, SWEEP_MIN_SEVERITY, routing per photo
+    route.rs           NEW  REJECT_KINDS, SWEEP_MIN_SEVERITY, routing per photo
   worker.rs            NEW  AnalysisWorker: thread, wake condvar, stop flag
   api.rs               EDIT analyze() on the pipeline; analyze_pending(); worker start/stop/resume;
                             plan() adds triage; log_outcomes(); scan() wraps the sink
