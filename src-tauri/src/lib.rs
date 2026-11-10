@@ -329,5 +329,5 @@ pub fn run() {
             similar_groups
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Camera Tinder");
+        .expect("error while running Darkroom");
 }

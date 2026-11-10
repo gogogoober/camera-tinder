@@ -7,6 +7,7 @@
   import Heatmap from './Heatmap.svelte';
   import Splash from './Splash.svelte';
   import AppShell from './layout/AppShell.svelte';
+  import { withLayoutTransition } from '../transition';
 
   let { onStart }: { onStart: (days: string[]) => void } = $props();
 
@@ -21,6 +22,16 @@
   let cache = $state<PreviewCacheStatus | null>(null);
   let confirmClear = $state(false);
   let advancedOpen = $state(false);
+  /** The right rail shows once there are photos; it slides in (and the main card glides) when that changes. */
+  let rightShown = $state(false);
+  /** Last state asked for: a scan refreshes `days` again before the transition's update runs. */
+  let requested = false;
+  $effect(() => {
+    const want = days.length > 0;
+    if (want === requested) return;
+    requested = want;
+    withLayoutTransition(() => (rightShown = want));
+  });
   let clearing = $state(false);
   let cleared = $state<number | null>(null);
   /** The one source of truth for what gets culled: selected days (`YYYY-MM-DD`). */
@@ -326,7 +337,7 @@
             {#if confirmClear && !blocked}
               <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
                 <b id="clear-q">Clear {size} of preview copies?</b>
-                <p><span class="lbl">Removed</span>The screen-sized copies Camera Tinder made so you can browse quickly.</p>
+                <p><span class="lbl">Removed</span>The screen-sized copies Darkroom made so you can browse quickly.</p>
                 <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
                 <p class="muted">Previews are made again the next time you scan a card.</p>
                 <div class="row">
@@ -366,12 +377,13 @@
   </aside>
 {/snippet}
 
-<AppShell left={sidebar} right={summary}>
+<!-- No right rail until there are photos: the splash gets the full width. -->
+<AppShell left={sidebar} right={rightShown ? summary : undefined}>
   <section class="main">
     {#if days.length || scanning}
     <header>
       <div>
-        <div class="eyebrow">Camera Tinder</div>
+        <div class="eyebrow">Darkroom</div>
         <h1>What do you want to triage?</h1>
       </div>
       {#if compact}
@@ -438,7 +450,7 @@
             <span class="muted small">Name your shoots from Apple Calendar events. Stays on this device.</span>
             <button class="small primary" disabled={connecting} onclick={connectCalendar}>{connecting ? 'Waiting for macOS…' : 'Connect Calendar'}</button>
           {:else}
-            <span class="muted small">Calendar access is off. Turn it on for Camera Tinder in System Settings → Privacy &amp; Security → Calendars.</span>
+            <span class="muted small">Calendar access is off. Turn it on for Darkroom in System Settings → Privacy &amp; Security → Calendars.</span>
           {/if}
         </div>
       {/if}
@@ -491,7 +503,7 @@
     {/if}
     {#if report && !scanning && (report.skippedUnsupported || report.otherFiles)}
       <p class="leftbehind small">
-        <b>Not handled by Camera Tinder, and not exported:</b>
+        <b>Not handled by Darkroom, and not exported:</b>
         {#if report.skippedUnsupported}{formatCount(report.skippedUnsupported)} RAW{/if}{#if report.skippedUnsupported && report.otherFiles}{", "}{/if}{#if report.otherFiles}{formatCount(report.otherFiles)} other (videos etc.){/if}.
         Copy these yourself before you format the card.
       </p>
@@ -501,34 +513,35 @@
 
 {#snippet summary()}
   <div class="summary">
-    {#if range}
-      <div class="sel-h">
-        <span class="eyebrow">Selected</span>
-        <button class="small ghost" onclick={() => (selected = new Set())}>Clear</button>
-      </div>
-      <div class="big">{formatCount(left)} <span class="muted">photos to triage</span></div>
-      <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{shortRange(range.from, range.to)}</b></div>
-      {#if total - left > 0}<div class="kv"><span>Already triaged</span><b>{formatCount(total - left)}</b></div>{/if}
-      <div class="kv"><span>Time at your pace</span><b>~{minutesFor(left)} min</b></div>
-      <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
-      <details class="reset" ontoggle={() => ((resetArmed = false), (resetMessage = null))}>
-        <summary class="muted">Reset these days…</summary>
+    <!-- Same layout with or without a selection: zeros and dashes until days are picked. -->
+    <div class="sel-h">
+      <span class="eyebrow">Selected</span>
+      <button class="small ghost" class:hide={!range} onclick={() => (selected = new Set())}>Clear</button>
+    </div>
+    <div class="big" class:none={!range}>{formatCount(left)} <span class="muted">photos to triage</span></div>
+    <div class="kv"><span>{pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</span><b>{range ? shortRange(range.from, range.to) : '–'}</b></div>
+    <div class="kv"><span>Already triaged</span><b>{range ? formatCount(total - left) : '–'}</b></div>
+    <div class="kv"><span>Time at your pace</span><b>{left ? `~${minutesFor(left)} min` : '–'}</b></div>
+    <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
+    <details class="reset" ontoggle={() => ((resetArmed = false), (resetMessage = null))}>
+      <summary class="muted">Reset these days…</summary>
+      {#if pickedDays.length}
         <p class="muted">For testing: forget what was recorded for the {pickedDays.length === 1 ? 'selected day' : `${pickedDays.length} selected days`} so they can be triaged again. Photos and previews stay; files are never touched.</p>
-        <label><input type="checkbox" bind:checked={resetDecisions} onchange={() => (resetArmed = false)} /> Decisions and their history</label>
-        <label><input type="checkbox" bind:checked={resetAnalysis} onchange={() => (resetArmed = false)} /> Analysis results (computed again)</label>
-        {#if resetArmed}
-          <div class="row">
-            <button class="small danger" onclick={resetSelectedDays}>Reset {pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</button>
-            <button class="small ghost" onclick={() => (resetArmed = false)}>Cancel</button>
-          </div>
-        {:else}
-          <button class="small" disabled={!(resetDecisions || resetAnalysis) || scanning} onclick={() => (resetArmed = true)}>Reset…</button>
-        {/if}
-        {#if resetMessage}<p class="muted">{resetMessage}</p>{/if}
-      </details>
-    {:else}
-      <div class="muted">Pick days on the calendar to begin.</div>
-    {/if}
+      {:else}
+        <p class="muted">Select days on the calendar first.</p>
+      {/if}
+      <label><input type="checkbox" bind:checked={resetDecisions} onchange={() => (resetArmed = false)} /> Decisions and their history</label>
+      <label><input type="checkbox" bind:checked={resetAnalysis} onchange={() => (resetArmed = false)} /> Analysis results (computed again)</label>
+      {#if resetArmed}
+        <div class="row">
+          <button class="small danger" onclick={resetSelectedDays}>Reset {pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</button>
+          <button class="small ghost" onclick={() => (resetArmed = false)}>Cancel</button>
+        </div>
+      {:else}
+        <button class="small" disabled={!pickedDays.length || !(resetDecisions || resetAnalysis) || scanning} onclick={() => (resetArmed = true)}>Reset…</button>
+      {/if}
+      {#if resetMessage}<p class="muted">{resetMessage}</p>{/if}
+    </details>
   </div>
 {/snippet}
 
@@ -586,6 +599,8 @@
   button.pick.some { border-style: dashed; }
   button.pick.all { background: var(--text); color: var(--bg); border-color: var(--text); }
   .sel-h { display: flex; justify-content: space-between; align-items: center; }
+  .sel-h .hide { visibility: hidden; }
+  .big.none { color: var(--muted); }
   .chev { width: 1.4em; flex: none; color: var(--muted); font-size: 1.1em; text-align: left; }
   .count { flex: none; }
   .sug.child { padding-left: 2.8em; }
