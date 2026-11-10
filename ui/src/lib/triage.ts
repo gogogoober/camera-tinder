@@ -106,3 +106,18 @@ export function stepFrame(s: Structure, i: number, dir: 1 | -1): number | null {
 export function setAsideLeft(s: Structure, photos: Decided[]): number[] {
   return photos.map((_, i) => i).filter((i) => s.setAside[i] && !photos[i].decision);
 }
+
+// ---- Rescue ------------------------------------------------------------------------------
+
+/** What a click on a Rescue photo cycles through: ✓ Keep → ★ Favorite → ⊘ Hate → clear. */
+export type RescueMark = 'like' | 'favorite' | 'hate';
+const RESCUE_CYCLE: (RescueMark | undefined)[] = [undefined, 'like', 'favorite', 'hate'];
+
+export function nextRescueMark(mark: RescueMark | undefined): RescueMark | undefined {
+  return RESCUE_CYCLE[(RESCUE_CYCLE.indexOf(mark) + 1) % RESCUE_CYCLE.length];
+}
+
+/** A chip row: nothing selected means no filter (everything shows); otherwise a photo must match one. */
+export function matchesChips<T>(selected: Set<T>, value: T | undefined): boolean {
+  return selected.size === 0 || (value !== undefined && selected.has(value));
+}

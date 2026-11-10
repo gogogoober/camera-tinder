@@ -300,6 +300,7 @@
         <button class:on={timeline === 'strip'} onclick={() => (timeline = 'strip')}>Strip</button>
       </span>
     {/if}
+    {#if setAsideCount}<button onclick={onRescue}>Rescue {setAsideCount}</button>{/if}
     <button onclick={onReview}>Review</button>
   </header>
 {/snippet}

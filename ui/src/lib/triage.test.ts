@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { firstUndecidedFrame, isStop, nextStop, nextUndecidedFrame, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { firstUndecidedFrame, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -51,4 +51,18 @@ test('frames: first undecided, next undecided inside the group, and stepping wit
 test('set-aside photos left for the end', () => {
   assert.deepEqual(setAsideLeft(s, photos()), [1, 6]);
   assert.deepEqual(setAsideLeft(s, photos([1])), [6]);
+});
+
+test('rescue marks cycle keep → favorite → hate → clear', () => {
+  assert.equal(nextRescueMark(undefined), 'like');
+  assert.equal(nextRescueMark('like'), 'favorite');
+  assert.equal(nextRescueMark('favorite'), 'hate');
+  assert.equal(nextRescueMark('hate'), undefined);
+});
+
+test('an empty chip row shows everything; a selected row narrows', () => {
+  assert.equal(matchesChips(new Set<string>(), 'a'), true);
+  assert.equal(matchesChips(new Set(['a']), 'a'), true);
+  assert.equal(matchesChips(new Set(['a']), 'b'), false);
+  assert.equal(matchesChips(new Set(['a']), undefined), false);
 });

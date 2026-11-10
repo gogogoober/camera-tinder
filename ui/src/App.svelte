@@ -2,10 +2,11 @@
   import { isMock } from './lib/api';
   import Home from './lib/components/Home.svelte';
   import Cull from './lib/components/Cull.svelte';
+  import Rescue from './lib/components/Rescue.svelte';
   import Review from './lib/components/Review.svelte';
   import ExportPanel from './lib/components/ExportPanel.svelte';
 
-  type View = 'home' | 'cull' | 'review' | 'export';
+  type View = 'home' | 'cull' | 'rescue' | 'review' | 'export';
   type Range = { from: string; to: string };
 
   let view = $state<View>('home');
@@ -28,8 +29,10 @@
   <Home onStart={start} />
 {:else if view === 'cull' && range}
   {#key focusId}
-    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} onRescue={() => (view = 'review')} />
+    <Cull {range} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} onRescue={() => (view = 'rescue')} />
   {/key}
+{:else if view === 'rescue' && range}
+  <Rescue {range} onBack={() => (view = 'cull')} onDone={() => (view = 'review')} />
 {:else if view === 'review'}
   <Review
     {range}
