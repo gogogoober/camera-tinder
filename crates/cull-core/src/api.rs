@@ -354,7 +354,7 @@ impl CullerService {
         *self.calendar.write().unwrap() = source;
     }
 
-    /// Groups of days worth offering: calendar events and runs of days from capture times.
+    /// Groups of days worth offering: calendar events only (nothing is guessed from capture times).
     /// `dismissed` holds row ids (`TagSuggestion::id`) to leave out; the rest is regrouped.
     pub fn suggest_tags(&self, dismissed: &[String]) -> Result<Vec<TagSuggestion>> {
         let days = self.days()?;
@@ -363,7 +363,6 @@ impl CullerService {
         if let (Some(first), Some(last), Some(cal)) = (dated.first(), dated.last(), self.calendar.read().unwrap().clone()) {
             out.extend(suggest::from_calendar(&days, &cal.events(first, last)?, dismissed));
         }
-        out.extend(suggest::from_gaps(&days, dismissed));
         Ok(out)
     }
 

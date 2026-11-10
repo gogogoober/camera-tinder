@@ -206,6 +206,15 @@
     }
     selected = next;
   }
+  /** Every day that has photos, undated ones included: what the "All" row selects. */
+  const allDays = $derived(days.filter((d) => d.stats.total > 0).map((d) => d.day ?? 'unknown'));
+  const allPick = $derived.by((): 'none' | 'some' | 'all' => {
+    const n = allDays.filter((d) => selected.has(d)).length;
+    return n === 0 ? 'none' : n === allDays.length ? 'all' : 'some';
+  });
+  function toggleAll() {
+    selected = allPick === 'all' ? new Set() : new Set(allDays);
+  }
   /** Which of a tag's days (that still have photos) are selected. */
   function tagState(t: SavedTag): 'none' | 'some' | 'all' {
     const ds = t.days.filter((d) => days.some((x) => (x.day ?? 'unknown') === d && x.stats.total > 0));
@@ -513,9 +522,20 @@
         </div>
       {/if}
 
-      {#if suggestions.length}
+      {#if allDays.length || suggestions.length}
         <div class="group">
-          <span class="eyebrow">Suggestions · {suggestions.length}</span>
+          {#if allDays.length}
+            <div class="sug allrow">
+              <span class="nm"><b>All</b></span>
+              <span class="mono small">{allDays.length === 1 ? '1 day' : `${allDays.length} days`}</span>
+              <span class="muted small why">Everything, {formatCount(days.reduce((n, d) => n + d.stats.total, 0))} photos</span>
+              <span class="btns">
+                <button class="small pick {allPick}" aria-pressed={allPick === 'all'} onclick={toggleAll}>{allPick === 'all' ? '✓ ' : ''}{PICK_LABEL[allPick]}</button>
+              </span>
+            </div>
+            <hr class="alldiv" />
+          {/if}
+          {#if suggestions.length}<span class="eyebrow">Suggestions · {suggestions.length}</span>{/if}
           {#snippet sugRow(s: TagSuggestion, child: boolean)}
             {@const open = expanded.has(s.id)}
             {@const pick = pickState(s)}
@@ -651,6 +671,8 @@
   .newtag { display: flex; gap: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
   .newtag input { flex: 1; min-width: 0; }
   .sug { display: grid; grid-template-columns: minmax(0, 1.7fr) 120px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; border-top: 1px solid var(--border); }
+  .allrow { border-top: 0; }
+  .alldiv { border: 0; border-top: 1px solid var(--border-strong, var(--border)); margin: 6px 0 12px; }
   .nm { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
   .nm b { min-width: 0; }
   .names { display: grid; gap: 3px; min-width: 0; padding: 3px 0; }

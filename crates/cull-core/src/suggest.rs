@@ -1,27 +1,12 @@
 //! Tag suggestions without AI.
 //!
-//! - **Time gaps:** runs of consecutive days with photos become "trip" guesses.
-//!   A day with far more photos than usual becomes a "busy day" guess.
 //! - **Calendar:** events from a platform `CalendarSource` that overlap days
 //!   with photos become suggestions named after the event.
 //!
+//! No grouping is guessed from capture times: the only invented group is "All", which lives in the UI.
 //! GPS place names and image-statistics hints (night, beach) plug in here later.
 
-use chrono::{Datelike, Duration, NaiveDate};
-
 use crate::model::*;
-
-const DAY_FMT: &str = "%Y-%m-%d";
-const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-fn parse(day: &str) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(day, DAY_FMT).ok()
-}
-
-fn label(a: NaiveDate, b: NaiveDate) -> String {
-    let f = |d: NaiveDate| format!("{} {}", MONTHS[d.month0() as usize], d.day());
-    if a == b { f(a) } else { format!("{} – {}", f(a), f(b)) }
-}
 
 /// A calendar entry reduced to the days it covers.
 #[derive(Debug, Clone)]
@@ -32,62 +17,9 @@ pub struct CalendarEvent {
 }
 
 /// Row ids. Multi-day calendar rows are keyed by their days alone (events on the same days share
-/// one row); single-day rows by day and title; gap rows by their days.
-fn gap_id(a: &str, b: &str) -> String {
-    format!("gap|{a}|{b}")
-}
+/// one row); single-day rows by day and title.
 fn calendar_id(e: &CalendarEvent) -> String {
     if e.start_day == e.end_day { format!("cal|{}|{}|{}", e.start_day, e.end_day, e.title) } else { format!("cal|{}|{}", e.start_day, e.end_day) }
-}
-
-pub fn from_gaps(days: &[DaySummary], dismissed: &[String]) -> Vec<TagSuggestion> {
-    let mut dated: Vec<(NaiveDate, u64)> = days
-        .iter()
-        .filter_map(|d| Some((parse(d.day.as_deref()?)?, d.stats.total)))
-        .filter(|(_, n)| *n > 0)
-        .collect();
-    dated.sort_by_key(|(d, _)| *d);
-    if dated.is_empty() {
-        return vec![];
-    }
-
-    let mut counts: Vec<u64> = dated.iter().map(|(_, n)| *n).collect();
-    counts.sort_unstable();
-    let median = counts[counts.len() / 2].max(1);
-
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < dated.len() {
-        let mut j = i;
-        while j + 1 < dated.len() && dated[j + 1].0 - dated[j].0 == Duration::days(1) {
-            j += 1;
-        }
-        let (a, b) = (dated[i].0, dated[j].0);
-        let total: u64 = dated[i..=j].iter().map(|(_, n)| n).sum();
-        let span = j - i + 1;
-        let (name, reason) = if span >= 2 {
-            (label(a, b), format!("Shot {span} days in a row, {total} photos"))
-        } else if total >= median * 3 && total >= 30 {
-            (label(a, b), format!("Busy day: {total} photos, about {}× your usual", total / median))
-        } else {
-            i = j + 1;
-            continue;
-        };
-        out.push(TagSuggestion {
-            id: gap_id(&a.format(DAY_FMT).to_string(), &b.format(DAY_FMT).to_string()),
-            name,
-            start_day: a.format(DAY_FMT).to_string(),
-            end_day: b.format(DAY_FMT).to_string(),
-            source: TagSource::Gap,
-            reason,
-            photo_count: total,
-            names: vec![],
-            children: vec![],
-        });
-        i = j + 1;
-    }
-    out.retain(|s| !dismissed.contains(&s.id));
-    out
 }
 
 /// Calendar events as a two-level list for the Pick screen:
@@ -158,30 +90,6 @@ mod tests {
 
     fn day(d: &str, n: u64) -> DaySummary {
         DaySummary { day: Some(d.into()), stats: Stats { total: n, undecided: n, ..Default::default() } }
-    }
-
-    #[test]
-    fn finds_trips_and_busy_days() {
-        let days = [
-            day("2026-08-01", 120),
-            day("2026-08-02", 90),
-            day("2026-08-03", 60),
-            day("2026-08-10", 8),
-            day("2026-08-20", 12),
-            day("2026-09-19", 300),
-        ];
-        let s = from_gaps(&days, &[]);
-        assert_eq!(s.len(), 2);
-        assert_eq!((s[0].start_day.as_str(), s[0].end_day.as_str()), ("2026-08-01", "2026-08-03"));
-        assert_eq!(s[0].photo_count, 270);
-        assert_eq!(s[1].start_day, "2026-09-19");
-    }
-
-    #[test]
-    fn skips_dismissed_runs() {
-        let days = [day("2026-08-01", 50), day("2026-08-02", 50)];
-        assert_eq!(from_gaps(&days, &[]).len(), 1);
-        assert!(from_gaps(&days, &["gap|2026-08-01|2026-08-02".into()]).is_empty());
     }
 
     #[test]
