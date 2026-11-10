@@ -1,4 +1,4 @@
-//! Group photos by capture time: moments (minutes apart) and bursts (seconds apart).
+//! Group photos by capture time: moments (minutes apart). `BURST_GAP_SECS` is the burst gap triage uses.
 
 use chrono::NaiveDateTime;
 
@@ -29,14 +29,6 @@ pub fn group_by_gap(times: &[Option<NaiveDateTime>], gap_secs: i64) -> Vec<Group
     out
 }
 
-/// Bursts are the groups from `group_by_gap` that hold at least two photos.
-pub fn bursts(times: &[Option<NaiveDateTime>]) -> Vec<Group> {
-    group_by_gap(times, BURST_GAP_SECS)
-        .into_iter()
-        .filter(|g| g.end - g.start >= 2 && times[g.start].is_some())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -46,7 +38,7 @@ mod tests {
     }
 
     #[test]
-    fn splits_moments_and_finds_bursts() {
+    fn splits_moments() {
         let times = [
             t("2026-08-01T10:00:00"),
             t("2026-08-01T10:00:01"),
@@ -58,7 +50,6 @@ mod tests {
         ];
         let moments = group_by_gap(&times, MOMENT_GAP_SECS);
         assert_eq!(moments, vec![Group { start: 0, end: 4 }, Group { start: 4, end: 5 }, Group { start: 5, end: 7 }]);
-        assert_eq!(bursts(&times), vec![Group { start: 0, end: 3 }]);
     }
 
     #[test]

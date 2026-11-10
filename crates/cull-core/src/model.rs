@@ -204,13 +204,12 @@ pub struct Group {
 }
 
 /// A queue of photos plus how they cluster in time.
-/// `moments` split on gaps of minutes; `bursts` are runs shot seconds apart (size >= 2).
+/// `moments` split on gaps of minutes; bursts and near-duplicates are in `triage` (groups).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Plan {
     pub photos: Vec<Photo>,
     pub moments: Vec<Group>,
-    pub bursts: Vec<Group>,
     /// One item per photo, same order: which question each photo gets (see `triage`).
     pub triage: Vec<crate::triage::TriageItem>,
     pub triage_version: String,

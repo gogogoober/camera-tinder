@@ -179,7 +179,8 @@
     enqueue(() => (ids.length === 1 ? api.decide(ids[0], d) : api.decideMany(ids, d)));
     // Log what triage suggested next to what was decided, to tune the suggestions later.
     const outcomes = list.filter((i) => triage[i]).map((i) => ({ item: triage[i], planVersion: triageVersion, place, decision: d }));
-    if (outcomes.length) enqueue(() => api.logOutcomes(outcomes));
+    // A failed log must not look like a failed decision: the decision is saved either way.
+    if (outcomes.length) enqueue(() => api.logOutcomes(outcomes).catch((e) => console.warn('outcome log failed', e)));
     flash = { key: ghostKey++, d };
     coached = true;
   }
@@ -195,7 +196,7 @@
       selection = null;
       // Set-aside photos are left for Rescue; a range decision doesn't touch them.
       const all = Array.from({ length: sel.to - sel.from + 1 }, (_, k) => sel.from + k).filter((i) => !s.setAside[i]);
-      apply(all, d);
+      apply(all, d, 'bulk');
       idx = land(nextStop(s, photos, sel.to));
       return;
     }
@@ -213,7 +214,7 @@
     if (!g) return;
     const list: number[] = [];
     for (let i = g.start; i < g.end; i++) if (!photos[i].decision && !s.setAside[i]) list.push(i);
-    apply(list, d);
+    apply(list, d, 'bulk');
     opened = null;
     idx = land(nextStop(s, photos, g.end - 1));
   }

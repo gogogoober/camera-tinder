@@ -118,6 +118,21 @@ fn now() -> String {
     Local::now().naive_local().format(TIME_FMT).to_string()
 }
 
+/// SQL condition (on `p.captured_at`) for "taken on one of `days`", with its arguments.
+/// `"unknown"` = no capture date; an empty list matches nothing. Shared by `Filter::days` and
+/// `reset_days`, so what can be reset is exactly what the triage screen shows for those days.
+fn days_condition(days: &[String]) -> (String, Vec<String>) {
+    let dated: Vec<String> = days.iter().filter(|d| *d != "unknown").cloned().collect();
+    let mut any = Vec::new();
+    if !dated.is_empty() {
+        any.push(format!("substr(p.captured_at, 1, 10) IN ({})", placeholders(dated.len())));
+    }
+    if days.iter().any(|d| d == "unknown") {
+        any.push("p.captured_at IS NULL".to_string());
+    }
+    if any.is_empty() { ("0".to_string(), Vec::new()) } else { (format!("({})", any.join(" OR ")), dated) }
+}
+
 fn placeholders(n: usize) -> String {
     vec!["?"; n].join(",")
 }
@@ -274,21 +289,10 @@ impl Store {
     /// Every photo taken on one of `days` (`YYYY-MM-DD`, or `"unknown"` for photos without a capture
     /// date, as in `Filter::days`), in the whole library.
     pub fn photo_ids_on_days(&self, days: &[String]) -> Result<Vec<PhotoId>> {
-        let mut ids = Vec::new();
-        if days.iter().any(|d| d == "unknown") {
-            let mut stmt = self.conn.prepare("SELECT id FROM photos WHERE captured_at IS NULL ORDER BY id")?;
-            for id in stmt.query_map([], |r| r.get::<_, PhotoId>(0))? {
-                ids.push(id?);
-            }
-        }
-        let dated: Vec<&String> = days.iter().filter(|d| *d != "unknown").collect();
-        for chunk in dated.chunks(500) {
-            let mut stmt = self.conn.prepare(&format!("SELECT id FROM photos WHERE substr(captured_at, 1, 10) IN ({}) ORDER BY id", placeholders(chunk.len())))?;
-            for id in stmt.query_map(params_from_iter(chunk), |r| r.get::<_, PhotoId>(0))? {
-                ids.push(id?);
-            }
-        }
-        Ok(ids)
+        let (condition, args) = days_condition(days);
+        let mut stmt = self.conn.prepare(&format!("SELECT p.id FROM photos p WHERE {condition} ORDER BY p.id"))?;
+        let ids = stmt.query_map(params_from_iter(&args), |r| r.get::<_, PhotoId>(0))?;
+        Ok(ids.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Remove decisions, decision history and logged outcomes of `ids`. Returns the decisions removed.
@@ -367,21 +371,9 @@ impl Store {
             StatusFilter::Rejects => sql.push_str(" AND d.decision IN ('dislike', 'hate')"),
         }
         if let Some(days) = &filter.days {
-            let unknown = days.iter().any(|d| d == "unknown");
-            let dated: Vec<&String> = days.iter().filter(|d| *d != "unknown").collect();
-            let mut any = Vec::new();
-            if !dated.is_empty() {
-                any.push(format!("substr(p.captured_at, 1, 10) IN ({})", placeholders(dated.len())));
-                args.extend(dated.into_iter().cloned());
-            }
-            if unknown {
-                any.push("p.captured_at IS NULL".to_string());
-            }
-            if any.is_empty() {
-                sql.push_str(" AND 0");
-            } else {
-                sql.push_str(&format!(" AND ({})", any.join(" OR ")));
-            }
+            let (condition, day_args) = days_condition(days);
+            sql.push_str(&format!(" AND {condition}"));
+            args.extend(day_args);
         }
         sql.push_str(" ORDER BY p.captured_at IS NULL, p.captured_at, p.file_name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -568,6 +560,23 @@ mod tests {
         // Tables added later (analysis, outcomes) are created on open.
         store.insert_outcomes(&[]).unwrap();
         assert_eq!(store.forget_analysis(&[1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn reset_picks_exactly_the_photos_the_days_filter_shows() {
+        let store = Store::open_in_memory().unwrap();
+        store.upsert_source("/card", "card").unwrap();
+        photo(&store, "1", "/card", "1.JPG", Some("2026-07-01T10:00:00"));
+        photo(&store, "2", "/card", "2.JPG", Some("2026-07-02T23:59:59"));
+        photo(&store, "3", "/card", "3.JPG", Some("2026-07-04T00:00:00"));
+        photo(&store, "4", "/card", "4.JPG", None);
+        let src = vec!["/card".to_string()];
+        for days in [vec![], vec!["2026-07-01"], vec!["2026-07-02", "2026-07-04"], vec!["unknown"], vec!["2026-07-03"], vec!["2026-07-01", "unknown"]] {
+            let days: Vec<String> = days.into_iter().map(String::from).collect();
+            let mut shown: Vec<PhotoId> = store.query(&src, &Filter { days: Some(days.clone()), status: StatusFilter::All }).unwrap().iter().map(|p| p.id).collect();
+            shown.sort();
+            assert_eq!(store.photo_ids_on_days(&days).unwrap(), shown, "{days:?}");
+        }
     }
 
     #[test]

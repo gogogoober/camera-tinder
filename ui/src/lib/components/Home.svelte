@@ -100,9 +100,11 @@
   let resetArmed = $state(false);
   let resetMessage = $state<string | null>(null);
 
-  // A new selection starts clean: no armed button, no message about other days.
+  // A new selection starts clean: no armed button, no message about other days. Keyed on the days'
+  // text, not the array: refresh() rebuilds the array after a reset, and that must not wipe its message.
+  const pickedKey = $derived(pickedDays.join());
   $effect(() => {
-    void pickedDays.join();
+    void pickedKey;
     resetArmed = false;
     resetMessage = null;
   });

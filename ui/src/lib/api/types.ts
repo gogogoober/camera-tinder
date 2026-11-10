@@ -115,7 +115,8 @@ export interface TriageItem {
 }
 
 /** Where a suggested photo was decided. */
-export type Place = 'timeline' | 'openedEarly' | 'rescue';
+/** `bulk` = a whole moment or drag-selected range decided at once (not a per-photo judgement). */
+export type Place = 'timeline' | 'openedEarly' | 'rescue' | 'bulk';
 
 /** One decision on a photo triage had an opinion about; logged to measure the suggestions. */
 export interface OutcomeEntry {
@@ -132,8 +133,6 @@ export interface Plan {
   triageVersion: string;
   /** Photos split by gaps of minutes. */
   moments: Group[];
-  /** Runs shot seconds apart (two or more photos). */
-  bursts: Group[];
 }
 
 export type TagSource = 'manual' | 'calendar' | 'place' | 'gap' | 'image';

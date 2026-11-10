@@ -15,7 +15,7 @@ use crate::analysis::{
 };
 use crate::error::{CoreError, Result};
 use crate::model::*;
-use crate::moments::{MOMENT_GAP_SECS, bursts, group_by_gap};
+use crate::moments::{MOMENT_GAP_SECS, group_by_gap};
 use crate::ports::{CalendarSource, EventSink, ExportItem, ExportTarget, MediaSource};
 use crate::preview::{MASTER_EDGE, PreviewCache};
 use crate::scan::scan_source;
@@ -201,7 +201,7 @@ impl CullerService {
         self.store.lock().unwrap().query(&self.source_ids(), filter)
     }
 
-    /// The queue plus how it clusters in time (moments and bursts), for the cull screen.
+    /// The queue plus how it clusters in time (moments) and what to ask about each photo (triage).
     pub fn plan(&self, filter: &Filter) -> Result<Plan> {
         let photos = self.queue(filter)?;
         let times: Vec<_> = photos.iter().map(|p| p.captured_at).collect();
@@ -212,7 +212,6 @@ impl CullerService {
         let triage = crate::triage::build(&photos, &analyses);
         Ok(Plan {
             moments: group_by_gap(&times, MOMENT_GAP_SECS),
-            bursts: bursts(&times),
             triage,
             triage_version: crate::triage::PLAN_VERSION.to_string(),
             photos,

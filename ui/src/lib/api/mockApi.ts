@@ -236,7 +236,7 @@ export const mockApi: CullerApi = {
   async plan(filter): Promise<Plan> {
     const list = query(filter);
     const bursts = groupByGap(list, 3, 2);
-    return { photos: list, moments: groupByGap(list, 15 * 60), bursts, triage: mockTriage(list, bursts), triageVersion: 'mock' };
+    return { photos: list, moments: groupByGap(list, 15 * 60), triage: mockTriage(list, bursts), triageVersion: 'mock' };
   },
   async days() {
     const byDay = new Map<string | null, Photo[]>();

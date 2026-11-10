@@ -45,7 +45,7 @@
   async function load() {
     try {
       const status: StatusFilter = 'all';
-      photos = (await api.plan({ days: pickedDays, status })).photos;
+      photos = await api.queue({ days: pickedDays, status });
     } catch (e) {
       error = String(e);
     }

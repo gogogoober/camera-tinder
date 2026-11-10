@@ -151,7 +151,7 @@
         const ids = rows.filter((r) => finalDecision(r) === d).map((r) => r.photo.id);
         if (ids.length) await api.decideMany(ids, d);
       }
-      await api.logOutcomes(outcomes);
+      await api.logOutcomes(outcomes).catch((e) => console.warn('outcome log failed', e)); // decisions are saved either way
       remembered.clear();
       onDone();
     } catch (e) {

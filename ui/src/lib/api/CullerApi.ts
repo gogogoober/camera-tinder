@@ -46,7 +46,7 @@ export interface CullerApi {
   cancelScan(): Promise<void>;
 
   queue(filter: Filter): Promise<Photo[]>;
-  /** The queue plus its moments and bursts, for the cull screen. */
+  /** The queue plus its moments and triage (bursts, set-aside photos), for the triage screen. */
   plan(filter: Filter): Promise<Plan>;
   days(): Promise<DaySummary[]>;
   stats(): Promise<Stats>;

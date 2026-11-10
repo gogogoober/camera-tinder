@@ -91,6 +91,9 @@ pub enum Place {
     OpenedEarly,
     /// In the Rescue grid at the end.
     Rescue,
+    /// Many photos at once (a whole moment, or a drag-selected range): not a per-photo judgement,
+    /// so tuning can leave these rows out.
+    Bulk,
 }
 
 impl Place {
@@ -99,6 +102,7 @@ impl Place {
             Self::Timeline => "timeline",
             Self::OpenedEarly => "openedEarly",
             Self::Rescue => "rescue",
+            Self::Bulk => "bulk",
         }
     }
 }
