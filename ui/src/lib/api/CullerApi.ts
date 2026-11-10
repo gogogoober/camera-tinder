@@ -78,6 +78,13 @@ export interface CullerApi {
   analyzerInfo(): Promise<AnalyzerInfo[]>;
   /** Compute missing/stale results (emits `analysisProgress`). Results persist. */
   analyzePhotos(request?: AnalyzeRequest): Promise<AnalyzeReport>;
+  /**
+   * Analysis also runs by itself in the background as photos are scanned (`analysisProgress` events).
+   * Stop applies before the next step and stays until `resumeAnalysis` or an app restart.
+   */
+  stopAnalysis(): Promise<void>;
+  resumeAnalysis(): Promise<void>;
+  analysisStopped(): Promise<boolean>;
   /** Everything stored for one photo, including its similarity embedding. */
   photoAnalysis(id: number): Promise<PhotoAnalysis>;
   /** Stored results for a filter, queue order, without embeddings. */

@@ -200,6 +200,22 @@ async fn analyze_photos(app: AppHandle, state: State<'_, AppState>, request: ana
     blocking(move || svc.analyze(&request, &TauriSink(app))).await
 }
 
+/// Stop background analysis before its next step. Stays stopped until `resume_analysis` or a restart.
+#[tauri::command]
+fn stop_analysis(state: State<'_, AppState>) {
+    state.0.stop_analysis();
+}
+
+#[tauri::command]
+fn resume_analysis(state: State<'_, AppState>) {
+    state.0.resume_analysis();
+}
+
+#[tauri::command]
+fn analysis_stopped(state: State<'_, AppState>) -> bool {
+    state.0.analysis_stopped()
+}
+
 #[tauri::command]
 async fn photo_analysis(state: State<'_, AppState>, id: PhotoId) -> CmdResult<analysis::PhotoAnalysis> {
     let svc = state.0.clone();
@@ -267,6 +283,8 @@ pub fn run() {
             // ImageIO previews: decodes straight at preview size (several times faster than the portable path).
             #[cfg(target_os = "macos")]
             svc.set_preview_maker(Arc::new(cull_platform_apple::imageio::ImageIoPreviewMaker));
+            // Analyse every photo in the background as the scan saves it (and resume unfinished work now).
+            svc.start_analysis_worker(Arc::new(TauriSink(app.handle().clone())));
             app.manage(AppState(svc));
             Ok(())
         })
@@ -299,6 +317,9 @@ pub fn run() {
             export_keepers,
             analyzer_info,
             analyze_photos,
+            stop_analysis,
+            resume_analysis,
+            analysis_stopped,
             photo_analysis,
             photo_analyses,
             photo_issues,

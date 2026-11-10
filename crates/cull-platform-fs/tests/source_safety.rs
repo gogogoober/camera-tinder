@@ -476,6 +476,26 @@ fn analysis_reads_cached_previews_only_never_the_card() {
 }
 
 #[test]
+fn background_analysis_during_a_scan_adds_no_reads_of_the_card() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    make_card(&card);
+    let src = Counting::new(&card);
+    let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+    svc.start_analysis_worker(Arc::new(NullSink));
+    svc.add_source(src.clone()).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let start = std::time::Instant::now();
+    while !svc.analyses(&Filter::default()).unwrap().iter().all(|a| a.blur.is_some()) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30), "analysis never finished");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let mut opened = src.take();
+    opened.sort();
+    assert_eq!(opened, ["DCIM/100NIKON/DSC_0001.JPG", "DCIM/100NIKON/DSC_0002.JPG", "DCIM/100NIKON/DSC_0003.JPG", "DCIM/101FUJI/DSCF0001.JPG"], "each original opened once, by the scan only");
+}
+
+#[test]
 fn clearing_previews_waits_until_external_sources_are_unplugged() {
     // The platform decides what "external" means; here the test plays the platform:
     // the card is external (blocks while plugged in), the Pictures folder is internal.

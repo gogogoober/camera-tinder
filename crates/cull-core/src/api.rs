@@ -27,6 +27,20 @@ const ANALYZE_THREADS: usize = 4;
 /// Photos per progress event / database transaction.
 const ANALYZE_BATCH: usize = 16;
 
+/// Wakes background analysis whenever the scan has saved a batch of photos.
+struct WakeOnSaved<'a> {
+    inner: &'a dyn EventSink,
+    svc: &'a CullerService,
+}
+impl EventSink for WakeOnSaved<'_> {
+    fn emit(&self, event: crate::ports::CoreEvent) {
+        if matches!(event, crate::ports::CoreEvent::ScanSaved { .. }) {
+            self.svc.wake_analysis();
+        }
+        self.inner.emit(event);
+    }
+}
+
 pub struct CullerService {
     store: Mutex<Store>,
     /// The app's own folders (database folder, preview cache): never scanned as photos.
@@ -38,6 +52,8 @@ pub struct CullerService {
     undo: Mutex<Vec<Vec<(PhotoId, Option<Decision>)>>>,
     calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
     analyzers: RwLock<Arc<Analyzers>>,
+    /// Background analysis: wake signal and the Stop flag (see `worker.rs`).
+    pub(crate) analysis: Arc<crate::worker::AnalysisControl>,
     /// One scan at a time.
     scanning: Mutex<()>,
     /// Set by `cancel_scan`; the running scan stops after the photos it is reading.
@@ -67,6 +83,7 @@ impl CullerService {
             undo: Mutex::new(Vec::new()),
             calendar: RwLock::new(None),
             analyzers: RwLock::new(Arc::new(Analyzers::rust())),
+            analysis: crate::worker::AnalysisControl::new(),
             scanning: Mutex::new(()),
             scan_cancel: AtomicBool::new(false),
         })
@@ -148,6 +165,7 @@ impl CullerService {
             .filter(|s| req.source_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == s.id())))
             .cloned()
             .collect();
+        let sink = &WakeOnSaved { inner: sink, svc: self };
         let mut total = ScanReport::default();
         for s in sources {
             if self.scan_cancel.load(Ordering::Relaxed) {
@@ -162,6 +180,8 @@ impl CullerService {
             total.failed.extend(r.failed);
             total.cancelled |= r.cancelled;
         }
+        // Previews backfilled at the end may have made more photos analysable.
+        self.wake_analysis();
         Ok(total)
     }
 
@@ -330,6 +350,8 @@ impl CullerService {
     /// Compute (and store) analysis results. Only missing or stale results are computed
     /// unless `force`. Blocking and CPU-heavy: call it off the UI thread.
     ///
+    /// Returns early (keeping what's saved) while analysis is stopped (`stop_analysis`).
+    ///
     /// Reads only the cached master previews, never the originals: a photo without one is
     /// reported in `failed` (a later scan rebuilds the preview).
     pub fn analyze(&self, req: &AnalyzeRequest, sink: &dyn EventSink) -> Result<AnalyzeReport> {
@@ -352,16 +374,22 @@ impl CullerService {
         let mut done = 0u64;
         sink.emit(crate::ports::CoreEvent::AnalysisProgress { done, total });
         let pool = rayon::ThreadPoolBuilder::new().num_threads(ANALYZE_THREADS).build().map_err(|e| CoreError::Other(e.to_string()))?;
-        let stop = AtomicBool::new(false);
+        let stop = &self.analysis.stop;
         for batch in todo.chunks(ANALYZE_BATCH) {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             let results: Vec<std::result::Result<(PhotoId, Vec<StepResult>), (PhotoId, String)>> = pool.install(|| {
                 batch
                     .par_iter()
                     .map(|(photo, steps)| {
+                        if stop.load(Ordering::Relaxed) {
+                            return Ok((photo.id, Vec::new()));
+                        }
                         // No source: a photo without a cached master is skipped, never read from the card.
                         let bytes = self.previews.get(photo, None, MASTER_EDGE).map_err(|e| (photo.id, e.to_string()))?;
                         let img = AnalysisImage::from_jpeg(bytes);
-                        Ok((photo.id, run_photo(&pipeline, steps, photo.id, &img, &stop).0))
+                        Ok((photo.id, run_photo(&pipeline, steps, photo.id, &img, stop).0))
                     })
                     .collect()
             });
@@ -369,6 +397,7 @@ impl CullerService {
             store.transaction(|s| {
                 for r in &results {
                     match r {
+                        Ok((_, step_results)) if step_results.is_empty() => {} // stopped before this photo
                         Ok((id, step_results)) => {
                             report.kind_errors += step_results.iter().filter(|x| x.result.is_err()).count() as u64;
                             report.analyzed += 1;

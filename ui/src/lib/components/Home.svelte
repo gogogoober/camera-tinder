@@ -28,6 +28,10 @@
   let tagName = $state('');
   let report = $state<ScanReport | null>(null);
   let scanning = $state(false);
+  // Background analysis (runs by itself while photos are scanned). Stop is sticky until Resume.
+  let analysis = $state({ done: 0, total: 0 });
+  let analysisStopped = $state(false);
+  const analysing = $derived(analysis.total > 0 && analysis.done < analysis.total);
   let progress = $state({ done: 0, total: 0 });
   let stopping = $state(false);
   let error = $state<string | null>(null);
@@ -42,8 +46,10 @@
 
   onMount(() => {
     refresh().then(() => applyBudget());
+    void api.analysisStopped().then((v) => (analysisStopped = v));
     const off = api.onEvent((e) => {
       if (e.type === 'scanProgress') progress = { done: e.done, total: e.total };
+      if (e.type === 'analysisProgress') analysis = { done: e.done, total: e.total };
       // New photos were saved mid-scan: show them (days, counts, calendar suggestions) right away.
       if (e.type === 'scanSaved') liveRefresh();
     });
@@ -208,6 +214,16 @@
     }
   }
 
+  async function stopAnalysis() {
+    analysisStopped = true;
+    await api.stopAnalysis();
+  }
+
+  async function resumeAnalysis() {
+    analysisStopped = false;
+    await api.resumeAnalysis();
+  }
+
   async function stopScan() {
     stopping = true;
     await api.cancelScan();
@@ -310,6 +326,22 @@
           <button class="small" onclick={stopScan} disabled={stopping}>Stop</button>
         </div>
         <div class="progress"><div style:width="{progress.total ? (100 * progress.done) / progress.total : 0}%"></div></div>
+      </div>
+    {/if}
+
+    {#if analysing || analysisStopped}
+      <div class="scan">
+        <div class="scan-h">
+          <span class="muted grow">
+            {#if analysisStopped}Analysis stopped{analysing ? ` · ${formatCount(analysis.done)} / ${formatCount(analysis.total)}` : ''}{:else}Analysing photos… {formatCount(analysis.done)} / {formatCount(analysis.total)}{/if}
+          </span>
+          {#if analysisStopped}
+            <button class="small" onclick={resumeAnalysis}>Resume analysis</button>
+          {:else}
+            <button class="small" onclick={stopAnalysis}>Stop analysis</button>
+          {/if}
+        </div>
+        {#if analysing}<div class="progress"><div style:width="{(100 * analysis.done) / analysis.total}%"></div></div>{/if}
       </div>
     {/if}
 

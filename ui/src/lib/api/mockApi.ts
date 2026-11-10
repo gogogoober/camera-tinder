@@ -34,6 +34,28 @@ const undoStack: [number, Decision | null][][] = [];
 const analysed = new Map<number, PhotoAnalysis>();
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Background analysis, like the real worker: runs as photos are scanned, in chunks, until stopped.
+let analysisStopped = false;
+let analysisRunning = false;
+async function backgroundAnalysis() {
+  if (analysisRunning) return;
+  analysisRunning = true;
+  try {
+    while (!analysisStopped) {
+      const todo = photos.filter((p) => !analysed.has(p.id));
+      if (!todo.length) break;
+      const total = analysed.size + todo.length;
+      for (let i = 0; i < todo.length && !analysisStopped; i += 100) {
+        for (const p of todo.slice(i, i + 100)) analysed.set(p.id, mockAnalysis(p));
+        listeners.forEach((cb) => cb({ type: 'analysisProgress', done: analysed.size, total }));
+        await sleep(80);
+      }
+    }
+  } finally {
+    analysisRunning = false;
+  }
+}
+
 function rng(seed: number) {
   let s = seed >>> 0 || 1;
   return () => {
@@ -197,6 +219,7 @@ export const mockApi: CullerApi = {
         savedHere += batch.length;
         emit({ type: 'scanProgress', sourceId: s.id, done: done + batch.length, total: fresh.length });
         emit({ type: 'scanSaved', sourceId: s.id, saved: added });
+        void backgroundAnalysis();
         cancelled = cancelRequested;
       }
       if (savedHere < fresh.length) {
@@ -317,6 +340,16 @@ export const mockApi: CullerApi = {
     return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [] };
   },
 
+  async stopAnalysis() {
+    analysisStopped = true;
+  },
+  async resumeAnalysis() {
+    analysisStopped = false;
+    void backgroundAnalysis();
+  },
+  async analysisStopped() {
+    return analysisStopped;
+  },
   async analyzerInfo() {
     return MOCK_ANALYZERS;
   },

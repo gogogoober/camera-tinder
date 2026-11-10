@@ -96,3 +96,79 @@ fn results_of_a_replaced_engine_are_not_read_but_stay_stored() {
     assert!(svc.photo_analysis(id).unwrap().blur.is_some());
     assert_eq!(svc.analyze(&AnalyzeRequest::default(), &NullSink).unwrap().up_to_date, 1);
 }
+
+// ---- background worker ----------------------------------------------------------
+
+fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
+    let start = std::time::Instant::now();
+    while !ok() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(30), "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
+fn card_of_four(card: &std::path::Path) {
+    for (i, name) in ["a", "b", "c", "d"].iter().enumerate() {
+        write(&card.join(format!("{name}.jpg")), |x, y| scene(x, y, i as u32 * 40));
+    }
+}
+
+fn all_analysed(svc: &CullerService) -> bool {
+    let a = svc.analyses(&Filter::default()).unwrap();
+    a.len() == 4 && a.iter().all(|x| x.blur.is_some() && x.perceptual_hash.is_some())
+}
+
+#[test]
+fn the_worker_analyses_photos_as_the_scan_saves_them() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+    svc.start_analysis_worker(Arc::new(NullSink));
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    wait_until("analysis of every photo", || all_analysed(&svc));
+}
+
+#[test]
+fn stop_is_sticky_until_resume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+    svc.stop_analysis();
+    assert!(svc.analysis_stopped());
+    svc.start_analysis_worker(Arc::new(NullSink));
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    assert!(svc.analyses(&Filter::default()).unwrap().iter().all(|a| a.blur.is_none()), "stopped: nothing analysed, even after new photos");
+    let r = svc.analyze_pending(&NullSink).unwrap();
+    assert_eq!(r.analyzed, 0, "a manual run honours Stop too");
+
+    svc.resume_analysis();
+    assert!(!svc.analysis_stopped());
+    wait_until("analysis after resume", || all_analysed(&svc));
+}
+
+#[test]
+fn a_restarted_app_finishes_unfinished_analysis_without_redoing_the_rest() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    card_of_four(&card);
+    let (db, cache) = (tmp.path().join("db").join("app.db"), tmp.path().join("cache"));
+    let first_id = {
+        let svc = CullerService::open(&db, &cache).unwrap();
+        svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+        svc.scan(&Default::default(), &NullSink).unwrap();
+        let first = svc.queue(&Filter::default()).unwrap()[0].id;
+        svc.analyze(&AnalyzeRequest { photo_ids: Some(vec![first]), ..Default::default() }, &NullSink).unwrap();
+        first
+    };
+    let svc = Arc::new(CullerService::open(&db, &cache).unwrap());
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.start_analysis_worker(Arc::new(NullSink));
+    wait_until("the first pass after restart", || all_analysed(&svc));
+    let r = svc.analyze_pending(&NullSink).unwrap();
+    assert_eq!((r.analyzed, r.up_to_date), (0, 4), "{r:?} {first_id}");
+}
