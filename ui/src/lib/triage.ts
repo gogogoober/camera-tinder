@@ -118,6 +118,22 @@ export function loopNext(s: Structure, photos: Decided[], i: number): number | n
 }
 
 /**
+ * B ("back"): the mirror of Space, nothing is changed. In a group: the previous frame, wrapping. On a
+ * single: the stop before it (decided ones included, so you can look again), wrapping to the end.
+ * Returns the photo index to show, or null when there is nowhere to go.
+ */
+export function loopPrev(s: Structure, i: number): number | null {
+  const g = groupOf(s, i);
+  if (g.length > 1) return stepFrame(s, i, -1, true);
+  const n = s.setAside.length;
+  for (let k = 1; k < n; k++) {
+    const j = (i - k + n) % n;
+    if (isStop(s, j)) return j;
+  }
+  return null;
+}
+
+/**
  * Enter / S ("leave"): out of the current group (or off this single) to the next stop that still has
  * something to decide, leaving what is here unrated. Wraps to the start of the list; the group it left
  * comes round again. null when nothing is left to decide.

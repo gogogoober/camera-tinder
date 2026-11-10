@@ -147,6 +147,10 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   There is deliberately **no folder-level "unchanged, skip it" cache**: it was tried (Nov 2026), saved ~25 µs per
   photo (75 ms per 3,000) and caused two bugs, so it was removed. Old databases may still have unused
   `sources.scan_*` columns. Adding a folder scans only that folder (`ScanRequest.source_ids`).
+- A complete scan of a non-empty listing forgets photo rows (with their decisions/analysis) whose file is gone from
+  that folder **and** that have no cached preview and were never exported (`Store::forget_vanished`). Before this,
+  rows were never deleted: Remove folder, Clear previews and Reset days all leave `photos` alone, so a regenerated
+  test folder showed broken photos and inflated day counts.
 - Previews on macOS go through ImageIO (`set_preview_maker` in src-tauri), via the typed `objc2-image-io` /
   `objc2-core-graphics` bindings (no hand-written FFI; the photo's bytes are copied into ImageIO, not lent; the copy
   costs ~2 ms of ~40). ImageIO only decodes at reduced size

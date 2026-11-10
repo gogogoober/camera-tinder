@@ -10,6 +10,7 @@
     firstUndecidedFrame,
     leaveNext,
     loopNext,
+    loopPrev,
     groupOf,
     nextStop,
     nextUndecidedFrame,
@@ -249,6 +250,13 @@
     if (n !== null) idx = n;
   }
 
+  /** Back (B): one photo back without changing anything; the mirror of Space. */
+  function back() {
+    if (!current || opened !== null) return;
+    const n = loopPrev(s, idx);
+    if (n !== null) idx = n;
+  }
+
   /** Leave (Enter / S): out of the burst, or off this photo, to the next undecided one, leaving it unrated. */
   function leave() {
     if (!current || opened !== null) return;
@@ -283,6 +291,9 @@
     } else if (e.key === ' ') {
       e.preventDefault();
       skip();
+    } else if (e.key === 'b') {
+      e.preventDefault();
+      back();
     } else if (e.key === 'Enter' || e.key === 's') {
       e.preventDefault();
       leave();
@@ -475,7 +486,7 @@
     {:else}
       <div class="keys muted">
         <span><kbd>←</kbd> ✕ nope</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
-        <span><kbd>space</kbd> next</span><span><kbd>enter</kbd> / <kbd>s</kbd> {members ? 'leave burst' : 'skip'}</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
+        <span><kbd>space</kbd> next</span><span><kbd>b</kbd> back</span><span><kbd>enter</kbd> / <kbd>s</kbd> {members ? 'leave burst' : 'skip'}</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
       </div>
     {/if}
   </div>
