@@ -24,6 +24,8 @@ import type {
   ScanRequest,
   SimilarGroup,
   SourceInfo,
+  LibrarySource,
+  ForgetReport,
   Stats,
   TagSuggestion,
 } from './types';
@@ -40,9 +42,15 @@ export interface CullerApi {
   pickExportFolder(): Promise<string | null>;
 
   addFolder(path: string): Promise<SourceInfo>;
+  /** Out of the session (it won't reconnect at launch). Photos and decisions stay. */
   removeSource(id: string): Promise<void>;
+  /** Out of the session, and its photos' rows (decisions, analysis, export history) and previews deleted. Never touches the folder. */
+  forgetSource(id: string): Promise<ForgetReport>;
+  /** Every folder or card the database knows, with photo counts. */
+  library(): Promise<LibrarySource[]>;
   listSources(): Promise<SourceInfo[]>;
-  /** Scan folders (all by default). New photos are saved in batches as it goes (`scanSaved` events). */
+  /** Scan folders (all by default). New photos are saved in batches as it goes (`scanSaved` events).
+   *  While another scan runs, the request joins it and this returns at once with `queued`. */
   scan(request?: ScanRequest): Promise<ScanReport>;
   /** Stop the running scan after the photos being read right now. Finished photos are kept. */
   cancelScan(): Promise<void>;

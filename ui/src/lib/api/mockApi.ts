@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SavedTag, SourceInfo, Stats, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, LibrarySource, Photo, Plan, SavedTag, ScanRequest, SourceInfo, Stats, TagSuggestion } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
 import { mockTriage } from './mockTriage';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
@@ -19,6 +19,10 @@ const EMPTY = {
 
 const listeners = new Set<(e: CoreEvent) => void>();
 const sources: SourceInfo[] = [];
+/** Every folder ever added (removing one from the session keeps it here, with its photos). */
+const known = new Map<string, string>();
+let scanBusy = false;
+let scanPending: ScanRequest | null = null;
 let photos: Photo[] = [];
 let cancelRequested = false;
 /** Folders whose photos are all saved, and the photos a stopped scan hasn't saved yet. */
@@ -188,6 +192,45 @@ function groupByGap(list: Photo[], gapSecs: number, minSize = 1): Group[] {
   return out;
 }
 
+/** One scan pass over the requested folders (see `scan`). */
+async function scanOnce(request: ScanRequest) {
+  let added = 0;
+  let cancelled = false;
+  const emit = (e: CoreEvent) => listeners.forEach((cb) => cb(e));
+  for (const s of sources) {
+    if (request.sourceIds && !request.sourceIds.includes(s.id)) continue;
+    if (cancelRequested) {
+      cancelled = true; // Stop also skips the folders not reached yet
+      break;
+    }
+    // Like the real backend: photos already indexed aren't read again (the mock has no new files to find).
+    if (scannedSources.has(s.id)) continue;
+    const fresh = unsaved.get(s.id) ?? makePhotos(s.id, photos.length + 1);
+    // Saved in batches, so the Pick screen fills in while the scan runs.
+    let savedHere = 0;
+    for (let done = 0; done < fresh.length && !cancelled; done += 120) {
+      await sleep(120);
+      const batch = fresh.slice(done, done + 120);
+      photos = photos.concat(batch);
+      added += batch.length;
+      savedHere += batch.length;
+      emit({ type: 'scanProgress', sourceId: s.id, done: done + batch.length, total: fresh.length });
+      emit({ type: 'scanSaved', sourceId: s.id, saved: added });
+      void backgroundAnalysis();
+      cancelled = cancelRequested;
+    }
+    if (savedHere < fresh.length) {
+      unsaved.set(s.id, fresh.slice(savedHere));
+      break;
+    }
+    cancelled = false; // stopped after the last batch: nothing was left out
+    unsaved.delete(s.id);
+    scannedSources.add(s.id);
+  }
+  return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [], cancelled, queued: false };
+  }
+
+
 export const mockApi: CullerApi = {
   async pickSourceFolder() {
     return `/Volumes/MOCK_CARD_${sources.length + 1}`;
@@ -198,54 +241,58 @@ export const mockApi: CullerApi = {
 
   async addFolder(path) {
     const info = { id: path, name: path.split('/').pop() ?? path, photoCount: 0 };
-    sources.push(info);
+    if (!sources.some((s) => s.id === path)) sources.push(info);
+    known.set(path, info.name);
     return info;
   },
   async removeSource(id) {
     const i = sources.findIndex((s) => s.id === id);
     if (i >= 0) sources.splice(i, 1);
   },
+  async forgetSource(id) {
+    cancelRequested = true;
+    await mockApi.removeSource(id);
+    const gone = photos.filter((p) => p.sourceId === id);
+    photos = photos.filter((p) => p.sourceId !== id);
+    scannedSources.delete(id);
+    unsaved.delete(id);
+    undoStack.length = 0;
+    const previewBytes = Math.min(cacheBytes, gone.length * 520_000);
+    cacheBytes -= previewBytes;
+    return { photos: gone.length, previewBytes };
+  },
+  async library(): Promise<LibrarySource[]> {
+    return [...known]
+      .map(([id, name]) => ({ id, name, photoCount: photos.filter((p) => p.sourceId === id).length, inSession: sources.some((s) => s.id === id) }))
+      .filter((s) => s.photoCount > 0 || s.inSession);
+  },
   async listSources() {
     return sources.map((s) => ({ ...s, photoCount: photos.filter((p) => p.sourceId === s.id).length }));
   },
   async scan(request = {}) {
-    cancelRequested = false;
-    let added = 0;
-    let cancelled = false;
-    const emit = (e: CoreEvent) => listeners.forEach((cb) => cb(e));
-    for (const s of sources) {
-      if (request.sourceIds && !request.sourceIds.includes(s.id)) continue;
-      if (cancelRequested) {
-        cancelled = true; // Stop also skips the folders not reached yet
-        break;
-      }
-      // Like the real backend: photos already indexed aren't read again (the mock has no new files to find).
-      if (scannedSources.has(s.id)) continue;
-      const fresh = unsaved.get(s.id) ?? makePhotos(s.id, photos.length + 1);
-      // Saved in batches, so the Pick screen fills in while the scan runs.
-      let savedHere = 0;
-      for (let done = 0; done < fresh.length && !cancelled; done += 120) {
-        await sleep(120);
-        const batch = fresh.slice(done, done + 120);
-        photos = photos.concat(batch);
-        added += batch.length;
-        savedHere += batch.length;
-        emit({ type: 'scanProgress', sourceId: s.id, done: done + batch.length, total: fresh.length });
-        emit({ type: 'scanSaved', sourceId: s.id, saved: added });
-        void backgroundAnalysis();
-        cancelled = cancelRequested;
-      }
-      if (savedHere < fresh.length) {
-        unsaved.set(s.id, fresh.slice(savedHere));
-        break;
-      }
-      cancelled = false; // stopped after the last batch: nothing was left out
-      unsaved.delete(s.id);
-      scannedSources.add(s.id);
+    // Like the real backend: one scan at a time; a request made meanwhile joins the running one.
+    if (scanBusy) {
+      scanPending = !scanPending || !scanPending.sourceIds || !request.sourceIds ? {} : { sourceIds: [...scanPending.sourceIds, ...request.sourceIds] };
+      return { found: 0, new: 0, skippedUnsupported: 0, otherFiles: 0, failed: [], cancelled: false, queued: true };
     }
-    return { found: active().length, new: added, skippedUnsupported: 3, otherFiles: 2, failed: [], cancelled };
+    scanBusy = true;
+    cancelRequested = false;
+    try {
+      let report = await scanOnce(request);
+      while (scanPending && !cancelRequested) {
+        const next = scanPending;
+        scanPending = null;
+        const r = await scanOnce(next);
+        report = { ...r, new: report.new + r.new, cancelled: report.cancelled || r.cancelled };
+      }
+      return report;
+    } finally {
+      scanBusy = false;
+      scanPending = null;
+    }
   },
   async cancelScan() {
+    scanPending = null;
     cancelRequested = true;
   },
 

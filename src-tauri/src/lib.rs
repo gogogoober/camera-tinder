@@ -37,8 +37,22 @@ async fn add_folder(state: State<'_, AppState>, path: String) -> CmdResult<Sourc
 }
 
 #[tauri::command]
-fn remove_source(state: State<'_, AppState>, id: String) {
-    state.0.remove_source(&id);
+fn remove_source(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.0.remove_source(&id).map_err(err)
+}
+
+/// Forget a folder: out of the session, its photos' rows and previews deleted. Never touches the folder.
+#[tauri::command]
+async fn forget_source(state: State<'_, AppState>, id: String) -> CmdResult<ForgetReport> {
+    let svc = state.0.clone();
+    blocking(move || svc.forget_source(&id)).await
+}
+
+/// Every folder or card the database knows (Advanced → Library).
+#[tauri::command]
+async fn library(state: State<'_, AppState>) -> CmdResult<Vec<LibrarySource>> {
+    let svc = state.0.clone();
+    blocking(move || svc.library()).await
 }
 
 #[tauri::command]
@@ -312,6 +326,14 @@ pub fn run() {
             svc.set_preview_maker(Arc::new(cull_platform_apple::imageio::ImageIoPreviewMaker));
             // Background errors (analysis) go to a rotating file in the app's log folder, for troubleshooting.
             svc.set_error_log(app.path().app_log_dir()?.join("errors.log"));
+            // Reconnect the folders that were in the session last time, when they're there (a card may be out).
+            for id in svc.saved_session_sources()? {
+                if let Ok(src) = FsSource::new(&id) {
+                    if src.id() == id {
+                        svc.add_source(Arc::new(src.excluding(svc.app_dirs())))?;
+                    }
+                }
+            }
             // Analyse every photo in the background as the scan saves it (and resume unfinished work now).
             svc.start_analysis_worker(Arc::new(TauriSink(app.handle().clone())));
             app.manage(AppState(svc));
@@ -325,6 +347,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             add_folder,
             remove_source,
+            forget_source,
+            library,
             list_sources,
             scan,
             cancel_scan,

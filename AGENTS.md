@@ -122,11 +122,20 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   `add_source`; a crash on one photo is reported, not fatal. Results count only while their implementation id matches
   the registered step (`PhotoAnalysis::retain_current`). Stop analysis is sticky until Resume or restart. A new
   analysis step = one `steps.push(...)` in `analysis/pipeline.rs`.
+- **Sources persist and one scan runs at a time** (Nov 2026): `sources.in_session` remembers the session; src-tauri
+  reconnects those folders at launch when they exist, and the Pick screen runs one catch-up scan per launch (also after
+  Clear previews, a reset of analysis, and Forget). `CullerService::scan` called while a scan runs merges the request
+  into the running one and returns at once with `queued: true`; the running scan does it before it returns. Stop drops
+  queued requests. So Add photos is never disabled by a scan.
+- **Forget a folder** (`forget_source`; folder ✕ → "Forget this folder…", or Advanced → Known folders, which also lists
+  folders outside the session): stops a running scan, deletes its photos' rows (decisions, history, outcomes, analysis,
+  export history, file index) and their previews; the folder's files are never touched. The `sources` row stays so exports
+  keep refusing that folder. "Remove from this session" (`remove_source`) keeps everything and only sets `in_session = 0`.
 - **Reset days (testing):** `CullerService::reset_days({ days, decisions, analysis })` forgets decisions (+ history and
   outcomes) and/or analysis for the photos taken on those days (`YYYY-MM-DD` or `"unknown"`) **in the session's folders
   and cards only**, exactly what the triage screen shows for them (shared `days_condition` SQL). Database only (photos,
   previews and files stay); an empty list does nothing; malformed days are rejected; it clears the undo stack.
-  UI: "Reset these days…" tucked under Start triage on the Pick screen.
+  UI: Pick screen → Advanced → "Reset selected days…".
 - **Error log:** background errors (analysis passes, each photo that couldn't be analysed, once per photo per app
   session) go to `errors.log` in the app log folder (`set_error_log` in `setup`) and stderr. It rotates at 50 MB to
   `errors.1.log` (one kept). The Pick screen's Advanced drawer shows the path and the last 100 lines.
@@ -239,7 +248,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   outside the audited lines. `tests/failure_cases.rs` covers card swaps, clearing mid-scan, photos moved to another
   folder, crashing files, damaged previews, a card pulled out mid-read, symlinks, unusual file names, restarts
   (and `store.rs` tests: databases from earlier builds); `cull-platform-apple/tests/source_safety.rs` runs the flow with ImageIO.
-- Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick sidebar → Storage), refused while a scan runs:
+- Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick → Advanced), refused while a scan runs; a catch-up scan follows, which rebuilds previews for folders still there:
   - Locked while any known source is on a plugged-in **external** volume (`is_external_and_connected`: the folder
     exists and its filesystem device differs from `/`, the Data volume and $HOME). Internal folders never block.
     Core enforces this too, not only the UI.

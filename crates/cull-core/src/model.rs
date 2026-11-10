@@ -163,6 +163,28 @@ pub struct ScanReport {
     pub failed: Vec<(String, String)>,
     /// Stopped before the end (`CullerService::cancel_scan`). Everything finished is kept.
     pub cancelled: bool,
+    /// Another scan was running: this request was handed to it (it runs right after) and this call did nothing.
+    #[serde(default)]
+    pub queued: bool,
+}
+
+/// A folder or card the database knows about, in the session or not (Advanced → Library).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibrarySource {
+    pub id: SourceId,
+    pub name: String,
+    pub photo_count: u64,
+    /// Shown on the Pick screen, and reconnected at launch when the folder is there.
+    pub in_session: bool,
+}
+
+/// What `CullerService::forget_source` removed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForgetReport {
+    pub photos: u64,
+    pub preview_bytes: u64,
 }
 
 /// Which folders to scan.

@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS sources (
     id           TEXT PRIMARY KEY,
     display_name TEXT NOT NULL,
     added_at     TEXT NOT NULL,
-    last_scan    TEXT -- unused (never read); kept so the schema matches existing databases
+    last_scan    TEXT, -- unused (never read); kept so the schema matches existing databases
+    in_session   INTEGER NOT NULL DEFAULT 1
     -- Databases from Nov 2026 builds may also have unused scan_* columns (a removed folder-skip cache).
 );
 
@@ -214,13 +215,17 @@ impl Store {
         if !columns("photos")?.iter().any(|c| c == "sharpness") {
             conn.execute_batch("ALTER TABLE photos ADD COLUMN sharpness INTEGER")?;
         }
+        // Which sources are in the session (reconnected at launch). Older databases: all of them.
+        if !columns("sources")?.iter().any(|c| c == "in_session") {
+            conn.execute_batch("ALTER TABLE sources ADD COLUMN in_session INTEGER NOT NULL DEFAULT 1")?;
+        }
         Ok(Self { conn })
     }
 
     pub fn upsert_source(&self, id: &str, name: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sources (id, display_name, added_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name",
+            "INSERT INTO sources (id, display_name, added_at, in_session) VALUES (?1, ?2, ?3, 1)
+             ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, in_session = 1",
             params![id, name, now()],
         )?;
         Ok(())
@@ -231,6 +236,59 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT id, display_name FROM sources ORDER BY display_name")?;
         let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Take a source out of the session (or put it back). It stays known: exports still refuse its folder.
+    pub fn set_in_session(&self, id: &str, in_session: bool) -> Result<()> {
+        self.conn.execute("UPDATE sources SET in_session = ?2 WHERE id = ?1", params![id, in_session])?;
+        Ok(())
+    }
+
+    /// Sources to reconnect at launch.
+    pub fn session_source_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id FROM sources WHERE in_session = 1 ORDER BY added_at")?;
+        let ids = stmt.query_map([], |r| r.get(0))?.collect::<std::result::Result<Vec<String>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Every known source with photos, or in the session: (id, name, photo count, in session).
+    pub fn library(&self) -> Result<Vec<(String, String, u64, bool)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.display_name, (SELECT COUNT(*) FROM photos p WHERE p.source_id = s.id) AS n, s.in_session
+             FROM sources s WHERE n > 0 OR s.in_session = 1 ORDER BY s.display_name",
+        )?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? as u64, r.get(3)?)))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Delete every photo row of `source_id` with all that hangs off it (decisions, history, outcomes,
+    /// analysis, export history, file index). Returns their fingerprints, so their previews can go too.
+    /// Database only. The source row stays (exports must keep refusing its folder).
+    pub fn forget_source_photos(&self, source_id: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT id, fingerprint FROM photos WHERE source_id = ?1")?;
+        let rows: Vec<(PhotoId, String)> = stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<std::result::Result<_, _>>()?;
+        drop(stmt);
+        let ids: Vec<PhotoId> = rows.iter().map(|(id, _)| *id).collect();
+        self.delete_photos(&ids, true)?;
+        self.conn.execute("DELETE FROM file_index WHERE source_id = ?1", [source_id])?;
+        Ok(rows.into_iter().map(|(_, fp)| fp).collect())
+    }
+
+    /// Delete photo rows and every row that references them. `with_exports`: export history too.
+    fn delete_photos(&self, ids: &[PhotoId], with_exports: bool) -> Result<()> {
+        for chunk in ids.chunks(500) {
+            let list = placeholders(chunk.len());
+            for table in ["decisions", "decision_log", "outcomes", "analysis", "file_index"] {
+                self.conn.execute(&format!("DELETE FROM {table} WHERE photo_id IN ({list})"), params_from_iter(chunk))?;
+            }
+            if with_exports {
+                self.conn.execute(&format!("DELETE FROM exports WHERE photo_id IN ({list})"), params_from_iter(chunk))?;
+            }
+            self.conn.execute(&format!("DELETE FROM photos WHERE id IN ({list})"), params_from_iter(chunk))?;
+        }
+        Ok(())
     }
 
     /// Every source ever added (ids are platform-defined, e.g. canonical folder paths).
@@ -313,13 +371,7 @@ impl Store {
             .map(|(id, _)| id)
             .collect();
         drop(stmt);
-        for chunk in gone.chunks(500) {
-            let list = placeholders(chunk.len());
-            for table in ["decisions", "decision_log", "outcomes", "analysis", "file_index"] {
-                self.conn.execute(&format!("DELETE FROM {table} WHERE photo_id IN ({list})"), params_from_iter(chunk))?;
-            }
-            self.conn.execute(&format!("DELETE FROM photos WHERE id IN ({list})"), params_from_iter(chunk))?;
-        }
+        self.delete_photos(&gone, false)?;
         Ok(gone.len() as u64)
     }
 
@@ -671,6 +723,8 @@ mod tests {
         // Tables added later (analysis, outcomes) are created on open.
         store.insert_outcomes(&[]).unwrap();
         assert_eq!(store.forget_analysis(&[1]).unwrap(), 0);
+        // Sources from before the session flag count as in the session (they reconnect at launch).
+        assert_eq!(store.session_source_ids().unwrap(), vec!["/card".to_string(), "/other".to_string()]);
     }
 
     #[test]

@@ -76,7 +76,7 @@ fn clearing_previews_during_a_scan_never_leaves_photos_without_previews() {
 
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
     assert_eq!(ids.len(), 40);
-    svc.remove_source(&src.id); // card unplugged
+    svc.remove_source(&src.id).unwrap(); // card unplugged
     let missing = ids.iter().filter(|id| svc.preview(**id, 256).is_err()).count();
     assert_eq!(missing, 0, "photos that can't be viewed once the card is unplugged");
 }
@@ -102,7 +102,7 @@ fn photos_come_back_when_their_first_folder_is_rescanned() {
     }
     let laptop = svc.add_source(Arc::new(FsSource::new(&copy).unwrap())).unwrap();
     svc.scan(&Default::default(), &NullSink).unwrap();
-    svc.remove_source(&laptop.id);
+    svc.remove_source(&laptop.id).unwrap();
 
     svc.scan(&Default::default(), &NullSink).unwrap();
     let q = svc.queue(&Filter { status: StatusFilter::All, ..Default::default() }).unwrap();
@@ -216,7 +216,7 @@ fn a_damaged_preview_is_rebuilt_not_used() {
     }
     svc.scan(&Default::default(), &NullSink).unwrap();
     let ids: Vec<_> = svc.queue(&Filter::default()).unwrap().iter().map(|p| p.id).collect();
-    svc.remove_source(&src.id);
+    svc.remove_source(&src.id).unwrap();
     for id in ids {
         assert!(complete(&svc.preview(id, 2048).unwrap()), "damaged preview kept after a rescan");
     }
@@ -471,4 +471,113 @@ fn photos_whose_files_vanished_and_have_no_preview_are_forgotten_by_the_next_sca
     assert_eq!(left.len(), 4, "0-2 and the new DSC_0003; the old DSC_0003 goes too, though its path is still listed");
     assert!(left.iter().all(|p| svc.preview(p.id, 256).is_ok()), "every photo left can be shown");
     assert!(left.iter().any(|p| p.decision == Some(Decision::Favorite)), "decisions of photos that remain are kept");
+}
+
+/// A scan asked for while another runs joins it: the call returns at once (`queued`) and the running
+/// scan does it before returning, so adding a folder mid-scan never needs a second button press.
+struct AddDuringScan {
+    svc: OnceLock<Arc<CullerService>>,
+    second: OnceLock<String>,
+    queued: Mutex<Option<bool>>,
+}
+impl EventSink for AddDuringScan {
+    fn emit(&self, event: CoreEvent) {
+        if let CoreEvent::ScanSaved { .. } = event {
+            let mut queued = self.queued.lock().unwrap();
+            if queued.is_none() {
+                let req = ScanRequest { source_ids: Some(vec![self.second.get().unwrap().clone()]) };
+                *queued = Some(self.svc.get().unwrap().scan(&req, &NullSink).unwrap().queued);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_scan_asked_for_during_another_runs_right_after_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    card(&a, 40);
+    for i in 0..5u8 {
+        write_jpeg(&b.join(format!("DCIM/B_{i:04}.JPG")), 300, 200, 100 + i * 7);
+    }
+    let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+    let first = svc.add_source(Arc::new(FsSource::new(&a).unwrap())).unwrap();
+    let second = svc.add_source(Arc::new(FsSource::new(&b).unwrap())).unwrap();
+    let sink = AddDuringScan { svc: OnceLock::new(), second: OnceLock::new(), queued: Mutex::new(None) };
+    sink.svc.set(svc.clone()).ok();
+    sink.second.set(second.id.clone()).unwrap();
+    let report = svc.scan(&ScanRequest { source_ids: Some(vec![first.id]) }, &sink).unwrap();
+    assert_eq!(*sink.queued.lock().unwrap(), Some(true), "the second request was handed to the running scan");
+    assert!(!report.queued);
+    assert_eq!(report.new, 45, "and the running scan did it before returning");
+    assert_eq!(svc.queue(&Filter::default()).unwrap().len(), 45);
+}
+
+#[test]
+fn forgetting_a_folder_deletes_its_photos_and_previews_but_not_its_files_or_other_folders() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    card(&a, 4);
+    for i in 0..3u8 {
+        write_jpeg(&b.join(format!("DCIM/B_{i:04}.JPG")), 300, 200, 100 + i * 7);
+    }
+    let cache = tmp.path().join("cache");
+    let svc = CullerService::in_memory(&cache).unwrap();
+    let sa = svc.add_source(Arc::new(FsSource::new(&a).unwrap())).unwrap();
+    let sb = svc.add_source(Arc::new(FsSource::new(&b).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let all = svc.queue(&Filter::default()).unwrap();
+    for p in &all {
+        svc.decide(p.id, Decision::Like).unwrap();
+    }
+    let dest = tmp.path().join("out");
+    svc.export(&CopyToDir::new(&dest).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink).unwrap();
+    let previews_before = fs::read_dir(&cache).unwrap().count();
+    let files_before: Vec<_> = walk(&a);
+
+    let rep = svc.forget_source(&sa.id).unwrap();
+    assert_eq!(rep.photos, 4);
+    assert!(rep.preview_bytes > 0);
+    assert_eq!(fs::read_dir(&cache).unwrap().count(), previews_before - 8, "both sizes of its 4 photos");
+    assert_eq!(walk(&a), files_before, "the folder itself is untouched");
+    assert!(svc.undo().unwrap().is_empty(), "undo can't bring back a forgotten photo");
+    let lib = svc.library().unwrap();
+    assert_eq!(lib.len(), 1, "a forgotten folder leaves the library: {lib:?}");
+    assert_eq!((lib[0].id.as_str(), lib[0].photo_count), (sb.id.as_str(), 3));
+    assert!(svc.known_source_ids().unwrap().contains(&sa.id), "exports still refuse its folder");
+
+    // Adding it back starts from scratch: new photos, no decisions, no export history.
+    svc.add_source(Arc::new(FsSource::new(&a).unwrap())).unwrap();
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!(r.new, 4);
+    let back = svc.queue(&Filter { status: StatusFilter::All, ..Default::default() }).unwrap();
+    assert_eq!(back.iter().filter(|p| p.source_id == sa.id && p.decision.is_none()).count(), 4);
+    assert_eq!(back.iter().filter(|p| p.source_id == sb.id && p.decision == Some(Decision::Like)).count(), 3, "the other folder keeps its decisions");
+}
+
+#[test]
+fn the_session_survives_a_restart_and_removed_folders_stay_removed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+    card(&a, 2);
+    card(&b, 2);
+    let db = tmp.path().join("data/db");
+    let ids = {
+        let svc = CullerService::open(&db, &tmp.path().join("cache")).unwrap();
+        let sa = svc.add_source(Arc::new(FsSource::new(&a).unwrap())).unwrap();
+        let sb = svc.add_source(Arc::new(FsSource::new(&b).unwrap())).unwrap();
+        svc.remove_source(&sb.id).unwrap();
+        (sa.id, sb.id)
+    };
+    let svc = CullerService::open(&db, &tmp.path().join("cache")).unwrap();
+    assert_eq!(svc.saved_session_sources().unwrap(), vec![ids.0.clone()]);
+    let lib = svc.library().unwrap();
+    assert!(lib.iter().any(|l| l.id == ids.0 && l.in_session));
+    assert!(!lib.iter().any(|l| l.id == ids.1), "removed and without photos: nothing to show");
+}
+
+fn walk(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut out: Vec<_> = walkdir::WalkDir::new(dir).into_iter().map(|e| e.unwrap()).filter(|e| e.file_type().is_file()).map(|e| (e.path().to_path_buf(), fs::read(e.path()).unwrap())).collect();
+    out.sort();
+    out
 }

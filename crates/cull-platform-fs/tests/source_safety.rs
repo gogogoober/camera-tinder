@@ -87,7 +87,7 @@ fn full_flow_leaves_source_byte_for_byte_identical() {
     svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
     let report = exercise_everything(&svc, &tmp.path().join("keepers"));
     assert_eq!(report.copied, 2, "{:?}", report.failed);
-    svc.remove_source(&card.canonicalize().unwrap().to_string_lossy());
+    svc.remove_source(&card.canonicalize().unwrap().to_string_lossy()).unwrap();
 
     assert_eq!(snapshot(&card), before, "source tree changed: contents, size, mtime, permissions or file list");
 }
@@ -155,7 +155,7 @@ fn export_refuses_destinations_inside_a_source() {
     assert_eq!(snapshot(&card), before);
 
     // Sources stay protected after they're removed from the session.
-    svc.remove_source(&roots[0]);
+    svc.remove_source(&roots[0]).unwrap();
     let roots = svc.known_source_ids().unwrap();
     assert!(svc.export(&CopyToDir::new(&card).protecting(&roots), ExportOptions::default(), &NullSink).is_err());
 }
@@ -549,7 +549,7 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     assert_eq!(svc.preview_cache_status(&external).unwrap().files, 10, "refusal deletes nothing");
 
     // Removing the card from the session isn't unplugging it.
-    svc.remove_source(&card_id);
+    svc.remove_source(&card_id).unwrap();
     assert!(svc.clear_previews(&external).is_err());
 
     // Unplug: allowed. Only previews go; photos and decisions stay; card never read.

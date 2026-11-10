@@ -64,6 +64,19 @@ pub struct CullerService {
     scanning: Mutex<()>,
     /// Set by `cancel_scan`; the running scan stops after the photos it is reading.
     scan_cancel: AtomicBool,
+    /// Scans asked for while one runs, merged; the running scan does them before it returns.
+    scan_pending: Mutex<Option<ScanRequest>>,
+}
+
+/// Two scan requests as one: all sources if either wants all, else both lists.
+fn merge_scans(a: ScanRequest, b: &ScanRequest) -> ScanRequest {
+    match (a.source_ids, &b.source_ids) {
+        (Some(mut x), Some(y)) => {
+            x.extend(y.iter().filter(|id| !x.contains(id)).cloned().collect::<Vec<_>>());
+            ScanRequest { source_ids: Some(x) }
+        }
+        _ => ScanRequest { source_ids: None },
+    }
 }
 
 impl CullerService {
@@ -93,6 +106,7 @@ impl CullerService {
             error_log: RwLock::new(None),
             scanning: Mutex::new(()),
             scan_cancel: AtomicBool::new(false),
+            scan_pending: Mutex::new(None),
         })
     }
 
@@ -114,8 +128,41 @@ impl CullerService {
         &self.app_dirs
     }
 
-    pub fn remove_source(&self, id: &str) {
+    /// Take a source out of the session (it won't come back at launch). Its photos and decisions stay.
+    pub fn remove_source(&self, id: &str) -> Result<()> {
         self.sources.write().unwrap().retain(|s| s.id() != id);
+        self.store.lock().unwrap().set_in_session(id, false)
+    }
+
+    /// Sources that were in the session when the app last ran: the platform reconnects those it can reach.
+    pub fn saved_session_sources(&self) -> Result<Vec<SourceId>> {
+        self.store.lock().unwrap().session_source_ids()
+    }
+
+    /// Every source the database knows with photos, or in the session.
+    pub fn library(&self) -> Result<Vec<LibrarySource>> {
+        let rows = self.store.lock().unwrap().library()?;
+        Ok(rows.into_iter().map(|(id, name, photo_count, in_session)| LibrarySource { id, name, photo_count, in_session }).collect())
+    }
+
+    /// Forget a folder or card completely: out of the session, and its photos' rows (decisions, analysis,
+    /// export history) and cached previews are deleted, so adding it again starts from scratch. Never
+    /// touches the folder itself. A running scan is stopped first (it may be reading this very folder).
+    pub fn forget_source(&self, id: &str) -> Result<ForgetReport> {
+        self.cancel_scan();
+        let _no_scan = self.scanning.lock().unwrap_or_else(PoisonError::into_inner);
+        self.sources.write().unwrap().retain(|s| s.id() != id);
+        let fingerprints = {
+            let mut store = self.store.lock().unwrap();
+            store.transaction(|s| {
+                s.set_in_session(id, false)?;
+                s.forget_source_photos(id)
+            })?
+        };
+        // Undo must not bring back decisions of photos that no longer exist.
+        self.undo.lock().unwrap().clear();
+        let preview_bytes = self.previews.remove_for(&fingerprints)?;
+        Ok(ForgetReport { photos: fingerprints.len() as u64, preview_bytes })
     }
 
     /// Ids of every source ever added, in this session or before. Export targets use
@@ -162,10 +209,56 @@ impl CullerService {
     /// Scan the requested sources (all of them by default). Safe to call repeatedly:
     /// files already indexed are not read again and previous decisions are kept.
     /// New photos are saved (and `ScanSaved` emitted) in batches while it runs.
+    ///
+    /// One scan at a time: asked for while another runs, the request is handed to the running scan, which does
+    /// it right after its own work, and this call returns at once with `queued` set.
     pub fn scan(&self, req: &ScanRequest, sink: &dyn EventSink) -> Result<ScanReport> {
-        // A scan that crashed must not block every later one.
-        let _one_at_a_time = self.scanning.lock().unwrap_or_else(PoisonError::into_inner);
-        self.scan_cancel.store(false, Ordering::Relaxed);
+        {
+            let mut pending = self.scan_pending.lock().unwrap();
+            *pending = Some(match pending.take() {
+                Some(earlier) => merge_scans(earlier, req),
+                None => req.clone(),
+            });
+        }
+        let mut total = ScanReport::default();
+        let mut ran = false;
+        loop {
+            // A scan that crashed must not block every later one.
+            let guard = match self.scanning.try_lock() {
+                Ok(g) => g,
+                Err(TryLockError::Poisoned(p)) => p.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    total.queued = !ran;
+                    return Ok(total);
+                }
+            };
+            self.scan_cancel.store(false, Ordering::Relaxed);
+            loop {
+                let Some(next) = self.scan_pending.lock().unwrap().take() else { break };
+                let r = self.scan_once(&next, sink)?;
+                ran = true;
+                total.found += r.found;
+                total.new += r.new;
+                total.skipped_unsupported += r.skipped_unsupported;
+                total.other_files += r.other_files;
+                total.failed.extend(r.failed);
+                total.cancelled |= r.cancelled;
+                if r.cancelled {
+                    break;
+                }
+            }
+            drop(guard);
+            // A request that arrived after the last check (or after a Stop) is still ours to run.
+            if self.scan_pending.lock().unwrap().is_none() {
+                break;
+            }
+        }
+        // Previews backfilled at the end may have made more photos analysable.
+        self.wake_analysis();
+        Ok(total)
+    }
+
+    fn scan_once(&self, req: &ScanRequest, sink: &dyn EventSink) -> Result<ScanReport> {
         let sources: Vec<_> = self
             .sources
             .read()
@@ -189,14 +282,13 @@ impl CullerService {
             total.failed.extend(r.failed);
             total.cancelled |= r.cancelled;
         }
-        // Previews backfilled at the end may have made more photos analysable.
-        self.wake_analysis();
         Ok(total)
     }
 
-    /// Stop the running scan (if any) after the photos it is reading right now.
-    /// Everything already processed is kept; the next scan picks up the rest.
+    /// Stop the running scan (if any) after the photos it is reading right now, and drop scans waiting
+    /// behind it. Everything already processed is kept; the next scan picks up the rest.
     pub fn cancel_scan(&self) {
+        self.scan_pending.lock().unwrap().take();
         self.scan_cancel.store(true, Ordering::Relaxed);
     }
 

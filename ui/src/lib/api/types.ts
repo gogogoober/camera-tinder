@@ -53,6 +53,22 @@ export interface ScanReport {
   failed: [string, string][];
   /** Stopped before the end; everything finished is kept. */
   cancelled: boolean;
+  /** Another scan was running: it does this one right after, and this call did nothing. */
+  queued: boolean;
+}
+
+/** A folder or card the database knows, in the session or not (Advanced → Library). */
+export interface LibrarySource {
+  id: string;
+  name: string;
+  photoCount: number;
+  inSession: boolean;
+}
+
+/** What forgetting a folder removed. */
+export interface ForgetReport {
+  photos: number;
+  previewBytes: number;
 }
 
 /** Which folders to scan (every folder by default). Files already indexed are never read again. */

@@ -1,6 +1,11 @@
+<script lang="ts" module>
+  /** The catch-up scan at launch runs once per app run, not every time the Pick screen mounts. */
+  let caughtUp = false;
+</script>
+
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type PreviewCacheStatus, type SavedTag, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
+  import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type LibrarySource, type PreviewCacheStatus, type SavedTag, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
   import { minutesFor, rangeForBudget, shortRange } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
@@ -45,7 +50,10 @@
   let budget = $state(15);
   let order = $state<'oldest' | 'newest'>('oldest');
   let report = $state<ScanReport | null>(null);
-  let scanning = $state(false);
+  /** Scan calls in flight. A call made while one runs joins it (returns `queued` at once), so this is
+   *  "is anything scanning", not a lock: adding a folder or clearing never has to wait for a button. */
+  let scansInFlight = $state(0);
+  const scanning = $derived(scansInFlight > 0);
   // Background analysis (runs by itself while photos are scanned). Stop is sticky until Resume.
   let analysis = $state({ done: 0, total: 0 });
   let analysisStopped = $state(false);
@@ -65,7 +73,15 @@
   const compact = $derived(viewport.compact);
 
   onMount(() => {
-    refresh().then(() => applyBudget());
+    refresh().then(() => {
+      applyBudget();
+      // Catch up once per launch: folders reconnected at launch may have new or vanished photos, or
+      // photos without previews. Reads only what isn't indexed yet, then analysis picks up the rest.
+      if (!caughtUp && sources.length) {
+        caughtUp = true;
+        void scan();
+      }
+    });
     void api.analysisStopped().then((v) => (analysisStopped = v));
     const off = api.onEvent((e) => {
       if (e.type === 'scanProgress') progress = { done: e.done, total: e.total };
@@ -120,6 +136,8 @@
       confirmClear = false;
       await loadCache();
     }
+    // Folders still here get their previews back (and then their analysis) without a button.
+    if (sources.length) void scan();
   }
 
   // Testing tool, tucked away under the selection: forget what was recorded for the selected days.
@@ -145,6 +163,8 @@
       const rep = await api.resetDays({ days, decisions: resetDecisions, analysis: resetAnalysis });
       resetMessage = `Reset ${formatCount(rep.photos)} photos: ${formatCount(rep.decisions)} decisions, ${formatCount(rep.analysis)} analysis results.`;
       await refresh();
+      // Catch up anything missing (previews), so analysis can redo every photo it forgot.
+      if (resetAnalysis && sources.length) void scan();
     } catch (e) {
       resetMessage = String(e);
     }
@@ -295,18 +315,23 @@
 
   async function scan(request?: ScanRequest) {
     error = null;
-    scanning = true;
-    stopping = false;
-    progress = { done: 0, total: 0 };
+    if (!scansInFlight) {
+      stopping = false;
+      progress = { done: 0, total: 0 };
+    }
+    scansInFlight++;
     try {
-      report = await api.scan(request);
+      const r = await api.scan(request);
+      if (!r.queued) report = r; // a queued request is reported by the scan that ran it
     } catch (e) {
       error = String(e);
     } finally {
-      scanning = false;
-      stopping = false;
-      await refresh();
-      applyBudget();
+      scansInFlight--;
+      if (!scansInFlight) {
+        stopping = false;
+        await refresh();
+        applyBudget();
+      }
     }
   }
 
@@ -325,10 +350,46 @@
     await api.cancelScan();
   }
 
+  // One "start over" place per folder: the ✕ opens a choice between leaving and forgetting it.
+  let menuFor = $state<string | null>(null);
+  let forgetArmed = $state<string | null>(null);
+  let forgetMessage = $state<string | null>(null);
+
   async function remove(id: string) {
+    menuFor = null;
     await api.removeSource(id);
     await refresh();
+    if (advancedOpen) void loadLibrary();
   }
+
+  /** Delete what Darkroom knows about a folder (photos' rows, decisions, analysis, previews). Files stay. */
+  async function forget(id: string, name: string) {
+    menuFor = null;
+    forgetArmed = null;
+    try {
+      const rep = await api.forgetSource(id);
+      forgetMessage = `Forgot ${name}: ${formatCount(rep.photos)} photos and ${formatBytes(rep.previewBytes)} of previews. Its files are untouched.`;
+    } catch (e) {
+      forgetMessage = String(e);
+    }
+    await Promise.all([refresh(), loadCache(), loadLibrary()]);
+    applyBudget();
+    // Forgetting stops a running scan; finish whatever the other folders still needed.
+    if (sources.length) void scan();
+  }
+
+  // Every folder the database knows, in the session or not: where leftovers (an old card) get forgotten.
+  let library = $state<LibrarySource[]>([]);
+  async function loadLibrary() {
+    try {
+      library = await api.library();
+    } catch {
+      library = [];
+    }
+  }
+  $effect(() => {
+    if (advancedOpen) void loadLibrary();
+  });
 
   function onKey(e: KeyboardEvent) {
     if (e.target instanceof HTMLInputElement) return;
@@ -342,7 +403,7 @@
 {#snippet sidebar()}
   <aside>
     <div class="eyebrow">Sources</div>
-    <button class="add" onclick={addFolder} disabled={scanning}>+ Add photos</button>
+    <button class="add" onclick={addFolder}>+ Add photos</button>
     {#each sources as s (s.id)}
       <div class="src">
         <div>
@@ -350,11 +411,25 @@
           <div class="muted small">{formatCount(s.photoCount)} photos</div>
         </div>
         <span class="src-btns">
-          <button class="ghost" title="Remove from this session (files are not touched)" onclick={() => remove(s.id)} disabled={scanning}>✕</button>
+          <button class="ghost" title="Remove or forget this folder" aria-expanded={menuFor === s.id} onclick={() => ((menuFor = menuFor === s.id ? null : s.id), (forgetArmed = null))}>✕</button>
         </span>
       </div>
+      {#if menuFor === s.id}
+        <div class="confirm">
+          <button class="small" onclick={() => remove(s.id)}>Remove from this session</button>
+          <p class="muted">Hidden until you add it again. Photos, decisions and previews are kept.</p>
+          {#if forgetArmed === s.id}
+            <button class="small danger" onclick={() => forget(s.id, s.name)}>Forget {formatCount(s.photoCount)} photos</button>
+            <p class="muted">Deletes their decisions, analysis, export history and previews from Darkroom. The folder's files are never touched.</p>
+          {:else}
+            <button class="small" onclick={() => (forgetArmed = s.id)}>Forget this folder…</button>
+            <p class="muted">Start over: as if it had never been added.</p>
+          {/if}
+        </div>
+      {/if}
     {/each}
-    {#if sources.length}<button class="ghost left" title="Scan every folder for new photos (photos already scanned aren't read again)" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
+    {#if forgetMessage}<p class="muted small note">{forgetMessage}</p>{/if}
+    {#if sources.length}<button class="ghost left small" title="Folders are checked by themselves at launch and after adding or clearing; use this after copying photos in yourself. Photos already scanned aren't read again." onclick={rescanAll} disabled={scanning}>Check for new photos</button>{/if}
 
     <div class="eyebrow">Suggestions from</div>
     <ul class="how muted small">
@@ -401,6 +476,39 @@
               {/if}
             {/if}
 
+        <details class="reset" ontoggle={() => ((resetArmed = false), (resetMessage = null))}>
+          <summary class="muted">Reset selected days…</summary>
+          {#if pickedDays.length}
+            <p class="muted">For testing: forget what was recorded for the {pickedDays.length === 1 ? 'selected day' : `${pickedDays.length} selected days`} so they can be triaged again. Photos and previews stay; files are never touched.</p>
+          {:else}
+            <p class="muted">Select days on the calendar first.</p>
+          {/if}
+          <label><input type="checkbox" bind:checked={resetDecisions} onchange={() => (resetArmed = false)} /> Decisions and their history</label>
+          <label><input type="checkbox" bind:checked={resetAnalysis} onchange={() => (resetArmed = false)} /> Analysis results (computed again)</label>
+          {#if resetArmed}
+            <div class="row">
+              <button class="small danger" onclick={resetSelectedDays}>Reset {pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</button>
+              <button class="small ghost" onclick={() => (resetArmed = false)}>Cancel</button>
+            </div>
+          {:else}
+            <button class="small" disabled={!pickedDays.length || !(resetDecisions || resetAnalysis) || scanning} onclick={() => (resetArmed = true)}>Reset…</button>
+          {/if}
+          {#if resetMessage}<p class="muted">{resetMessage}</p>{/if}
+        </details>
+
+            <div class="kv"><span>Known folders</span><b>{formatCount(library.length)} {library.length === 1 ? 'folder' : 'folders'}</b></div>
+            {#each library as l (l.id)}
+              <div class="lib">
+                <span class="lib-name" title={l.id}>{l.name}<span class="muted"> · {formatCount(l.photoCount)}{l.inSession ? '' : ' · not in session'}</span></span>
+                {#if forgetArmed === l.id}
+                  <button class="small danger" onclick={() => forget(l.id, l.name)}>Forget</button>
+                  <button class="small ghost" onclick={() => (forgetArmed = null)}>Cancel</button>
+                {:else}
+                  <button class="small ghost" title="Delete its photos' rows, decisions, analysis and previews from Darkroom. Files are never touched." onclick={() => (forgetArmed = l.id)}>Forget…</button>
+                {/if}
+              </div>
+            {/each}
+
             <div class="kv"><span>Background errors</span><b>{errors ? errors.lines.length : '…'}</b></div>
             {#if errors?.lines.length}
               <pre class="errlog">{errors.lines.join('\n')}</pre>
@@ -431,8 +539,7 @@
       </div>
       {#if compact}
         <div class="mbtns">
-          <button onclick={addFolder} disabled={scanning}>+ Add</button>
-          {#if sources.length}<button class="ghost" onclick={rescanAll} disabled={scanning}>Rescan</button>{/if}
+          <button onclick={addFolder}>+ Add</button>
         </div>
       {/if}
     </header>
@@ -601,25 +708,6 @@
     <div class="kv"><span>Already triaged</span><b>{range ? formatCount(total - left) : '–'}</b></div>
     <div class="kv"><span>Time at your pace</span><b>{left ? `~${minutesFor(left)} min` : '–'}</b></div>
     <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
-    <details class="reset" ontoggle={() => ((resetArmed = false), (resetMessage = null))}>
-      <summary class="muted">Reset these days…</summary>
-      {#if pickedDays.length}
-        <p class="muted">For testing: forget what was recorded for the {pickedDays.length === 1 ? 'selected day' : `${pickedDays.length} selected days`} so they can be triaged again. Photos and previews stay; files are never touched.</p>
-      {:else}
-        <p class="muted">Select days on the calendar first.</p>
-      {/if}
-      <label><input type="checkbox" bind:checked={resetDecisions} onchange={() => (resetArmed = false)} /> Decisions and their history</label>
-      <label><input type="checkbox" bind:checked={resetAnalysis} onchange={() => (resetArmed = false)} /> Analysis results (computed again)</label>
-      {#if resetArmed}
-        <div class="row">
-          <button class="small danger" onclick={resetSelectedDays}>Reset {pickedDays.length === 1 ? '1 day' : `${pickedDays.length} days`}</button>
-          <button class="small ghost" onclick={() => (resetArmed = false)}>Cancel</button>
-        </div>
-      {:else}
-        <button class="small" disabled={!pickedDays.length || !(resetDecisions || resetAnalysis) || scanning} onclick={() => (resetArmed = true)}>Reset…</button>
-      {/if}
-      {#if resetMessage}<p class="muted">{resetMessage}</p>{/if}
-    </details>
   </div>
 {/snippet}
 
@@ -703,6 +791,9 @@
   .reset p { margin: 4px 0; }
   .reset label { display: flex; gap: 6px; align-items: center; }
   .reset .row { display: flex; gap: 6px; }
+  .lib { display: flex; align-items: center; gap: 4px; font-size: 12px; }
+  .lib-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .danger { color: var(--hate); border-color: color-mix(in srgb, var(--hate) 50%, var(--border)); }
   .reset .danger { color: var(--hate); border-color: color-mix(in srgb, var(--hate) 50%, var(--border)); }
 
   /* Phones: AppShell hides the sidebar and turns the summary into a bottom sheet. */

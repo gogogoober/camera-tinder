@@ -70,7 +70,7 @@ fn scan_cull_export_rescan() {
         std::fs::copy(card.join("DCIM/100NIKON").join(f), laptop.join(f)).unwrap();
     }
     let svc_id = card.canonicalize().unwrap().to_string_lossy().into_owned();
-    svc.remove_source(&svc_id);
+    svc.remove_source(&svc_id).unwrap();
     svc.add_source(Arc::new(FsSource::new(&laptop).unwrap())).unwrap();
     let r = svc.scan(&Default::default(), &NullSink).unwrap();
     assert_eq!((r.found, r.new), (3, 0));

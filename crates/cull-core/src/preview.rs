@@ -205,6 +205,21 @@ impl PreviewCache {
     /// Removing a name never destroys data reachable through another link, so even a
     /// hard link someone placed here can't take an original with it.
     pub fn clear(&self) -> Result<u64> {
+        self.remove_where(|_| true)
+    }
+
+    /// Delete the cached previews (every size) of these photos only. Same rules as `clear`.
+    pub fn remove_for(&self, fingerprints: &[String]) -> Result<u64> {
+        if fingerprints.is_empty() {
+            return Ok(0);
+        }
+        let set: std::collections::HashSet<&str> = fingerprints.iter().map(String::as_str).collect();
+        // Previews are `<fingerprint>_<edge>.jpg`; temp files are left to `clear`.
+        self.remove_where(|name| is_preview_name(name) && name.split_once('_').is_some_and(|(fp, _)| set.contains(fp)))
+    }
+
+    /// Delete this cache's own files whose name passes `pick`. See `clear` for the rules.
+    fn remove_where(&self, pick: impl Fn(&str) -> bool) -> Result<u64> {
         // The cache folder itself must be a real folder, not a symlink to somewhere else.
         if !fs::symlink_metadata(&self.dir)?.is_dir() {
             return Err(CoreError::Other(format!("preview cache {} is not a plain folder; not clearing", self.dir.display())));
@@ -213,7 +228,8 @@ impl PreviewCache {
         for e in fs::read_dir(&self.dir)? {
             let e = e?;
             let m = fs::symlink_metadata(e.path())?;
-            if m.is_file() && is_cache_file(&e.file_name().to_string_lossy()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if m.is_file() && is_cache_file(&name) && pick(&name) {
                 let path = e.path();
                 fs::remove_file(&path)?;
                 freed += m.len();
