@@ -226,8 +226,8 @@ impl CullerService {
         for day in &req.days {
             // Exactly YYYY-MM-DD (chrono alone accepts "2026-7-1", which would silently match no photo).
             let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
-            if canonical.as_deref() != Ok(day.as_str()) {
-                return Err(CoreError::Other(format!("not a day (YYYY-MM-DD): {day:?}")));
+            if day != "unknown" && canonical.as_deref() != Ok(day.as_str()) {
+                return Err(CoreError::Other(format!("not a day (YYYY-MM-DD or \"unknown\"): {day:?}")));
             }
         }
         if req.days.is_empty() || !(req.decisions || req.analysis) {
@@ -296,7 +296,7 @@ impl CullerService {
 
     /// Delete the app's own preview copies and return the bytes freed. Refused while any
     /// card / external source is connected: with them gone, nothing can trigger a re-read of
-    /// the originals. Never touches photos, the database (decisions, tags, index) or any file
+    /// the originals. Never touches photos, the database (decisions, index) or any file
     /// the cache didn't create; a later scan rebuilds previews.
     pub fn clear_previews(&self, is_connected: &dyn Fn(&str) -> bool) -> Result<u64> {
         // Not while a scan runs: it would delete previews the scan has just made.
@@ -343,35 +343,23 @@ impl CullerService {
         batch.iter().map(|(id, _)| self.photo(*id)).collect()
     }
 
-    // ---- tags ---------------------------------------------------------
-
-    pub fn tags(&self) -> Result<Vec<Tag>> {
-        self.store.lock().unwrap().tags()
-    }
-
-    pub fn add_tag(&self, name: &str, start_day: &str, end_day: &str, source: TagSource) -> Result<Tag> {
-        self.store.lock().unwrap().add_tag(name.trim(), start_day, end_day, source)
-    }
-
-    pub fn remove_tag(&self, id: i64) -> Result<()> {
-        self.store.lock().unwrap().remove_tag(id)
-    }
+    // ---- suggestions --------------------------------------------------
 
     /// Platforms with a calendar (EventKit) plug it in here.
     pub fn set_calendar(&self, source: Option<Arc<dyn CalendarSource>>) {
         *self.calendar.write().unwrap() = source;
     }
 
-    /// Tags worth offering: calendar events and runs of days from capture times.
-    pub fn suggest_tags(&self) -> Result<Vec<TagSuggestion>> {
+    /// Groups of days worth offering: calendar events and runs of days from capture times.
+    /// `dismissed` holds row ids (`TagSuggestion::id`) to leave out; the rest is regrouped.
+    pub fn suggest_tags(&self, dismissed: &[String]) -> Result<Vec<TagSuggestion>> {
         let days = self.days()?;
-        let existing = self.tags()?;
         let mut out = Vec::new();
         let dated: Vec<&str> = days.iter().filter_map(|d| d.day.as_deref()).collect();
         if let (Some(first), Some(last), Some(cal)) = (dated.first(), dated.last(), self.calendar.read().unwrap().clone()) {
-            out.extend(suggest::from_calendar(&days, &cal.events(first, last)?, &existing));
+            out.extend(suggest::from_calendar(&days, &cal.events(first, last)?, dismissed));
         }
-        out.extend(suggest::from_gaps(&days, &existing));
+        out.extend(suggest::from_gaps(&days, dismissed));
         Ok(out)
     }
 
@@ -525,7 +513,7 @@ impl CullerService {
     // ---- export -------------------------------------------------------
 
     pub fn keepers(&self, opts: ExportOptions) -> Result<Vec<Photo>> {
-        let photos = self.queue(&Filter { day: None, day_to: None, status: StatusFilter::Keepers })?;
+        let photos = self.queue(&Filter { days: None, status: StatusFilter::Keepers })?;
         Ok(photos
             .into_iter()
             .filter(|p| match p.decision {

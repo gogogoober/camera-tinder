@@ -41,7 +41,7 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   scan.rs                  List the folder → skip indexed files → read each new file once, 4 at a time,
                            saving every 32 (ScanSaved event) → cancellable (cancel_scan)
   moments.rs               Group by capture-time gap: moments (15 min) and bursts (3 s)
-  suggest.rs               Tag suggestions without AI: runs of shooting days, calendar events
+  suggest.rs               Day-group suggestions without AI: runs of shooting days, calendar events (one level nested)
   preview.rs               Preview cache (2048 master + 256 thumb at scan; other sizes from the master);
                            RustPreviewMaker = portable decode → rotate → downscale → JPEG
   analysis/                Static photo analysis: one module per feature (trait + result + engines), the
@@ -50,7 +50,7 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
   triage/                  Smart triage: which question each photo gets (Judge / Pick burst / Sweep set aside), computed on
                            every plan() from stored analysis (pure functions, nothing stored). See docs/smart-triage.md
   worker.rs                Background analysis thread: woken by the scan, Stop/Resume analysis. Reads cached previews only
-  api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, tags, suggest_tags, analyze…)
+  api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, suggest_tags, analyze, reset_days…)
 crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
 crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
                            vision.rs = Apple Vision analysis engines (faces, eyes input, aesthetics, feature print…);
@@ -63,7 +63,7 @@ crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource)
 src-tauri/                 Thin adapter: commands → CullerService; `preview://` URI scheme;
                            lib + #[mobile_entry_point] already set up for `tauri ios init`
 ui/src/lib/api/            CullerApi.ts (interface) + tauriApi.ts + mockApi.ts; index.ts picks one
-ui/src/lib/components/     Home (Pick: heatmap + tags + time budget), Heatmap, Cull (loupe / card stack),
+ui/src/lib/components/     Home (Pick: month calendar + suggestions + time budget), Heatmap (month calendar), Cull (loupe / card stack),
                            MomentsBar, Filmstrip, SwipeCard, Review (grid + drag-select), ExportPanel
 ui/src/lib/components/layout/AppShell.svelte
                            Page frame for every screen: flat canvas + top/left/right/bottom regions,
@@ -135,6 +135,11 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
   release 65 → 42 ms/photo. ImageIO quality 0.7 ≈ the portable encoder's 85 in size.
 - `[profile.dev.package."*"]` does not cover workspace crates: generic `image` code instantiated in `cull-core`
   (the portable preview path, analysis) runs unoptimized under `npm start` (~3× slower than release).
+- Pick screen: the selected-days set in Home is the one source of truth for what gets culled; suggestion
+  "Select" buttons only add/remove days in it and read their state back from it. There are no saved tags:
+  they were removed (Nov 2026) as unneeded; older databases keep an unused `tags` table. Cull and Review receive
+  exactly those days (`Filter.days`: any set of days, `"unknown"` = undated, absent = all). Suggestions are grouped in core
+  (`suggest::from_calendar`); dismissing passes row ids back to `suggest_tags` so the rest regroups.
 - Calendar: `EventKitCalendar` implements `CalendarSource`. The app never prompts at launch; Pick shows a
   "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
   de-duplicated per title+day. Mock backend fakes the connect flow.

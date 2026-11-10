@@ -6,10 +6,10 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { api, type Decision, type OutcomeEntry, type Photo, type Tag, type TriageItem } from '../api';
+  import { api, type Decision, type OutcomeEntry, type Photo, type TagSuggestion, type TriageItem } from '../api';
   import type { IssueKind } from '../api/analysisTypes';
   import { DECISIONS } from '../decisions';
-  import { short, shortRange } from '../days';
+  import { daysLabel, short } from '../days';
   import { formatCount, previewEdge } from '../format';
   import { ISSUE_LABELS, matchesChips, nextRescueMark } from '../triage';
   import { viewport } from '../viewport.svelte';
@@ -18,7 +18,12 @@
   // The end-of-session screen for photos that looked bad ("set aside"): one grid, neutral, nothing
   // X'd out. Click cycles ✓ Keep → ★ Favorite → ⊘ Hate → clear. Done decides all of them at once:
   // marked ones as marked, the rest as ✕ Nope. Leaving without Done decides nothing.
-  let { range, onBack, onDone }: { range: { from: string; to: string }; onBack: () => void; onDone: () => void } = $props();
+  let { days, onBack, onDone }: {
+    /** Exactly the days picked on the calendar (as Cull got them). */
+    days: string[];
+    onBack: () => void;
+    onDone: () => void;
+  } = $props();
 
   interface Row { photo: Photo; item: TriageItem; day: string }
 
@@ -26,7 +31,8 @@
   const LONG_PRESS_MS = 450;
 
   let rows = $state<Row[]>([]);
-  let tags = $state<Tag[]>([]);
+  /** Calendar events touching the picked days (the old saved tags are gone; events come from suggestions). */
+  let events = $state<TagSuggestion[]>([]);
   let triageVersion = '';
   let marks = $state(new Map<number, RescueMark>(remembered));
   let chosenEvents = $state(new Set<string>());
@@ -40,9 +46,12 @@
 
   onMount(async () => {
     try {
-      const [plan, allTags] = await Promise.all([api.plan({ day: range.from, dayTo: range.to, status: 'all' }), api.tags()]);
+      const [plan, suggestions] = await Promise.all([api.plan({ days, status: 'all' }), api.suggestTags().catch(() => [] as TagSuggestion[])]);
       triageVersion = plan.triageVersion;
-      tags = allTags.filter((t) => t.startDay <= range.to && t.endDay >= range.from);
+      // Calendar events (and the events nested inside them) that cover at least one picked day.
+      events = suggestions
+        .flatMap((s) => [s, ...s.children])
+        .filter((e) => e.source === 'calendar' && days.some((d) => d >= e.startDay && d <= e.endDay));
       rows = plan.photos
         .map((photo, i) => ({ photo, item: plan.triage[i], day: photo.capturedAt?.slice(0, 10) ?? 'unknown' }))
         .filter((r) => r.item?.question === 'sweep' && !r.photo.decision);
@@ -55,12 +64,13 @@
     }
   });
 
-  // Top chip row: calendar events (tags) that overlap the range; with none, one chip per day.
+  // Top chip row: calendar events that touch the picked days; days no event covers get a chip each.
   interface EventChip { key: string; label: string; matches: (day: string) => boolean }
   const eventChips = $derived.by((): EventChip[] => {
-    const days = [...new Set(rows.map((r) => r.day))].sort();
-    const chips: EventChip[] = tags.map((t) => ({ key: `tag:${t.id}`, label: t.name, matches: (d) => d >= t.startDay && d <= t.endDay }));
-    const untagged = days.filter((d) => !tags.some((t) => d >= t.startDay && d <= t.endDay));
+    const photoDays = [...new Set(rows.map((r) => r.day))].sort();
+    const covered = (e: TagSuggestion, d: string) => d >= e.startDay && d <= e.endDay;
+    const chips: EventChip[] = events.map((e) => ({ key: `event:${e.id}`, label: e.name, matches: (d) => covered(e, d) }));
+    const untagged = photoDays.filter((d) => !events.some((e) => covered(e, d)));
     return [...chips, ...untagged.map((d): EventChip => ({ key: `day:${d}`, label: d === 'unknown' ? 'No date' : short(d), matches: (x) => x === d }))].filter((c) =>
       rows.some((r) => c.matches(r.day)),
     );
@@ -156,7 +166,7 @@
 {#snippet topBar()}
   <header class="top">
     <button onclick={onBack}>{compact ? 'Cull' : '‹ Back to cull'}</button>
-    <b>Rescue · {shortRange(range.from, range.to)}</b>
+    <b>Rescue · {daysLabel(days)}</b>
     <span class="grow"></span>
     {#if !compact}<span class="muted">Click: ✓ Keep → ★ Favorite → ⊘ Hate → clear · <kbd>space</kbd> enlarge</span>{/if}
   </header>

@@ -32,6 +32,14 @@ export function shortRange(a: string, b: string): string {
   return a === b ? short(a) : `${short(a)} – ${short(b)}`;
 }
 
+/** Label for a set of days: "Nov 5 – Nov 9" when they're consecutive, else "Aug 1 – Nov 7 · 8 days". */
+export function daysLabel(days: string[]): string {
+  const ds = [...days].sort();
+  if (!ds.length) return '';
+  const span = shortRange(ds[0], ds[ds.length - 1]);
+  return diffDays(ds[0], ds[ds.length - 1]) + 1 === ds.length ? span : `${span} · ${ds.length} days`;
+}
+
 export const minutesFor = (photos: number) => Math.max(1, Math.round((photos * SECONDS_PER_PHOTO) / 60));
 
 /** Heat level of a day: how many photos are still to cull. */

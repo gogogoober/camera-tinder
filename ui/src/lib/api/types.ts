@@ -39,8 +39,8 @@ export interface DaySummary {
 }
 
 export interface Filter {
-  day: string | null; // "YYYY-MM-DD" (start of a range), "unknown", or null for all
-  dayTo?: string | null; // inclusive end of the range
+  /** Only these days ("YYYY-MM-DD", or "unknown" for no date); null/absent = every day, [] = none. */
+  days?: string[] | null;
   status: StatusFilter;
 }
 
@@ -138,15 +138,9 @@ export interface Plan {
 
 export type TagSource = 'manual' | 'calendar' | 'place' | 'gap' | 'image';
 
-export interface Tag {
-  id: number;
-  name: string;
-  startDay: string;
-  endDay: string;
-  source: TagSource;
-}
-
 export interface TagSuggestion {
+  /** Stable row id; pass it to `suggestTags(dismissed)` to leave the row out. */
+  id: string;
   name: string;
   startDay: string;
   endDay: string;
@@ -173,7 +167,7 @@ export * from './analysisTypes';
 
 /** Forget what was recorded for the photos of some days (testing). Files, previews and tags are kept. */
 export interface ResetRequest {
-  /** YYYY-MM-DD capture days. Empty = nothing. */
+  /** YYYY-MM-DD capture days, or "unknown" for photos without a date. Empty = nothing. */
   days: string[];
   /** Decisions, their history and logged outcomes. */
   decisions: boolean;

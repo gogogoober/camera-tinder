@@ -142,11 +142,11 @@ pub enum StatusFilter {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Filter {
-    /// `YYYY-MM-DD` to restrict to one day (or the start of a range); `None` for all days.
-    pub day: Option<String>,
-    /// Inclusive end of a day range starting at `day`.
+    /// Only photos taken on these days (`YYYY-MM-DD`; `"unknown"` = no capture date).
+    /// `None` = every day; an empty list matches nothing. Any set of days, not just a range:
+    /// the Pick screen sends exactly the days selected on its calendar.
     #[serde(default)]
-    pub day_to: Option<String>,
+    pub days: Option<Vec<String>>,
     #[serde(default)]
     pub status: StatusFilter,
 }
@@ -248,22 +248,13 @@ impl TagSource {
     }
 }
 
-/// A named run of days ("Lisbon", "Maya's wedding").
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tag {
-    pub id: i64,
-    pub name: String,
-    /// `YYYY-MM-DD`, inclusive.
-    pub start_day: String,
-    pub end_day: String,
-    pub source: TagSource,
-}
-
-/// A guess at a tag the user can accept or dismiss.
+/// A suggested group of days (calendar event or run of shooting days) the user can select or dismiss.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TagSuggestion {
+    /// Stable row id (survives regrouping): pass it back to `suggest_tags` to dismiss the row.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub start_day: String,
     pub end_day: String,
@@ -283,7 +274,8 @@ pub struct TagSuggestion {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ResetRequest {
-    /// `YYYY-MM-DD` capture days. Empty = nothing (never "everything").
+    /// `YYYY-MM-DD` capture days, or `"unknown"` for photos without a date (as in `Filter::days`).
+    /// Empty = nothing (never "everything").
     pub days: Vec<String>,
     /// Remove decisions, their history (`decision_log`) and logged outcomes.
     pub decisions: bool,

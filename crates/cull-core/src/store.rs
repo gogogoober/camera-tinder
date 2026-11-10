@@ -64,14 +64,7 @@ CREATE TABLE IF NOT EXISTS decisions (
     decided_at TEXT NOT NULL
 );
 
--- Named runs of days ("Lisbon").
-CREATE TABLE IF NOT EXISTS tags (
-    id        INTEGER PRIMARY KEY,
-    name      TEXT NOT NULL,
-    start_day TEXT NOT NULL,
-    end_day   TEXT NOT NULL,
-    source    TEXT NOT NULL
-);
+-- Older databases also have a `tags` table (saved day ranges, removed Nov 2026). Unused; left alone.
 
 -- Photo analysis results, one row per photo and kind (see analysis/mod.rs).
 -- `implementation` names the engine; when it changes the row is stale and recomputed.
@@ -278,10 +271,18 @@ impl Store {
         Ok(())
     }
 
-    /// Every photo taken on one of `days` (`YYYY-MM-DD`), in the whole library.
+    /// Every photo taken on one of `days` (`YYYY-MM-DD`, or `"unknown"` for photos without a capture
+    /// date, as in `Filter::days`), in the whole library.
     pub fn photo_ids_on_days(&self, days: &[String]) -> Result<Vec<PhotoId>> {
         let mut ids = Vec::new();
-        for chunk in days.chunks(500) {
+        if days.iter().any(|d| d == "unknown") {
+            let mut stmt = self.conn.prepare("SELECT id FROM photos WHERE captured_at IS NULL ORDER BY id")?;
+            for id in stmt.query_map([], |r| r.get::<_, PhotoId>(0))? {
+                ids.push(id?);
+            }
+        }
+        let dated: Vec<&String> = days.iter().filter(|d| *d != "unknown").collect();
+        for chunk in dated.chunks(500) {
             let mut stmt = self.conn.prepare(&format!("SELECT id FROM photos WHERE substr(captured_at, 1, 10) IN ({}) ORDER BY id", placeholders(chunk.len())))?;
             for id in stmt.query_map(params_from_iter(chunk), |r| r.get::<_, PhotoId>(0))? {
                 ids.push(id?);
@@ -365,20 +366,22 @@ impl Store {
             StatusFilter::Keepers => sql.push_str(" AND d.decision IN ('like', 'favorite')"),
             StatusFilter::Rejects => sql.push_str(" AND d.decision IN ('dislike', 'hate')"),
         }
-        match filter.day.as_deref() {
-            None => {}
-            Some("unknown") => sql.push_str(" AND p.captured_at IS NULL"),
-            Some(day) => match filter.day_to.as_deref() {
-                Some(to) if to != day => {
-                    sql.push_str(" AND substr(p.captured_at, 1, 10) BETWEEN ? AND ?");
-                    args.push(day.to_string());
-                    args.push(to.to_string());
-                }
-                _ => {
-                    sql.push_str(" AND substr(p.captured_at, 1, 10) = ?");
-                    args.push(day.to_string());
-                }
-            },
+        if let Some(days) = &filter.days {
+            let unknown = days.iter().any(|d| d == "unknown");
+            let dated: Vec<&String> = days.iter().filter(|d| *d != "unknown").collect();
+            let mut any = Vec::new();
+            if !dated.is_empty() {
+                any.push(format!("substr(p.captured_at, 1, 10) IN ({})", placeholders(dated.len())));
+                args.extend(dated.into_iter().cloned());
+            }
+            if unknown {
+                any.push("p.captured_at IS NULL".to_string());
+            }
+            if any.is_empty() {
+                sql.push_str(" AND 0");
+            } else {
+                sql.push_str(&format!(" AND ({})", any.join(" OR ")));
+            }
         }
         sql.push_str(" ORDER BY p.captured_at IS NULL, p.captured_at, p.file_name");
         let mut stmt = self.conn.prepare(&sql)?;
@@ -524,36 +527,6 @@ impl Store {
         }
         Ok(out)
     }
-
-    // ---- tags ---------------------------------------------------------
-
-    pub fn tags(&self) -> Result<Vec<Tag>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, start_day, end_day, source FROM tags ORDER BY start_day, end_day, id")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(Tag {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                start_day: r.get(2)?,
-                end_day: r.get(3)?,
-                source: TagSource::parse(&r.get::<_, String>(4)?),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn add_tag(&self, name: &str, start_day: &str, end_day: &str, source: TagSource) -> Result<Tag> {
-        let id: i64 = self.conn.query_row(
-            "INSERT INTO tags (name, start_day, end_day, source) VALUES (?1, ?2, ?3, ?4) RETURNING id",
-            params![name, start_day, end_day, source.as_str()],
-            |r| r.get(0),
-        )?;
-        Ok(Tag { id, name: name.into(), start_day: start_day.into(), end_day: end_day.into(), source })
-    }
-
-    pub fn remove_tag(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM tags WHERE id = ?1", [id])?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -626,6 +599,10 @@ mod tests {
         assert_eq!((count("analysis", a), count("analysis", b)), (0, 1));
         assert_eq!(store.photo(a).unwrap().decision, None, "the photo itself is kept");
         assert!(store.photo_ids_on_days(&[]).unwrap().is_empty());
+        assert_eq!(store.photo_ids_on_days(&["unknown".into()]).unwrap(), vec![nodate], "'unknown' = no capture date, as in Filter");
+        let mut both = store.photo_ids_on_days(&["2026-07-02".into(), "unknown".into()]).unwrap();
+        both.sort();
+        assert_eq!(both, vec![b, nodate]);
     }
 
     #[test]
@@ -711,7 +688,7 @@ mod tests {
         let _d = photo(&s, "4", "a", "x/4.jpg", None);
 
         // Ordered by capture time, unknown last.
-        let all = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::All }).unwrap();
+        let all = s.query(&src, &Filter { days: None, status: StatusFilter::All }).unwrap();
         assert_eq!(all.iter().map(|p| p.file_name.as_str()).collect::<Vec<_>>(), ["2.jpg", "1.jpg", "3.jpg", "4.jpg"]);
 
         s.set_decision(a, Some(Decision::Like)).unwrap();
@@ -720,9 +697,10 @@ mod tests {
 
         let undecided = s.query(&src, &Filter::default()).unwrap();
         assert_eq!(undecided.len(), 1);
-        let keepers = s.query(&src, &Filter { day: None, day_to: None, status: StatusFilter::Keepers }).unwrap();
+        let keepers = s.query(&src, &Filter { days: None, status: StatusFilter::Keepers }).unwrap();
         assert_eq!(keepers.len(), 2);
-        let day1 = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: None, status: StatusFilter::All }).unwrap();
+        let on = |days: &[&str]| Filter { days: Some(days.iter().map(|d| d.to_string()).collect()), status: StatusFilter::All };
+        let day1 = s.query(&src, &on(&["2026-07-01"])).unwrap();
         assert_eq!(day1.len(), 2);
 
         let st = s.stats(&src).unwrap();
@@ -733,9 +711,13 @@ mod tests {
         assert_eq!(days[0].day.as_deref(), Some("2026-07-01"));
         assert_eq!(days[2].day, None);
 
-        // Day ranges.
-        let range = s.query(&src, &Filter { day: Some("2026-07-01".into()), day_to: Some("2026-07-02".into()), status: StatusFilter::All }).unwrap();
-        assert_eq!(range.len(), 3);
+        // Any set of days, not just a range; "unknown" = no capture date; empty = nothing.
+        assert_eq!(s.query(&src, &on(&["2026-07-01", "2026-07-02"])).unwrap().len(), 3);
+        let skip = s.query(&src, &on(&["2026-07-02", "2026-07-09"])).unwrap();
+        assert_eq!(skip.iter().map(|p| p.file_name.as_str()).collect::<Vec<_>>(), ["3.jpg"]);
+        assert_eq!(s.query(&src, &on(&["unknown"])).unwrap().len(), 1);
+        assert_eq!(s.query(&src, &on(&["2026-07-02", "unknown"])).unwrap().len(), 2);
+        assert!(s.query(&src, &on(&[])).unwrap().is_empty());
 
         // Undo = restore previous.
         let prev = s.set_decision(c, None).unwrap();
@@ -744,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn bulk_decisions_and_tags() {
+    fn bulk_decisions() {
         let mut s = Store::open_in_memory().unwrap();
         let a = photo(&s, "1", "a", "x/1.jpg", Some("2026-07-01T10:00:00"));
         let b = photo(&s, "2", "a", "x/2.jpg", Some("2026-07-01T10:00:01"));
@@ -752,10 +734,5 @@ mod tests {
         let prev = s.set_many(&[(a, Some(Decision::Dislike)), (b, Some(Decision::Dislike))]).unwrap();
         assert_eq!(prev, vec![Some(Decision::Like), None]);
         assert_eq!(s.decision(b).unwrap(), Some(Decision::Dislike));
-
-        let t = s.add_tag("Hike", "2026-07-01", "2026-07-03", TagSource::Manual).unwrap();
-        assert_eq!(s.tags().unwrap().len(), 1);
-        s.remove_tag(t.id).unwrap();
-        assert!(s.tags().unwrap().is_empty());
     }
 }

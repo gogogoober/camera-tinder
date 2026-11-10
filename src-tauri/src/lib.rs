@@ -116,27 +116,9 @@ async fn undo(state: State<'_, AppState>) -> CmdResult<Vec<Photo>> {
 }
 
 #[tauri::command]
-async fn tags(state: State<'_, AppState>) -> CmdResult<Vec<Tag>> {
+async fn suggest_tags(state: State<'_, AppState>, dismissed: Option<Vec<String>>) -> CmdResult<Vec<TagSuggestion>> {
     let svc = state.0.clone();
-    blocking(move || svc.tags()).await
-}
-
-#[tauri::command]
-async fn add_tag(state: State<'_, AppState>, name: String, start_day: String, end_day: String, source: Option<TagSource>) -> CmdResult<Tag> {
-    let svc = state.0.clone();
-    blocking(move || svc.add_tag(&name, &start_day, &end_day, source.unwrap_or(TagSource::Manual))).await
-}
-
-#[tauri::command]
-async fn remove_tag(state: State<'_, AppState>, id: i64) -> CmdResult<()> {
-    let svc = state.0.clone();
-    blocking(move || svc.remove_tag(id)).await
-}
-
-#[tauri::command]
-async fn suggest_tags(state: State<'_, AppState>) -> CmdResult<Vec<TagSuggestion>> {
-    let svc = state.0.clone();
-    blocking(move || svc.suggest_tags()).await
+    blocking(move || svc.suggest_tags(&dismissed.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -321,9 +303,6 @@ pub fn run() {
             reset_days,
             log_outcomes,
             undo,
-            tags,
-            add_tag,
-            remove_tag,
             suggest_tags,
             calendar_status,
             preview_cache_status,

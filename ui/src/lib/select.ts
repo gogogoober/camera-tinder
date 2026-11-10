@@ -9,6 +9,8 @@ export interface SelectOptions {
   onSelect: (from: number, to: number) => void;
   /** Called for a press-and-release on a single item. */
   onClick?: (index: number, e: PointerEvent) => void;
+  /** Called on press, with the item the press started on. */
+  onStart?: (index: number) => void;
   /** Called while the pointer is down, for live highlighting. */
   onPreview?: (range: { from: number; to: number } | null) => void;
 }
@@ -33,6 +35,7 @@ export function dragSelect(node: HTMLElement, opts: SelectOptions) {
     anchor = i;
     last = { from: i, to: i };
     moved = false;
+    o.onStart?.(i);
     node.setPointerCapture(e.pointerId);
   }
 

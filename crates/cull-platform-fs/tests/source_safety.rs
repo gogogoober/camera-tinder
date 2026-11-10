@@ -54,7 +54,7 @@ fn set_tree_mode(root: &Path, file: u32, dir: u32) {
 }
 
 /// Runs every operation that touches photos: scan, rescan, previews,
-/// all four decisions, bulk decisions, undo, tags, suggestions, export.
+/// all four decisions, bulk decisions, undo, suggestions, export.
 fn exercise_everything(svc: &CullerService, dest: &Path) -> ExportReport {
     svc.scan(&Default::default(), &NullSink).unwrap();
     svc.scan(&Default::default(), &NullSink).unwrap(); // rescan (cached path)
@@ -72,8 +72,7 @@ fn exercise_everything(svc: &CullerService, dest: &Path) -> ExportReport {
     svc.decide_many(&[q[0].id, q[1].id], Decision::Hate).unwrap();
     svc.undo().unwrap();
     svc.decide_many(&[q[0].id, q[1].id], Decision::Hate).unwrap();
-    svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
-    svc.suggest_tags().unwrap();
+    svc.suggest_tags(&[]).unwrap();
     svc.export(&CopyToDir::new(dest).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink).unwrap()
 }
 
@@ -352,7 +351,7 @@ fn card_is_read_once_at_scan_then_left_alone_until_export() {
     assert_eq!(src.take(), Vec::<String>::new(), "rescan should only list the card");
 
     // A whole culling session: every preview size the UI uses (and silly ones), all decisions,
-    // bulk, undo, plan, tags, suggestions. The card must not be opened once.
+    // bulk, undo, plan, suggestions. The card must not be opened once.
     let q = svc.queue(&Filter::default()).unwrap();
     for p in &q {
         for edge in [64, 256, 512, 1024, 1600, 2048, 4096, 9999] {
@@ -367,8 +366,7 @@ fn card_is_read_once_at_scan_then_left_alone_until_export() {
     svc.decide_many(&[q[2].id, q[3].id], Decision::Favorite).unwrap();
     svc.undo().unwrap();
     svc.decide_many(&[q[2].id, q[3].id], Decision::Favorite).unwrap();
-    svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
-    svc.suggest_tags().unwrap();
+    svc.suggest_tags(&[]).unwrap();
     svc.days().unwrap();
     svc.stats().unwrap();
     assert_eq!(src.take(), Vec::<String>::new(), "culling must not touch the card");
@@ -538,7 +536,6 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     card_src.take();
     let q = svc.queue(&Filter::default()).unwrap();
     svc.decide(q[0].id, Decision::Favorite).unwrap();
-    svc.add_tag("Trip", "2020-01-01", "2030-01-01", TagSource::Manual).unwrap();
 
     let card_id = card.canonicalize().unwrap().to_string_lossy().into_owned();
     let external = |id: &str| id == card_id && Path::new(id).is_dir();
@@ -553,7 +550,7 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     svc.remove_source(&card_id);
     assert!(svc.clear_previews(&external).is_err());
 
-    // Unplug: allowed. Only previews go; photos, decisions and tags stay; card never read.
+    // Unplug: allowed. Only previews go; photos and decisions stay; card never read.
     let away = tmp.path().join("card-away");
     fs::rename(&card, &away).unwrap();
     let (card_before, folder_before) = (snapshot(&away), snapshot(&folder));
@@ -563,7 +560,6 @@ fn clearing_previews_waits_until_external_sources_are_unplugged() {
     assert_eq!(snapshot(&away), card_before);
     assert_eq!(snapshot(&folder), folder_before);
     assert_eq!(card_src.take(), Vec::<String>::new());
-    assert_eq!(svc.tags().unwrap().len(), 1);
 
     // Plug back in and rescan: previews rebuilt with one read per photo.
     fs::rename(&away, &card).unwrap();

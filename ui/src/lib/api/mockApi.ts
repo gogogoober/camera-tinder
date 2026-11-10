@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, Tag, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, Photo, Plan, SourceInfo, Stats, TagSuggestion } from './types';
 import type { PhotoAnalysis } from './analysisTypes';
 import { mockTriage } from './mockTriage';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
@@ -7,7 +7,7 @@ import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } f
 /**
  * In-memory fake backend so the UI can be built and tested in a plain browser
  * (`npm run dev:mock`), with no Rust build in the loop. It mimics cull-core:
- * capture-ordered queues, moments/bursts, tags and suggestions.
+ * capture-ordered queues, moments/bursts and suggestions.
  */
 
 /** Shape of a photo nobody has analysed yet. */
@@ -24,10 +24,6 @@ let cancelRequested = false;
 /** Folders whose photos are all saved, and the photos a stopped scan hasn't saved yet. */
 const scannedSources = new Set<string>();
 const unsaved = new Map<string, Photo[]>();
-let tags: Tag[] = [
-  { id: 1, name: 'Lisbon', startDay: '2026-06-12', endDay: '2026-06-19', source: 'place' },
-];
-let tagId = 2;
 let calendar: CalendarStatus = 'notDetermined';
 let cacheBytes = 0;
 const undoStack: [number, Decision | null][][] = [];
@@ -144,11 +140,8 @@ const active = () => photos.filter((p) => sources.some((s) => s.id === p.sourceI
 function query(filter: Filter): Photo[] {
   return active()
     .filter((p) => {
-      if (filter.day == null) return true;
-      if (filter.day === 'unknown') return p.capturedAt == null;
-      const d = p.capturedAt?.slice(0, 10);
-      if (!d) return false;
-      return filter.dayTo ? d >= filter.day && d <= filter.dayTo : d === filter.day;
+      if (filter.days == null) return true;
+      return filter.days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown');
     })
     .filter((p) => {
       switch (filter.status) {
@@ -280,36 +273,46 @@ export const mockApi: CullerApi = {
     });
   },
 
-  async tags() {
-    return tags.map((t) => ({ ...t }));
-  },
-  async addTag(name, startDay, endDay, source = 'manual') {
-    const t: Tag = { id: tagId++, name, startDay, endDay, source };
-    tags.push(t);
-    return t;
-  },
-  async removeTag(id) {
-    tags = tags.filter((t) => t.id !== id);
-  },
-  async suggestTags(): Promise<TagSuggestion[]> {
-    const sug = (name: string, startDay: string, endDay: string, source: 'gap' | 'calendar', reason: string, children: TagSuggestion[] = [], names: string[] = []): TagSuggestion =>
-      ({ name, startDay, endDay, source, reason, photoCount: 0, names, children });
-    const all: TagSuggestion[] = [
-      sug('Hike', '2026-08-01', '2026-08-03', 'gap', 'Shot 3 days in a row'),
-      sug("Maya's wedding", '2026-09-19', '2026-09-19', 'calendar', 'Calendar event, 2 pm – 11 pm'),
-      sug('Cabin weekend', '2026-10-17', '2026-10-18', 'calendar', 'All-day calendar event'),
-      sug('Mom Visiting', '2026-10-29', '2026-11-08', 'calendar', 'Calendar event', [
-        sug('Wedding – Washington DC / Mayflower Hotel Stay', '2026-11-05', '2026-11-08', 'calendar', 'Calendar event', [], ['Wedding – Washington DC', 'Mayflower Hotel Stay']),
-        sug('Train to Washington DC', '2026-11-05', '2026-11-05', 'calendar', 'Calendar event'),
-        sug('Mariel Hangout', '2026-11-08', '2026-11-08', 'calendar', 'Calendar event'),
-      ], ['Mom Visiting']),
-      sug('Nov 1 – Nov 8', '2026-11-01', '2026-11-08', 'gap', 'Shot 8 days in a row'),
+  async suggestTags(dismissed: string[] = []): Promise<TagSuggestion[]> {
+    // Mirrors cull-core's suggest.rs grouping, simplified (no photo counts).
+    const events: [string, string, string][] = [
+      ["Maya's wedding", '2026-09-19', '2026-09-19'],
+      ['Cabin weekend', '2026-10-17', '2026-10-18'],
+      ['Mom Visiting', '2026-10-29', '2026-11-08'],
+      ['Wedding – Washington DC', '2026-11-05', '2026-11-08'],
+      ['Stay at The Mayflower Hotel', '2026-11-05', '2026-11-08'],
+      ['Train to Washington DC', '2026-11-05', '2026-11-05'],
+      ['Mariel Hangout', '2026-11-08', '2026-11-08'],
+      ['Train to New York', '2026-11-08', '2026-11-08'],
     ];
-    const taken = (s: TagSuggestion) => tags.some((t) => t.startDay === s.startDay && t.endDay === s.endDay);
-    return all
-      .filter((s) => calendar === 'connected' || s.source !== 'calendar')
-      .filter((s) => !taken(s))
-      .map((s) => ({ ...s, children: s.children.filter((c) => !taken(c)) }));
+    const rows: TagSuggestion[] = [];
+    if (calendar === 'connected') {
+      for (const [title, a, b] of events) {
+        const multi = a !== b;
+        const id = multi ? `cal|${a}|${b}` : `cal|${a}|${b}|${title}`;
+        if (dismissed.includes(id)) continue;
+        const same = multi && rows.find((r) => r.id === id);
+        if (same) {
+          same.names.push(title);
+          same.name = same.names.join(' / ');
+          continue;
+        }
+        rows.push({ id, name: title, startDay: a, endDay: b, source: 'calendar', reason: 'Calendar event', photoCount: 0, names: multi ? [title] : [], children: [] });
+      }
+    }
+    const inside = (c: TagSuggestion, p: TagSuggestion) =>
+      p.startDay !== p.endDay && p.startDay <= c.startDay && c.endDay <= p.endDay && !(p.startDay === c.startDay && p.endDay === c.endDay);
+    const roots = rows.filter((c) => !rows.some((p) => inside(c, p)));
+    const out: TagSuggestion[] = [];
+    for (const r of roots) {
+      out.push({ ...r, children: rows.filter((c) => !roots.includes(c) && inside(c, r)).map((c) => ({ ...c, children: [] })) });
+    }
+    const gaps: TagSuggestion[] = [
+      { id: 'gap|2026-08-01|2026-08-03', name: 'Hike', startDay: '2026-08-01', endDay: '2026-08-03', source: 'gap', reason: 'Shot 3 days in a row', photoCount: 0, names: [], children: [] },
+      { id: 'gap|2026-11-01|2026-11-08', name: 'Nov 1 – Nov 8', startDay: '2026-11-01', endDay: '2026-11-08', source: 'gap', reason: 'Shot 8 days in a row', photoCount: 0, names: [], children: [] },
+    ];
+    out.push(...gaps.filter((g) => !dismissed.includes(g.id)));
+    return out.sort((x, y) => x.startDay.localeCompare(y.startDay));
   },
 
   async calendarStatus() {
@@ -354,7 +357,7 @@ export const mockApi: CullerApi = {
   },
   async logOutcomes() {},
   async resetDays({ days, decisions, analysis }) {
-    const hit = photos.filter((p) => p.capturedAt && days.includes(p.capturedAt.slice(0, 10)));
+    const hit = photos.filter((p) => days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown'));
     let d = 0;
     let a = 0;
     for (const p of hit) {
@@ -374,7 +377,7 @@ export const mockApi: CullerApi = {
   async analyzePhotos(request = {}) {
     const list = request.photoIds
       ? photos.filter((p) => request.photoIds!.includes(p.id))
-      : query(request.filter ?? { day: null, status: 'all' });
+      : query(request.filter ?? { status: 'all' });
     const todo = request.force ? list : list.filter((p) => !analysed.has(p.id));
     for (let i = 0; i < todo.length; i++) {
       analysed.set(todo[i].id, mockAnalysis(todo[i]));

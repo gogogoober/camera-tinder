@@ -31,7 +31,16 @@ pub struct CalendarEvent {
     pub end_day: String,
 }
 
-pub fn from_gaps(days: &[DaySummary], existing: &[Tag]) -> Vec<TagSuggestion> {
+/// Row ids. Multi-day calendar rows are keyed by their days alone (events on the same days share
+/// one row); single-day rows by day and title; gap rows by their days.
+fn gap_id(a: &str, b: &str) -> String {
+    format!("gap|{a}|{b}")
+}
+fn calendar_id(e: &CalendarEvent) -> String {
+    if e.start_day == e.end_day { format!("cal|{}|{}|{}", e.start_day, e.end_day, e.title) } else { format!("cal|{}|{}", e.start_day, e.end_day) }
+}
+
+pub fn from_gaps(days: &[DaySummary], dismissed: &[String]) -> Vec<TagSuggestion> {
     let mut dated: Vec<(NaiveDate, u64)> = days
         .iter()
         .filter_map(|d| Some((parse(d.day.as_deref()?)?, d.stats.total)))
@@ -65,6 +74,7 @@ pub fn from_gaps(days: &[DaySummary], existing: &[Tag]) -> Vec<TagSuggestion> {
             continue;
         };
         out.push(TagSuggestion {
+            id: gap_id(&a.format(DAY_FMT).to_string(), &b.format(DAY_FMT).to_string()),
             name,
             start_day: a.format(DAY_FMT).to_string(),
             end_day: b.format(DAY_FMT).to_string(),
@@ -76,7 +86,7 @@ pub fn from_gaps(days: &[DaySummary], existing: &[Tag]) -> Vec<TagSuggestion> {
         });
         i = j + 1;
     }
-    out.retain(|s| !existing.iter().any(|t| t.start_day == s.start_day && t.end_day == s.end_day));
+    out.retain(|s| !dismissed.contains(&s.id));
     out
 }
 
@@ -86,12 +96,16 @@ pub fn from_gaps(days: &[DaySummary], existing: &[Tag]) -> Vec<TagSuggestion> {
 ///   child never has children, so A ⊃ B ⊃ C gives A with B and C side by side);
 /// - a child inside several overlapping rows is listed under each of them;
 /// - everything else stays top-level.
-pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], existing: &[Tag]) -> Vec<TagSuggestion> {
+///
+/// `dismissed` row ids are left out *before* grouping, so dismissing a parent regroups what's left
+/// (its children may land under another row).
+pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], dismissed: &[String]) -> Vec<TagSuggestion> {
     let counts: Vec<(&str, u64)> = days.iter().filter_map(|d| Some((d.day.as_deref()?, d.stats.total))).collect();
     let mut rows: Vec<TagSuggestion> = Vec::new();
     for e in events {
         let photos: u64 = counts.iter().filter(|(d, _)| *d >= e.start_day.as_str() && *d <= e.end_day.as_str()).map(|(_, n)| n).sum();
-        if photos == 0 {
+        let id = calendar_id(e);
+        if photos == 0 || dismissed.contains(&id) {
             continue;
         }
         let multi = e.start_day != e.end_day;
@@ -105,6 +119,7 @@ pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], existing: &[
             }
         }
         rows.push(TagSuggestion {
+            id,
             name: e.title.clone(),
             start_day: e.start_day.clone(),
             end_day: e.end_day.clone(),
@@ -132,21 +147,7 @@ pub fn from_calendar(days: &[DaySummary], events: &[CalendarEvent], existing: &[
         }
     }
 
-    // Drop rows already tagged. A tagged parent's children move up so they stay available.
-    let tagged = |s: &TagSuggestion| existing.iter().any(|t| t.name == s.name && t.start_day == s.start_day);
-    let mut out: Vec<TagSuggestion> = Vec::new();
-    for mut r in roots {
-        r.children.retain(|c| !tagged(c));
-        if tagged(&r) {
-            for c in std::mem::take(&mut r.children) {
-                if !out.iter().any(|o| o.name == c.name && o.start_day == c.start_day && o.end_day == c.end_day) {
-                    out.push(c);
-                }
-            }
-        } else {
-            out.push(r);
-        }
-    }
+    let mut out = roots;
     out.sort_by(|a, b| (&a.start_day, &a.name).cmp(&(&b.start_day, &b.name)));
     out
 }
@@ -177,10 +178,10 @@ mod tests {
     }
 
     #[test]
-    fn skips_already_tagged_runs() {
+    fn skips_dismissed_runs() {
         let days = [day("2026-08-01", 50), day("2026-08-02", 50)];
-        let tag = Tag { id: 1, name: "Hike".into(), start_day: "2026-08-01".into(), end_day: "2026-08-02".into(), source: TagSource::Manual };
-        assert!(from_gaps(&days, &[tag]).is_empty());
+        assert_eq!(from_gaps(&days, &[]).len(), 1);
+        assert!(from_gaps(&days, &["gap|2026-08-01|2026-08-02".into()]).is_empty());
     }
 
     #[test]
@@ -230,12 +231,26 @@ mod tests {
     }
 
     #[test]
-    fn same_day_events_stay_separate_and_tagged_parent_promotes_children() {
+    fn same_day_events_stay_separate() {
         let e = [ev("One", "2026-11-03", "2026-11-03"), ev("Two", "2026-11-03", "2026-11-03"), ev("Trip", "2026-11-01", "2026-11-02"), ev("Walk", "2026-11-01", "2026-11-01")];
         let s = from_calendar(&busy(), &e, &[]);
         assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["Trip", "One", "Two"]);
-        let tag = Tag { id: 1, name: "Trip".into(), start_day: "2026-11-01".into(), end_day: "2026-11-02".into(), source: TagSource::Manual };
-        let s = from_calendar(&busy(), &e, &[tag]);
-        assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["Walk", "One", "Two"]);
+        assert_eq!(s[0].children[0].name, "Walk");
+    }
+
+    #[test]
+    fn dismissing_a_parent_regroups_the_rest() {
+        let e = [
+            ev("Mom Visiting", "2026-11-01", "2026-11-10"),
+            ev("Wedding", "2026-11-05", "2026-11-08"),
+            ev("Train", "2026-11-05", "2026-11-05"),
+        ];
+        let s = from_calendar(&busy(), &e, &[]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].id, "cal|2026-11-01|2026-11-10");
+        let s = from_calendar(&busy(), &e, &[s[0].id.clone()]);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].name, "Wedding");
+        assert_eq!(s[0].children[0].id, "cal|2026-11-05|2026-11-05|Train");
     }
 }

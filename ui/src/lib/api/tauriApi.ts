@@ -30,10 +30,7 @@ export const tauriApi: CullerApi = {
   decideMany: (ids, decision) => invoke('decide_many', { ids, decision }),
   undo: () => invoke('undo'),
 
-  tags: () => invoke('tags'),
-  addTag: (name, startDay, endDay, source = 'manual') => invoke('add_tag', { name, startDay, endDay, source }),
-  removeTag: (id) => invoke('remove_tag', { id }),
-  suggestTags: () => invoke('suggest_tags'),
+  suggestTags: (dismissed) => invoke('suggest_tags', { dismissed: dismissed ?? [] }),
   calendarStatus: () => invoke('calendar_status'),
   connectCalendar: () => invoke('connect_calendar'),
   previewCacheStatus: () => invoke('preview_cache_status'),
