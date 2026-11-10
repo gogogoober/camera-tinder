@@ -500,6 +500,40 @@ impl Store {
 mod tests {
     use super::*;
 
+    /// A database written by earlier builds (sources with the removed scan_* columns, photos without
+    /// the sharpness column) opens as-is: every photo, decision and history row is kept and usable.
+    #[test]
+    fn databases_from_earlier_builds_open_with_everything_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("db");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE sources (id TEXT PRIMARY KEY, display_name TEXT NOT NULL, added_at TEXT NOT NULL, last_scan TEXT,
+                     scan_files INTEGER, scan_bytes INTEGER, scan_photos INTEGER, scan_raw INTEGER, scan_other INTEGER, scan_indexed INTEGER);
+                 CREATE TABLE photos (id INTEGER PRIMARY KEY, fingerprint TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL, rel_path TEXT NOT NULL,
+                     file_name TEXT NOT NULL, kind TEXT NOT NULL, size INTEGER NOT NULL, captured_at TEXT, camera TEXT, last_seen TEXT NOT NULL);
+                 CREATE TABLE decisions (photo_id INTEGER PRIMARY KEY REFERENCES photos(id), decision TEXT NOT NULL, decided_at TEXT NOT NULL);
+                 CREATE TABLE decision_log (id INTEGER PRIMARY KEY, photo_id INTEGER NOT NULL REFERENCES photos(id), decision TEXT, previous TEXT, at TEXT NOT NULL);
+                 INSERT INTO sources VALUES ('/card', 'card', '2026-01-01T00:00:00', NULL, 3, 300, 3, 0, 0, 3);
+                 INSERT INTO photos VALUES (1, 'aaaa', '/card', 'DCIM/A.JPG', 'A.JPG', 'jpeg', 100, '2026-01-01T10:00:00', NULL, '2026-01-01T00:00:00');
+                 INSERT INTO decisions VALUES (1, 'favorite', '2026-01-02T00:00:00');
+                 INSERT INTO decision_log VALUES (1, 1, 'favorite', NULL, '2026-01-02T00:00:00');",
+            )
+            .unwrap();
+        }
+        let mut store = Store::open(&path).unwrap();
+        assert_eq!(store.photo(1).unwrap().decision, Some(Decision::Favorite));
+        assert_eq!(store.query(&["/card".into()], &Filter { status: StatusFilter::Keepers, ..Default::default() }).unwrap().len(), 1);
+        // Still fully usable: new sources, photos and decisions (and undo) work.
+        store.upsert_source("/other", "other").unwrap();
+        let b = photo(&store, "bbbb", "/other", "DCIM/B.JPG", None);
+        assert_eq!(store.set_decision(b, Some(Decision::Like)).unwrap(), None);
+        assert_eq!(store.set_decision(1, None).unwrap(), Some(Decision::Favorite));
+        let log: i64 = store.conn.query_row("SELECT COUNT(*) FROM decision_log", [], |r| r.get(0)).unwrap();
+        assert_eq!(log, 3, "history kept and appended");
+    }
+
     /// Two copies of the app on one database: the second waits for the first's write instead of failing.
     #[test]
     fn a_busy_database_is_waited_for() {

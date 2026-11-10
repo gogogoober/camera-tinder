@@ -299,3 +299,145 @@ fn a_preview_rebuild_that_fails_is_reported() {
     assert_eq!(r.failed.len(), 1, "{:?}", r.failed);
     assert!(r.failed[0].0.ends_with("DSC_0001.JPG"));
 }
+
+// ---- Card pulled out mid-read ----------------------------------------------------
+
+/// A file whose reads fail part-way, like a card pulled out while it's being read.
+struct CutsOut(fs::File, usize);
+impl std::io::Read for CutsOut {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.1 == 0 {
+            return Err(std::io::Error::other("card removed"));
+        }
+        let n = buf.len().min(self.1);
+        let n = self.0.read(&mut buf[..n])?;
+        self.1 -= n;
+        Ok(n)
+    }
+}
+impl std::io::Seek for CutsOut {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+/// A source whose files can be made to fail part-way through reading.
+struct Pullable {
+    inner: FsSource,
+    root: std::path::PathBuf,
+    pulled: std::sync::atomic::AtomicBool,
+}
+impl MediaSource for Pullable {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+    fn list(&self) -> Result<Vec<MediaEntry>> {
+        self.inner.list()
+    }
+    fn open(&self, rel: &str) -> Result<Box<dyn ReadSeek>> {
+        if self.pulled.load(std::sync::atomic::Ordering::Relaxed) && rel.ends_with("DSC_0001.JPG") {
+            return Ok(Box::new(CutsOut(fs::File::open(self.root.join(rel))?, 1000)));
+        }
+        self.inner.open(rel)
+    }
+}
+
+#[test]
+fn a_card_pulled_out_mid_read_fails_that_file_and_keeps_everything_else() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("card");
+    card(&root, 3);
+    let src = Arc::new(Pullable { inner: FsSource::new(&root).unwrap(), root: root.clone(), pulled: true.into() });
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(src.clone()).unwrap();
+
+    // Scan: the cut-off file is reported, never indexed half-read; the others are kept.
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!((r.new, r.failed.len()), (2, 1), "{:?}", r.failed);
+    // Card back in: the next scan picks it up.
+    src.pulled.store(false, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(svc.scan(&Default::default(), &NullSink).unwrap().new, 1);
+
+    // Export: the cut-off copy is reported and leaves nothing behind in the destination.
+    for p in svc.queue(&Filter::default()).unwrap() {
+        svc.decide(p.id, Decision::Like).unwrap();
+    }
+    src.pulled.store(true, std::sync::atomic::Ordering::Relaxed);
+    let out = tmp.path().join("out");
+    let r = svc.export(&CopyToDir::new(&out), ExportOptions::default(), &NullSink).unwrap();
+    assert_eq!((r.copied, r.failed.len()), (2, 1), "{:?}", r.failed);
+    let mut names: Vec<_> = fs::read_dir(&out).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["DSC_0000.JPG", "DSC_0002.JPG"], "no partial copy of the cut-off file");
+    for n in &names {
+        assert_eq!(fs::read(out.join(n)).unwrap(), fs::read(root.join("DCIM").join(n)).unwrap());
+    }
+}
+
+/// Symlinks on a card (to a file or a folder elsewhere) are never followed: only real files
+/// inside the folder are photos.
+#[test]
+fn symlinks_inside_a_source_are_not_followed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("card");
+    let elsewhere = tmp.path().join("elsewhere");
+    card(&root, 1);
+    card(&elsewhere, 3);
+    std::os::unix::fs::symlink(elsewhere.join("DCIM/DSC_0002.JPG"), root.join("DCIM/LINK.JPG")).unwrap();
+    std::os::unix::fs::symlink(elsewhere.join("DCIM"), root.join("LINKED_DIR")).unwrap();
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!((r.found, r.new), (1, 1));
+}
+
+/// Accents, spaces and non-Latin names go through scan, preview and export unchanged.
+#[test]
+fn unusual_file_names_go_through_the_whole_flow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("Vacances été 2026");
+    let names = ["Été à Paris 01.JPG", "写真 02.JPG", "a b  c.jpg"];
+    for (i, n) in names.iter().enumerate() {
+        write_jpeg(&root.join("DCIM").join(n), 320, 240, i as u8 * 40);
+    }
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    assert_eq!(svc.scan(&Default::default(), &NullSink).unwrap().new, 3);
+    for p in svc.queue(&Filter::default()).unwrap() {
+        svc.preview(p.id, 800).unwrap();
+        svc.decide(p.id, Decision::Like).unwrap();
+    }
+    let out = tmp.path().join("Keepers à moi");
+    assert_eq!(svc.export(&CopyToDir::new(&out), ExportOptions::default(), &NullSink).unwrap().copied, 3);
+    for n in names {
+        assert_eq!(fs::read(out.join(n)).unwrap(), fs::read(root.join("DCIM").join(n)).unwrap(), "{n}");
+    }
+}
+
+/// Decisions live in the database file: they survive closing and reopening the app.
+#[test]
+fn decisions_survive_a_restart() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("card");
+    card(&root, 3);
+    let (db, cache) = (tmp.path().join("data/camera-tinder.db"), tmp.path().join("cache"));
+    {
+        let svc = CullerService::open(&db, &cache).unwrap();
+        svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+        svc.scan(&Default::default(), &NullSink).unwrap();
+        let q = svc.queue(&Filter::default()).unwrap();
+        svc.decide(q[0].id, Decision::Favorite).unwrap();
+        svc.decide(q[1].id, Decision::Hate).unwrap();
+    }
+    let svc = CullerService::open(&db, &cache).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();
+    let r = svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!(r.new, 0, "nothing re-indexed");
+    let all = svc.queue(&Filter { status: StatusFilter::All, ..Default::default() }).unwrap();
+    let mut decisions: Vec<_> = all.iter().map(|p| p.decision).collect();
+    decisions.sort_by_key(|d| format!("{d:?}"));
+    assert_eq!(decisions, [None, Some(Decision::Favorite), Some(Decision::Hate)]);
+}

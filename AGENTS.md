@@ -185,7 +185,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
 - `crates/cull-platform-fs/tests/source_safety.rs` enforces all of this, including counting every source open
   and a static scan that fails on any new filesystem-writing call (incl. `fs::copy`, libc, Apple URL writers)
   outside the audited lines. `tests/failure_cases.rs` covers card swaps, clearing mid-scan, photos moved to another
-  folder, crashing files and damaged previews; `cull-platform-apple/tests/source_safety.rs` runs the flow with ImageIO.
+  folder, crashing files, damaged previews, a card pulled out mid-read, symlinks, unusual file names, restarts
+  (and `store.rs` tests: databases from earlier builds); `cull-platform-apple/tests/source_safety.rs` runs the flow with ImageIO.
 - Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick sidebar → Storage), refused while a scan runs:
   - Locked while any known source is on a plugged-in **external** volume (`is_external_and_connected`: the folder
     exists and its filesystem device differs from `/`, the Data volume and $HOME). Internal folders never block.
@@ -194,7 +195,8 @@ over 5 days with bursts. Add it in the app via ⌘⇧G in the folder picker.
     never recursive, never follows symlinks, refuses if the cache folder itself is a symlink.
   - Real-volume checks: `cargo test -p cull-platform-fs --test source_safety -- --ignored` (mounts exFAT disk
     images: external detection, never exporting onto the card, no overwrites on exFAT, and every raw byte of an
-    exFAT and a FAT32 card unchanged after a whole session).
+    exFAT and a FAT32 card unchanged after a whole session, export to a drive that fills up). macOS writes `._name`
+    metadata files next to anything written to exFAT/FAT; they are its own, not the app's.
 
 ## Conventions
 

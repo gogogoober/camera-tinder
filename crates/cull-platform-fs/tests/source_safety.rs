@@ -732,3 +732,52 @@ fn export_on_real_exfat_volumes_never_touches_the_card_or_overwrites() {
     }
     assert_eq!(snapshot(card.path()), before, "the card is untouched");
 }
+
+/// Exporting to a drive that fills up: whatever lands is a complete, verified copy; nothing
+/// half-written is left under a photo's name (or as a temp file).
+/// `cargo test -p cull-platform-fs --test source_safety -- --ignored`
+#[test]
+#[ignore]
+fn export_to_a_full_drive_leaves_only_complete_copies() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    make_card(&card);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    for p in svc.queue(&Filter::default()).unwrap() {
+        svc.decide(p.id, Decision::Like).unwrap();
+    }
+
+    let drive = Volume::mount(tmp.path(), "full");
+    let out = drive.path().join("Keepers");
+    fs::create_dir_all(&out).unwrap();
+    // Fill the drive, then free a little: room for about one photo.
+    let filler = drive.path().join("filler");
+    fs::create_dir_all(&filler).unwrap();
+    let chunk = vec![7u8; 64 * 1024];
+    let mut n = 0;
+    while fs::write(filler.join(n.to_string()), &chunk).is_ok() {
+        n += 1;
+    }
+    for i in 0..4 {
+        fs::remove_file(filler.join(i.to_string())).unwrap();
+    }
+    let originals: std::collections::HashMap<String, Vec<u8>> = walkdir::WalkDir::new(&card)
+        .into_iter()
+        .map(|e| e.unwrap())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "JPG"))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), fs::read(e.path()).unwrap()))
+        .collect();
+
+    let r = svc.export(&CopyToDir::new(&out), ExportOptions::default(), &NullSink).unwrap();
+    assert!(!r.failed.is_empty(), "the drive should have run out of space: {r:?}");
+    assert_eq!(r.copied as usize + r.failed.len(), 4);
+    // `._name` files are macOS's own metadata, which it adds next to files written to exFAT/FAT drives.
+    let landed: Vec<_> = fs::read_dir(&out).unwrap().map(|e| e.unwrap()).filter(|e| !e.file_name().to_string_lossy().starts_with("._")).collect();
+    assert_eq!(landed.len() as u64, r.copied, "only the reported copies are there (no temp files)");
+    for e in landed {
+        let name = e.file_name().to_string_lossy().into_owned();
+        assert_eq!(fs::read(e.path()).unwrap(), originals[&name], "{name} is a complete copy");
+    }
+}
