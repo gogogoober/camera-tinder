@@ -41,6 +41,8 @@ export interface Blur {
   /** 0 = edges in all directions, 1 = all aligned (motion blur). */
   directionality: number;
   verdict: 'sharp' | 'soft' | 'motionBlur';
+  /** Share of strong edges that are crisp (0–1); low = smeared by a swung camera. Null when too small to judge. */
+  edgeSharpness?: number | null;
 }
 
 export interface Exposure {

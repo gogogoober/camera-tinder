@@ -209,7 +209,7 @@ mod tests {
     fn analysis(id: PhotoId, hash: u64, peak: u8, verdict: BlurVerdict) -> PhotoAnalysis {
         let mut a = PhotoAnalysis::new(id);
         a.perceptual_hash = Some(PerceptualHash(hash));
-        a.blur = Some(Blur { score: peak, peak, directionality: 0.1, verdict });
+        a.blur = Some(Blur { score: peak, peak, directionality: 0.1, verdict, edge_sharpness: None });
         a
     }
 
@@ -295,17 +295,24 @@ mod tests {
     }
 
     #[test]
-    fn a_borderline_reject_issue_stays_a_judge_but_keeps_its_badge() {
+    fn only_accidental_or_ruined_blur_sets_a_lone_photo_aside() {
         use crate::analysis::{Exposure, ExposureVerdict};
-        let photos = [photo(1, "2026-01-01T10:00:00"), photo(2, "2026-01-01T11:00:00")];
-        let dark = |id, mean| {
-            let mut a = sharp(id, if id == 1 { SCENE_A } else { SCENE_B });
-            a.exposure = Some(Exposure { mean, shadows_clipped: 0.1, highlights_clipped: 0.0, p05: 0.0, p95: 0.5, verdict: ExposureVerdict::Underexposed });
-            a
-        };
-        let items = run(&photos, vec![dark(1, 0.24), dark(2, 0.05)]);
-        assert_eq!((items[0].question, items[0].hints.clone()), (Question::Judge, vec![IssueKind::Underexposed]), "mildly dark: ask, with a badge");
-        assert_eq!((items[1].question, items[1].reasons.clone()), (Question::Sweep, vec![IssueKind::Underexposed]), "very dark: set aside");
+        let photos: Vec<Photo> = (1..=5).map(|i| photo(i, &format!("2026-01-01T{:02}:00:00", 9 + i))).collect();
+        // Very dark and very bright are artistic calls: a badge, never a sweep.
+        let mut dark = sharp(1, SCENE_A);
+        dark.exposure = Some(Exposure { mean: 0.05, shadows_clipped: 0.6, highlights_clipped: 0.0, p05: 0.0, p95: 0.2, verdict: ExposureVerdict::Underexposed });
+        let mut bright = sharp(2, SCENE_B);
+        bright.exposure = Some(Exposure { mean: 0.9, shadows_clipped: 0.0, highlights_clipped: 0.5, p05: 0.6, p95: 1.0, verdict: ExposureVerdict::Overexposed });
+        // A little soft: a badge. Nothing sharp anywhere: swept.
+        let soft = analysis(3, 0x0F0F_0F0F_0F0F_0F0F, 20, BlurVerdict::Soft);
+        let ruined = blurry(4, 0x00FF_00FF_00FF_00FF);
+        let shaken = analysis(5, 0x0123_4567_89AB_CDEF, 20, BlurVerdict::MotionBlur);
+        let items = run(&photos, vec![dark, bright, soft, ruined, shaken]);
+        assert_eq!((items[0].question, items[0].hints.clone()), (Question::Judge, vec![IssueKind::Underexposed]));
+        assert_eq!((items[1].question, items[1].hints.clone()), (Question::Judge, vec![IssueKind::Overexposed]));
+        assert_eq!((items[2].question, items[2].hints.clone()), (Question::Judge, vec![IssueKind::Blurry]), "a bit soft is a badge");
+        assert_eq!((items[3].question, items[3].reasons.clone()), (Question::Sweep, vec![IssueKind::Blurry]), "ruined by blur: set aside");
+        assert_eq!((items[4].question, items[4].reasons.clone()), (Question::Sweep, vec![IssueKind::MotionBlur]), "camera shake with nothing sharp: set aside");
     }
 
     #[test]

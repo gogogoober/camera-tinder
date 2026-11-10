@@ -18,7 +18,7 @@ default answer the user corrects. One component, three uses.
 | Question | Asks | Default | Fed by |
 |---|---|---|---|
 | **Pick** | "Which of these do you want?" | nothing pre-selected; ★ marks the suggested best frame | bursts, near-duplicate groups |
-| **Sweep** | "These look bad. Rescue any?" | none kept (shown neutral, see below) | accidental, blurry, motion blur, subject out of focus, exposure, face cut off, utility |
+| **Sweep** | "These look bad. Rescue any?" | none kept (shown neutral, see below) | accidental shots (black, blank, blown-out) and photos ruined by blur (nothing sharp anywhere; camera-shake smear) |
 | **Judge** | "Keep this one?" | undecided | everything else (today's swipe) |
 | *Hints* | never a question | — | tilt, colour cast, noise, flat, low aesthetic → badges only |
 
@@ -27,7 +27,9 @@ default answer the user corrects. One component, three uses.
 1. **Accidental → Sweep**, even inside a burst (removed from the burst first).
 2. **In a burst / near-duplicate group** (a burst = frames ≤3 s apart *and* a visual second pass says they show the same general scene: looser than near-duplicate, `same_scene_distance` / `SAME_SCENE_BITS`; unrelated frames seconds apart stay separate Judge cards) → Pick, stays in the timeline.** Its issues only lower its rank and
    show as badges. **A burst where every frame is bad stays in the timeline as a Pick**; NOT auto-moved to Sweep — a burst means the owner was trying to capture something. Revisit later.
-3. **Reject-level issue → Sweep**, filed under its worst issue.
+3. **Ruined by blur → Sweep** (`route.rs`: blurry severity ≥ 0.85, motion blur ≥ 0.55). Exposure, subject out of focus,
+   screenshot-looking and cut-off faces are artistic or uncertain calls: **badge only, never a Sweep** (they still lower a
+   frame's rank in a group). Scored against `test-photos-v2/set/manifest.json` with the `score_set` example: 0 good photos swept.
 4. Else **Judge**, with hint badges.
 
 **Eyes closed is NOT a Sweep reason for now** (candids; detector untested on real faces). It is only a

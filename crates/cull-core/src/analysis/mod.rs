@@ -493,7 +493,7 @@ mod tests {
         }
         assert!(r.faces.is_none() && r.eyes.is_none(), "no face detector installed");
         assert_eq!(r.subject_focus.as_ref().unwrap().verdict, FocusVerdict::NoSubject);
-        assert_eq!(r.implementations[&AnalysisKind::Blur], "rust.blur.v1");
+        assert_eq!(r.implementations[&AnalysisKind::Blur], "rust.blur.v2");
     }
 
     #[test]

@@ -63,7 +63,7 @@ reuses stored ones). Engine ids are what `implementation()` returns and what's s
 
 | Kind (`AnalysisKind`) | Trait → method | Result | Engines (id) | Inputs | Catches |
 |---|---|---|---|---|---|
-| `blur` | `BlurAnalyzer::blur` | `Blur { score, peak, directionality, verdict: sharp\|soft\|motionBlur }` | `rust.blur.v1` | – | Missed focus, shake, motion blur. `peak` = sharpest 10% of tiles, so sharp-subject/soft-background isn't flagged |
+| `blur` | `BlurAnalyzer::blur` | `Blur { score, peak, directionality, verdict: sharp\|soft\|motionBlur, edgeSharpness }` | `rust.blur.v2` | – | Missed focus, shake, motion blur. `peak` = sharpest 10% of tiles, so sharp-subject/soft-background isn't flagged. `edgeSharpness` (share of strong edges that change over ≤4 px at 1024 px) catches a swung camera over busy texture, which fools the tile measure: below 0.22 the verdict becomes `motionBlur` (calibrated: swung shots 0.11–0.18, softest ordinary photo 0.28; images under 900 px are not judged) |
 | `exposure` | `ExposureAnalyzer::exposure` | `Exposure { mean, shadowsClipped, highlightsClipped, p05, p95, verdict }` | `rust.exposure.v1` | – | Too dark / blown out |
 | `contrast` | `ContrastAnalyzer::contrast` | `Contrast { rms, range, flat }` | `rust.contrast.v1` | – | Flat, hazy shots |
 | `noise` | `NoiseAnalyzer::noise` | `Noise { sigma, level: low\|medium\|high }` | `rust.noise.v1` (Immerkær, flattest 20% of blocks) | – | Grainy high-ISO shots |

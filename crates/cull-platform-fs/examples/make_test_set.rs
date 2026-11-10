@@ -180,7 +180,7 @@ fn main() {
         .filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("jpg")))
         .collect();
     stock.sort();
-    let need = 43;
+    let need = 42;
     assert!(stock.len() >= need, "need {need} stock photos, found {}", stock.len());
     // Evenly spaced picks so the set isn't just one corner of the stock.
     let mut picks: Vec<PathBuf> = (0..need).map(|i| stock[i * stock.len() / need].clone()).collect();
@@ -316,6 +316,9 @@ fn main() {
     let base = load(&next_stock());
     items.push(Item { time: t("11-03", "11:10"), pixels: Pixels::Image(whitewash(&base)), source: "stock photo, washed out".into(), synthetic: true, expect: "sweep", group: None, note: "synthetic accidental: blown out to white".into() });
 
+    // Nov 5: a second real swung-camera shot.
+    add_real(&mut items, t("11-05", "09:40"), src.join("accidental/accidental_motion_blur_room.jpg"), "sweep", None, "real accidental: camera swung over a busy room");
+
     // Nov 6: real bed blur + synthetic finger, blank wall, motion blur.
     add_real(&mut items, t("11-06", "20:10"), src.join("accidental/accidental_motion_blur_bed.jpg"), "sweep", None, "real accidental: camera swung, blurred all over");
     filler(&mut items, &mut rng, &mut next_stock, t("11-06", "20:30"), 2);
@@ -326,7 +329,7 @@ fn main() {
     items.push(Item { time: t("11-06", "21:05"), pixels: Pixels::Image(motion_blur(&base)), source: "stock photo, horizontal smear".into(), synthetic: true, expect: "sweep", group: None, note: "synthetic accidental: camera shake smear".into() });
 
     // Nov 8: the rest of the ordinary stock photos, plus two more risky keepers from stock.
-    filler(&mut items, &mut rng, &mut next_stock, t("11-08", "10:00"), 7);
+    filler(&mut items, &mut rng, &mut next_stock, t("11-08", "10:00"), 6);
     let base = load(&next_stock());
     items.push(Item { time: t("11-08", "19:00"), pixels: Pixels::Image(low_key(&base)), source: "stock photo, darkened".into(), synthetic: true, expect: "judge", group: None, note: "synthetic intentional low-key (dusk): must not be swept".into() });
     let base = load(&next_stock());

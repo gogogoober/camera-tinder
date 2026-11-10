@@ -13,7 +13,7 @@ function rng(seed: number) {
 }
 
 export const MOCK_ANALYZERS: AnalyzerInfo[] = [
-  ['blur', 'rust.blur.v1'],
+  ['blur', 'rust.blur.v2'],
   ['exposure', 'rust.exposure.v1'],
   ['contrast', 'rust.contrast.v1'],
   ['noise', 'rust.noise.v1'],

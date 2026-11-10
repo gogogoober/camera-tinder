@@ -61,6 +61,10 @@ pub fn issues(a: &PhotoAnalysis) -> Vec<Issue> {
         let sev = 1.0 - b.peak as f32 / super::blur::SOFT_PEAK as f32;
         match b.verdict {
             BlurVerdict::Sharp => {}
+            // The edges are smeared (a swung camera), whether or not some tiles still look sharp over busy texture.
+            BlurVerdict::MotionBlur if b.peak >= super::blur::SOFT_PEAK || b.edge_sharpness.is_some_and(|f| f < super::blur::SMEARED_EDGE_FRACTION * 1.25) => {
+                out.push(issue(IssueKind::MotionBlur, 0.8, "Edges smeared (camera swung)"))
+            }
             BlurVerdict::Soft => out.push(issue(IssueKind::Blurry, 0.4 + sev * 0.6, format!("Nothing sharp (peak {} / 100)", b.peak))),
             BlurVerdict::MotionBlur => out.push(issue(IssueKind::MotionBlur, 0.4 + sev * 0.6, format!("Motion blur (peak {} / 100)", b.peak))),
         }

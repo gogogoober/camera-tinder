@@ -166,7 +166,7 @@ mod tests {
     fn a(id: PhotoId, hash: u64, peak: u8) -> PhotoAnalysis {
         let mut a = PhotoAnalysis::new(id);
         a.perceptual_hash = Some(PerceptualHash(hash));
-        a.blur = Some(Blur { score: peak, peak, directionality: 0.1, verdict: BlurVerdict::Sharp });
+        a.blur = Some(Blur { score: peak, peak, directionality: 0.1, verdict: BlurVerdict::Sharp, edge_sharpness: None });
         a
     }
 

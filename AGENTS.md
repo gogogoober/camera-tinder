@@ -198,6 +198,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
       (pipeline of independent steps, Stop/Resume), `plan()` returns triage per photo, Cull shows burst stacks + a frame
       strip + red set-aside slivers, Rescue screen for the rest, outcomes logged. Verified with tests + mock browser, not
       yet in the real Tauri app.
+- [x] Sweep narrowed (Nov 2026): accidental + ruined blur only; score it with `cargo run --release -p cull-platform-apple --example score_set -- test-photos-v2/set`.
 - [ ] Triage tuning: thresholds (`triage/route.rs`), eyes-closed as a sweep reason, all-bad bursts, from the `outcomes` table.
 - [ ] Photo analysis: tune eyes/noise on real photos.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.

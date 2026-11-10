@@ -24,7 +24,7 @@ use crate::model::PhotoId;
 pub struct StepResult {
     /// The stored key (`analysis.kind`), e.g. `"blur"`.
     pub kind: String,
-    /// Implementation id of the engine that produced it, e.g. `"rust.blur.v1"`.
+    /// Implementation id of the engine that produced it, e.g. `"rust.blur.v2"`.
     pub implementation: String,
     /// The result as JSON (`Null` = computed, nothing to store), or the error message.
     pub result: std::result::Result<Value, String>,
