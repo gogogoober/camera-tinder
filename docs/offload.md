@@ -196,6 +196,32 @@ photo; a 1 a.m. photo just shows under the day before.
 Formatting or deleting from the card, a second backup drive in the same run, adding the SSD as a cull source
 automatically, copying only keepers, renaming existing SSD folders.
 
+## Source and drive safety (Nov 2026 review)
+
+The card is touched in four places, all reads: listing it (plan, final re-check), `open` (fingerprint + EXIF while
+planning) and `open_streaming` (the copy). `MediaSource` has no write methods, so the backup can't write to the card
+through it. The drive is only added to.
+
+Found and fixed in this pass:
+- **A symlink on the drive could redirect writes**, e.g. a `Photos` symlink into the card: folders were made with
+  `create_dir_all`, which follows symlinks, and the test proved files landed on the card. Folders are now created one
+  level at a time, and every folder written in (temp files, final names, the hash list, discards) must resolve inside
+  the picked folder **and** be on its volume (`FsLibrary::ensure_dir` / `inside`). Symlinks that stay inside are fine.
+- **Swapped picks** (the card chosen as the backup drive) only failed if both were on one volume. Now a drive that
+  looks like a camera card (a DCIM folder in it or above it on its volume) is refused when the card doesn't look like
+  one; if both do, the plan warns.
+- **The real-volume test mounted the card read-only for the backup**, which would hide writes. It now mounts exFAT
+  and FAT32 cards read-write, runs plan (full check) → a stopped run → a finishing run against exFAT and APFS drives
+  that already hold files (a same-named different photo, notes in a trip folder, an old copy elsewhere), and checks
+  every raw byte of the card and every pre-existing drive file are unchanged.
+
+Already in place: nothing is overwritten (no-overwrite link, or an exclusive claim on exFAT); only our own
+`.<name>.darkroom-<tag>.partial` files and our own empty claim are ever removed; the drive is read-only while planning;
+temp files a crash left are removed only by their recorded path and name pattern.
+
+What's outside the app's control: macOS itself may write to a card mounted read-write (Spotlight, `.fseventsd`,
+`._` files on exFAT/FAT). The tests mount without Finder (`-nobrowse`) and saw no such writes.
+
 ## Speed (Nov 2026 review)
 
 Measured (release build, internal SSD, generated files): copying runs at ~1 GB/s including the read-back, so a card
@@ -242,6 +268,10 @@ Each was checked by removing its fix and watching the test fail.
 | 21 | Nothing to copy on a nearly full drive | **no false "not enough space"** (was: refused) |
 | 22 | Not enough space | refused before anything is written |
 | 23 | `library-id` is a folder | stops with an error, nothing copied |
+| 24 | A `Photos` symlink on the drive pointing into the card | **refused; the card is untouched** (was: files written onto the card) |
+| 25 | A symlinked folder pointing outside the drive folder | refused for that folder; others still copied |
+| 26 | A symlink that stays inside the drive folder | allowed |
+| 27 | The card picked as the drive (swapped) | **refused** (was: allowed when on different volumes); both card-like → warning |
 | — | FAT32 drive, video ≥ 4 GB | **warning** in the plan (new) |
 | — | Temp names | include the process id, so two app copies never share one |
 

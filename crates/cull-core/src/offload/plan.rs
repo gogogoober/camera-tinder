@@ -577,6 +577,9 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
             input.space.fs_type.to_uppercase()
         ));
     }
+    if input.space.card_like {
+        warnings.push("The backup drive has a DCIM folder at its top, like a camera card. Make sure it's your backup drive and not a card.".into());
+    }
     if new_bytes > 0 && new_bytes + SPACE_MARGIN > input.space.free_bytes {
         warnings.push("Not enough free space on this drive for the new files (plus 1 GB to spare).".into());
     }
@@ -644,7 +647,7 @@ mod tests {
             existing_files: HashSet::new(),
             existing_dirs: HashSet::new(),
             remembered: HashMap::new(),
-            space: LibrarySpace { free_bytes: u64::MAX / 2, fs_type: "apfs".into() },
+            space: LibrarySpace { free_bytes: u64::MAX / 2, fs_type: "apfs".into(), card_like: false },
             last_backups: vec![],
             full_check: false,
         }

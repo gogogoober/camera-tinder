@@ -541,3 +541,64 @@ fn e23_a_broken_library_id_stops_cleanly() {
     assert!(photo_files(&e.ssd).iter().all(|p| p.starts_with("Photos/_darkroom")), "nothing copied");
 }
 
+
+// ---- 24-27: writes stay on the drive, inside the picked folder --------------
+
+#[test]
+fn e24_a_symlink_on_the_drive_cannot_redirect_writes_onto_the_card() {
+    let e = env();
+    let card_before = snapshot(&e.card);
+    // "Photos" on the drive is a symlink into the card.
+    std::os::unix::fs::symlink(e.card.join("DCIM"), e.ssd.join("Photos")).unwrap();
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        plan(&e);
+        e.svc.offload_start(&[], &NullSink)
+    }));
+    let report = res.expect("no panic");
+    assert!(report.is_err() || !report.as_ref().unwrap().all_safe, "{report:?}");
+    assert_eq!(snapshot(&e.card), card_before, "nothing written onto the card through the symlink");
+}
+
+#[test]
+fn e25_a_symlinked_subfolder_pointing_elsewhere_is_refused() {
+    let e = env();
+    let elsewhere = e.ssd.parent().unwrap().join("elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::create_dir_all(e.ssd.join("Photos")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, e.ssd.join("Photos/Fuji")).unwrap();
+    plan(&e);
+    let r = start(&e);
+    assert!(!r.all_safe);
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none(), "nothing written outside the drive folder");
+    // The Nikon files (no symlink on their way) still go in.
+    assert!(e.ssd.join("Photos/Nikon/2026/2026-11/DSC_0001.JPG").exists());
+    assert!(partials(&e.ssd).is_empty());
+}
+
+#[test]
+fn e26_a_symlink_that_stays_inside_the_drive_folder_is_fine() {
+    let e = env();
+    fs::create_dir_all(e.ssd.join("Archive/Fuji")).unwrap();
+    fs::create_dir_all(e.ssd.join("Photos")).unwrap();
+    std::os::unix::fs::symlink(e.ssd.join("Archive/Fuji"), e.ssd.join("Photos/Fuji")).unwrap();
+    plan(&e);
+    let r = start(&e);
+    assert!(r.all_safe, "{r:?}");
+    assert!(e.ssd.join("Archive/Fuji/2026/Japan trip/DSCF0001.JPG").exists());
+}
+
+#[test]
+fn e27_picking_the_card_as_the_drive_is_refused() {
+    let e = env();
+    // The "drive" has DCIM (a card); the "card" doesn't (the SSD): swapped.
+    fs::create_dir_all(e.ssd.join("DCIM/100NIKON")).unwrap();
+    let swapped = FsLibrary::allowing_same_volume_for_tests(&e.ssd, e.card.join("DCIM/100_FUJI"));
+    assert!(swapped.is_ok(), "the card side has DCIM above it: not swapped");
+    let ssd_as_card = e.ssd.parent().unwrap().join("ssd-as-card");
+    fs::create_dir_all(&ssd_as_card).unwrap();
+    let err = FsLibrary::allowing_same_volume_for_tests(&e.ssd, &ssd_as_card).err().expect("swapped picks are refused");
+    assert!(err.to_string().contains("other way round"), "{err}");
+    // Both look like cards: allowed, with a warning in the plan.
+    let p = plan(&e);
+    assert!(p.warnings.iter().any(|w| w.contains("DCIM")), "{:?}", p.warnings);
+}

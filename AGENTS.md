@@ -125,7 +125,9 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   fingerprint anywhere in the picked folder (optional byte-for-byte check). The run writes with `F_NOCACHE` so the
   read-back really reads the drive (an `F_NOCACHE` read alone is still served from memory if pages are resident), flushes
   with `F_FULLFSYNC` per batch, then names files without overwriting. `FsLibrary::new` refuses a drive on the card's
-  volume; tests use `allowing_same_volume_for_tests`, which app code must never call (checked).
+  volume or a drive that looks like a card when the card doesn't (swapped picks); every folder it writes in must
+  resolve inside the picked folder and on its volume (no writing through symlinks). Tests use
+  `allowing_same_volume_for_tests`, which app code must never call (checked).
 - **A day starts at 6 a.m.** everywhere (`cull_core::days`, `photoDay()` in the UI): a 1 a.m. photo belongs to the day
   before. Never cut a day with `captured_at[..10]` / `capturedAt.slice(0, 10)`.
 

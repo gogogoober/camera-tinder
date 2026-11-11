@@ -65,6 +65,8 @@ pub struct LibrarySpace {
     pub free_bytes: u64,
     /// e.g. "apfs", "exfat", "msdos".
     pub fs_type: String,
+    /// The drive has a DCIM folder at its top, like a camera card (and so does the card): worth a warning.
+    pub card_like: bool,
 }
 
 /// The backup drive an offload writes to. Paths are `/`-separated and relative to the folder the

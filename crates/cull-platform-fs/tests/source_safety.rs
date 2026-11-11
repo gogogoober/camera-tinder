@@ -245,7 +245,8 @@ fn only_audited_code_writes_to_disk() {
         ("crates/cull-platform-fs/src/offload.rs", &[
             "libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1)", "libc::fsync(f.as_raw_fd())", "libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC)",
             "libc::statfs", "libc::statvfs",
-            "fs::create_dir_all(dir)?; // offload: under the picked backup folder only",
+            "fs::create_dir(&cur) {", // one level at a time, each checked to stay inside the picked folder
+            "m.file_type().is_symlink()", // a check (not a write): symlinks must resolve inside the picked folder
             "OpenOptions::new().write(true).create_new(true).open(&path)?; // offload: new file, never an existing one",
             "OpenOptions::new().write(true).create_new(true).open(dir.join(&partial_name))?; // offload: new temp file",
             "fs::hard_link(&partial, &dest)", "fs::remove_file(&partial)?; // offload: our own temp file",

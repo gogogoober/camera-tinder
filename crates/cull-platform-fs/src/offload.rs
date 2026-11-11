@@ -7,7 +7,10 @@
 //!   claim it just made.
 //! - Writes and read-backs bypass the OS cache (`F_NOCACHE`), so a read-back really reads the drive.
 //!   `flush_to_media` asks the drive to write its own cache to the medium (`F_FULLFSYNC`).
-//! - Refuses a folder on the same volume as the card, so nothing is ever written onto a card.
+//! - Refuses a folder on the same volume as the card, so nothing is ever written onto a card, and a drive
+//!   that looks like a camera card (DCIM at its top) when the card doesn't (the two picks swapped).
+//! - Every folder it writes in must resolve inside the picked folder, on the picked folder's volume: a
+//!   symlink on the drive can't redirect writes elsewhere (onto the card, another drive, a system folder).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -21,6 +24,10 @@ const CHUNK: usize = 4 << 20;
 
 pub struct FsLibrary {
     root: PathBuf,
+    /// The picked folder's volume: nothing is written on any other.
+    dev: u64,
+    /// The drive has a DCIM folder at its top, like a camera card.
+    card_like: bool,
 }
 
 fn device(p: &Path) -> io::Result<u64> {
@@ -28,18 +35,41 @@ fn device(p: &Path) -> io::Result<u64> {
     Ok(fs::metadata(p)?.dev())
 }
 
+/// Looks like a camera card: the folder, or a folder above it on the same volume, has a DCIM folder (or is
+/// one). Picking `/Volumes/SD`, `/Volumes/SD/DCIM` or `/Volumes/SD/DCIM/100NIKON` all count.
+fn looks_like_card(p: &Path) -> bool {
+    let Ok(dev) = device(p) else { return false };
+    p.ancestors().take_while(|a| device(a).ok() == Some(dev)).any(|a| a.file_name().is_some_and(|n| n == "DCIM") || a.join("DCIM").is_dir())
+}
+
+/// Shared checks of both constructors: not nested, and not the two picks swapped.
+fn check_pair(root: &Path, card: &Path) -> Result<bool> {
+    if !root.is_dir() {
+        return Err(CoreError::Other(format!("not a folder: {}", root.display())));
+    }
+    if root.starts_with(card) || card.starts_with(root) {
+        return Err(CoreError::Other("the backup folder and the card can't contain each other".into()));
+    }
+    let card_like = looks_like_card(root);
+    if card_like && !looks_like_card(card) {
+        return Err(CoreError::Other(
+            "the backup drive looks like a camera card (it has a DCIM folder) and the card doesn't: were they picked the other way round?".into(),
+        ));
+    }
+    Ok(card_like)
+}
+
 impl FsLibrary {
     /// The backup drive's folder. Refuses one on the card's volume, inside the card folder, or containing it.
     pub fn new(root: impl AsRef<Path>, card_root: impl AsRef<Path>) -> Result<Self> {
         let root = fs::canonicalize(root.as_ref())?;
         let card = fs::canonicalize(card_root.as_ref())?;
-        if !root.is_dir() {
-            return Err(CoreError::Other(format!("not a folder: {}", root.display())));
-        }
-        if root.starts_with(&card) || card.starts_with(&root) || device(&root)? == device(&card)? {
+        let card_like = check_pair(&root, &card)?;
+        let dev = device(&root)?;
+        if dev == device(&card)? {
             return Err(CoreError::Other("pick a backup drive other than the card: they are on the same volume".into()));
         }
-        Ok(Self { root })
+        Ok(Self { root, dev, card_like })
     }
 
     /// Tests only: like `new`, but allows the card and the drive on one volume (temp folders). Still
@@ -48,10 +78,50 @@ impl FsLibrary {
     pub fn allowing_same_volume_for_tests(root: impl AsRef<Path>, card_root: impl AsRef<Path>) -> Result<Self> {
         let root = fs::canonicalize(root.as_ref())?;
         let card = fs::canonicalize(card_root.as_ref())?;
-        if root.starts_with(&card) || card.starts_with(&root) {
-            return Err(CoreError::Other("the backup folder and the card can't contain each other".into()));
+        let card_like = check_pair(&root, &card)?;
+        Ok(Self { dev: device(&root)?, root, card_like })
+    }
+
+    /// A folder (relative) to write in, created one level at a time without following any symlink that
+    /// leads out of the picked folder or onto another volume. Returns its real path.
+    fn ensure_dir(&self, rel_dir: &Path) -> Result<PathBuf> {
+        let mut cur = self.root.clone();
+        for c in rel_dir.components() {
+            let Component::Normal(name) = c else {
+                return Err(CoreError::Other(format!("invalid folder: {}", rel_dir.display())));
+            };
+            cur.push(name);
+            match fs::symlink_metadata(&cur) {
+                Ok(m) if m.is_dir() => {}
+                Ok(m) if m.file_type().is_symlink() => cur = self.inside(&cur)?,
+                Ok(_) => return Err(CoreError::Other(format!("{} is a file, not a folder", cur.display()))),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => match fs::create_dir(&cur) {
+                    // offload: one new folder inside the picked backup folder (checked level by level)
+                    Ok(()) => {}
+                    Err(e) if e.kind() == io::ErrorKind::AlreadyExists => cur = self.inside(&cur)?,
+                    Err(e) => return Err(e.into()),
+                },
+                Err(e) => return Err(e.into()),
+            }
         }
-        Ok(Self { root })
+        self.inside(&cur)
+    }
+
+    /// `dir`'s real path, if it is a folder inside the picked folder and on its volume.
+    fn inside(&self, dir: &Path) -> Result<PathBuf> {
+        let real = fs::canonicalize(dir)?;
+        if !real.starts_with(&self.root) || device(&real)? != self.dev || !real.is_dir() {
+            return Err(CoreError::Other(format!("{} leads outside the backup folder; not writing there", dir.display())));
+        }
+        Ok(real)
+    }
+
+    /// The real folder of a file path under the root, checked like `ensure_dir` but never created.
+    fn existing_dir_of(&self, rel_path: &str) -> Result<(PathBuf, std::ffi::OsString)> {
+        let path = self.resolve(rel_path)?;
+        let name = path.file_name().ok_or_else(|| CoreError::Other(format!("no file name in {rel_path}")))?.to_os_string();
+        let dir = self.inside(path.parent().unwrap_or(&self.root))?;
+        Ok((dir, name))
     }
 
     fn resolve(&self, rel_path: &str) -> Result<PathBuf> {
@@ -134,7 +204,7 @@ impl Library for FsLibrary {
     }
 
     fn space(&self) -> Result<LibrarySpace> {
-        statfs(&self.root)
+        Ok(LibrarySpace { card_like: self.card_like, ..statfs(&self.root)? })
     }
 
     fn read_text(&self, rel_path: &str) -> Option<String> {
@@ -144,10 +214,10 @@ impl Library for FsLibrary {
     }
 
     fn create_text(&self, rel_path: &str, text: &str) -> Result<()> {
+        let rel = Path::new(rel_path);
         let path = self.resolve(rel_path)?;
-        if let Some(dir) = path.parent() {
-            fs::create_dir_all(dir)?; // offload: under the picked backup folder only
-        }
+        let dir = self.ensure_dir(rel.parent().unwrap_or(Path::new("")))?;
+        let path = dir.join(path.file_name().ok_or_else(|| CoreError::Other(format!("no file name in {rel_path}")))?);
         let mut f = OpenOptions::new().write(true).create_new(true).open(&path)?; // offload: new file, never an existing one
         f.write_all(text.as_bytes())?;
         full_fsync(&f)?;
@@ -156,10 +226,9 @@ impl Library for FsLibrary {
 
     fn begin(&self, dest_rel: &str, tag: &str) -> Result<Box<dyn PartialWrite>> {
         let dest = self.resolve(dest_rel)?;
-        let dir = dest.parent().ok_or_else(|| CoreError::Other(format!("no folder in {dest_rel}")))?;
         let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let tag: String = tag.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
-        fs::create_dir_all(dir)?; // offload: under the picked backup folder only
+        let dir = self.ensure_dir(Path::new(dest_rel).parent().unwrap_or(Path::new("")))?;
         let partial_name = format!(".{name}.darkroom-{tag}.partial");
         let file = OpenOptions::new().write(true).create_new(true).open(dir.join(&partial_name))?; // offload: new temp file
         no_cache(&file);
@@ -199,9 +268,10 @@ impl Library for FsLibrary {
     }
 
     fn commit(&self, partial_rel: &str, dest_rel: &str) -> Result<Option<SystemTime>> {
-        let partial = self.resolve(partial_rel)?;
-        let dest = self.resolve(dest_rel)?;
-        if !partial.file_name().is_some_and(|n| is_our_partial(&n.to_string_lossy())) {
+        let (pdir, pname) = self.existing_dir_of(partial_rel)?;
+        let (ddir, dname) = self.existing_dir_of(dest_rel)?;
+        let (partial, dest) = (pdir.join(&pname), ddir.join(&dname));
+        if !is_our_partial(&pname.to_string_lossy()) {
             return Err(CoreError::Other(format!("not an offload temp file: {partial_rel}")));
         }
         match fs::hard_link(&partial, &dest) {
@@ -232,10 +302,16 @@ impl Library for FsLibrary {
     }
 
     fn discard(&self, partial_rel: &str) -> Result<()> {
-        let path = self.resolve(partial_rel)?;
-        if !path.file_name().is_some_and(|n| is_our_partial(&n.to_string_lossy())) {
+        if !Path::new(partial_rel).file_name().is_some_and(|n| is_our_partial(&n.to_string_lossy())) {
             return Err(CoreError::Other(format!("not an offload temp file: {partial_rel}")));
         }
+        let (dir, name) = match self.existing_dir_of(partial_rel) {
+            Ok(x) => x,
+            // Its folder is gone: so is the temp file.
+            Err(CoreError::Io(e)) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let path = dir.join(name);
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e.into()),
@@ -257,7 +333,7 @@ fn statfs(path: &Path) -> Result<LibrarySpace> {
     }
     // SAFETY: f_fstypename is NUL-terminated by the kernel.
     let fs_type = unsafe { CStr::from_ptr(st.f_fstypename.as_ptr()) }.to_string_lossy().to_lowercase();
-    Ok(LibrarySpace { free_bytes: st.f_bavail * st.f_bsize as u64, fs_type })
+    Ok(LibrarySpace { free_bytes: st.f_bavail * st.f_bsize as u64, fs_type, card_like: false })
 }
 
 #[cfg(not(target_vendor = "apple"))]
@@ -270,5 +346,5 @@ fn statfs(path: &Path) -> Result<LibrarySpace> {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return Err(io::Error::last_os_error().into());
     }
-    Ok(LibrarySpace { free_bytes: st.f_bavail as u64 * st.f_frsize as u64, fs_type: "unknown".into() })
+    Ok(LibrarySpace { free_bytes: st.f_bavail as u64 * st.f_frsize as u64, fs_type: "unknown".into(), card_like: false })
 }

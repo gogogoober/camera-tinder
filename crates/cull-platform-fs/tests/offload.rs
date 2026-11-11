@@ -439,41 +439,64 @@ impl Drop for Volume {
     }
 }
 
-/// Real volumes: an exFAT card offloaded to an exFAT drive (no hard links: the claim + rename path),
-/// then to an APFS drive. Every raw byte of the card is unchanged afterwards.
+/// Real volumes, the strongest check. For each card format (exFAT, FAT32), mounted **read-write** like a
+/// real card, and each drive format (exFAT: the claim + rename path; APFS): plan with the full check, a run
+/// stopped part-way, a second run to finish. Then every raw byte of the card is unchanged, and every file
+/// that was on the drive before is unchanged. Swapped picks are refused.
 /// `cargo test -p cull-platform-fs --test offload -- --ignored`
 #[test]
 #[ignore]
-fn real_volumes_card_untouched_and_exfat_drive_works() {
-    let tmp = tempfile::tempdir().unwrap();
-    let card = Volume::mount(tmp.path(), "card", "ExFAT", "40m", false);
-    make_card(card.path());
-    let card_hash = |v: &Volume| xxhash_rust::xxh3::xxh3_64(&fs::read(&v.image).unwrap());
-    card.eject();
-    let before = card_hash(&card);
-    assert!(std::process::Command::new("hdiutil").args(["attach", "-quiet", "-nobrowse", "-readonly"]).arg(&card.image).status().unwrap().success());
+fn real_volumes_card_and_drive_files_untouched() {
+    for card_fs in ["ExFAT", "MS-DOS"] {
+        for drive_fs in ["ExFAT", "APFS"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let card = Volume::mount(tmp.path(), "card", card_fs, "40m", false);
+            make_card(card.path());
+            card.eject();
+            let raw = |v: &Volume| xxhash_rust::xxh3::xxh3_64(&fs::read(&v.image).unwrap());
+            let before = raw(&card);
+            assert!(std::process::Command::new("hdiutil").args(["attach", "-quiet", "-nobrowse"]).arg(&card.image).status().unwrap().success());
 
-    for fs_kind in ["ExFAT", "APFS"] {
-        let drive = Volume::mount(tmp.path(), &format!("d{fs_kind}"), fs_kind, "2g", true);
-        assert!(FsLibrary::new(card.path(), card.path()).is_err(), "never the card itself");
-        let svc = Arc::new(CullerService::in_memory(&tmp.path().join(format!("cache-{fs_kind}"))).unwrap());
-        let plan = svc
-            .offload_plan(
-                Arc::new(FsSource::new(card.path()).unwrap()),
-                card.mount.clone(),
-                Arc::new(FsSource::new(drive.path()).unwrap()),
-                Arc::new(FsLibrary::new(drive.path(), card.path()).unwrap()),
-                true,
-                &NullSink,
-            )
-            .unwrap();
-        assert_eq!(plan.new_files, 5);
-        assert_eq!(plan.warnings.is_empty(), fs_kind == "APFS", "{:?}", plan.warnings);
-        let r = svc.offload_start(&[], &NullSink).unwrap();
-        assert!(r.all_safe, "{fs_kind}: {r:?}");
-        assert!(partials(drive.path()).is_empty());
-        assert_eq!(photo_files(drive.path()).iter().filter(|p| !p.starts_with("._") && !p.contains("/._")).count(), 5);
+            let drive = Volume::mount(tmp.path(), "drive", drive_fs, "2g", true);
+            // What the user already has on the drive.
+            put(&drive.path().join("Photos/Fuji/2026/Japan trip/notes.txt"), b"my notes", None);
+            put(&drive.path().join("Photos/Nikon/2026/2026-11/DSC_0001.JPG"), b"an older, different photo", None);
+            put(&drive.path().join("Old/a.jpg"), &fs::read(card.path().join("DCIM/100_FUJI/DSCF0001.JPG")).unwrap(), None);
+            put(&drive.path().join("Other/stuff.bin"), &noise(100_000, 1), None);
+            let drive_before = snapshot(drive.path());
+
+            // Swapped picks: the card as the drive.
+            assert!(FsLibrary::new(card.path(), drive.path()).is_err(), "never write onto the card");
+            assert!(FsLibrary::new(card.path(), card.path()).is_err());
+
+            let svc = Arc::new(CullerService::in_memory(&tmp.path().join("cache")).unwrap());
+            let days: Vec<String> = (1..=14).map(|d| format!("2026-10-{d:02}")).collect();
+            svc.save_tag("Japan trip", &days).unwrap();
+            let plan_once = |lib: Arc<dyn Library>| {
+                svc.offload_plan(Arc::new(FsSource::new(card.path()).unwrap()), card.mount.clone(), Arc::new(FsSource::new(drive.path()).unwrap()), lib, true, &NullSink)
+                    .unwrap()
+            };
+            // Run 1 stops when the 3rd file starts.
+            let stopper = StopAtBegin(FsLibrary::new(drive.path(), card.path()).unwrap(), svc.clone(), Default::default(), 3);
+            let p = plan_once(Arc::new(stopper));
+            assert_eq!((p.new_files, p.already_files), (4, 1), "{card_fs}/{drive_fs}");
+            let r = svc.offload_start(&[], &NullSink).unwrap();
+            assert!(r.stopped, "{card_fs}/{drive_fs}: {r:?}");
+            // Run 2 finishes.
+            plan_once(Arc::new(FsLibrary::new(drive.path(), card.path()).unwrap()));
+            let r = svc.offload_start(&[], &NullSink).unwrap();
+            assert!(r.all_safe, "{card_fs}/{drive_fs}: {r:?}");
+            assert!(partials(drive.path()).is_empty());
+            assert!(drive.path().join("Photos/Nikon/2026/2026-11/DSC_0001-1.JPG").exists());
+
+            // Everything that was on the drive is byte for byte the same (macOS's own `._` files aside).
+            let after = snapshot(drive.path());
+            for (path, (hash, size, _)) in &drive_before {
+                let (h, s, _) = after.get(path).unwrap_or_else(|| panic!("{card_fs}/{drive_fs}: {path} disappeared"));
+                assert_eq!((h, s), (hash, size), "{card_fs}/{drive_fs}: {path} changed");
+            }
+            card.eject();
+            assert_eq!(raw(&card), before, "{card_fs}/{drive_fs}: every raw byte of the card is unchanged");
+        }
     }
-    card.eject();
-    assert_eq!(card_hash(&card), before, "every raw byte of the card is unchanged");
 }
