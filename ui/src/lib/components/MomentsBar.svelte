@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Group, Photo } from '../api';
-  import { short } from '../days';
+  import { photoDay, short } from '../days';
   import { formatTime } from '../format';
   import { dragSelect } from '../select';
 
@@ -36,7 +36,7 @@
       const total = m.end - m.start;
       const n = Math.max(1, total - waiting);
       const first = photos[m.start];
-      const day = first.capturedAt?.slice(0, 10) ?? '';
+      const day = photoDay(first.capturedAt) ?? '';
       return {
         i,
         n,
@@ -47,7 +47,7 @@
         pos: idx >= m.start && idx < m.end ? ((idx - m.start + 0.5) / n) * 100 : 0,
         selected: !!selection && selection.from <= m.start && m.end - 1 <= selection.to,
         title: `${first.capturedAt ? short(day) : ''} ${formatTime(first.capturedAt)} · ${n} photos · ${done} done`,
-        newDay: i === 0 || photos[moments[i - 1].start].capturedAt?.slice(0, 10) !== day,
+        newDay: i === 0 || (photoDay(photos[moments[i - 1].start].capturedAt) ?? '') !== day,
       };
     }),
   );

@@ -110,7 +110,98 @@ export type CoreEvent =
   /** A batch of new photos was saved mid-scan: refresh what's shown. */
   | { type: 'scanSaved'; sourceId: string; saved: number }
   | { type: 'exportProgress'; done: number; total: number }
-  | { type: 'analysisProgress'; done: number; total: number };
+  | { type: 'analysisProgress'; done: number; total: number }
+  /** Offload: `card` = reading the card, `library` = checking the drive, `check` = full match check,
+   *  `copy` = copying (done = files verified on the drive, bytesDone = bytes written). */
+  | { type: 'offloadProgress'; phase: 'card' | 'library' | 'check' | 'copy'; done: number; total: number; bytesDone: number; bytesTotal: number; current: string };
+
+// ---- offload: back up a card to a drive (docs/offload.md) ------------------
+
+export interface BrandBackup {
+  brand: string;
+  /** Latest photo day backed up. */
+  lastDay: string | null;
+  /** When that backup ran (local `YYYY-MM-DDTHH:MM:SS`). */
+  at: string;
+}
+
+export interface OffloadFolder {
+  /** Stable id for `FolderChoice`. */
+  id: string;
+  brand: string;
+  year: number | null;
+  name: string;
+  /** Relative to the picked drive folder. */
+  path: string;
+  isTrip: boolean;
+  /** Already on the drive: new files are added next to what's there. */
+  exists: boolean;
+  files: number;
+  bytes: number;
+  jpeg: number;
+  raw: number;
+  heif: number;
+  video: number;
+  firstDay: string | null;
+  lastDay: string | null;
+  /** Other names that fit (tags covering these days), broadest first. */
+  options: string[];
+  /** Trip folders split into this month: [id, name]. */
+  splitFrom: [string, string][];
+}
+
+export interface FolderChoice {
+  id: string;
+  name?: string | null;
+  byMonth?: boolean;
+}
+
+export interface CountByType {
+  extension: string;
+  count: number;
+}
+
+export interface FailedFile {
+  path: string;
+  error: string;
+}
+
+export interface OffloadPlan {
+  cardRoot: string;
+  libraryRoot: string;
+  newFiles: number;
+  newBytes: number;
+  alreadyFiles: number;
+  alreadyBytes: number;
+  /** Not photos or videos: never copied. */
+  skipped: CountByType[];
+  unreadable: FailedFile[];
+  folders: OffloadFolder[];
+  freeBytes: number;
+  fsType: string;
+  warnings: string[];
+  lastBackups: BrandBackup[];
+  fullCheck: boolean;
+}
+
+export interface OffloadReport {
+  libraryRoot: string;
+  copied: number;
+  bytes: number;
+  already: number;
+  failed: FailedFile[];
+  /** Photos/videos on the card that are neither verified on the drive nor already there. */
+  notBackedUp: string[];
+  recheckError: string | null;
+  skipped: CountByType[];
+  stopped: boolean;
+  error: string | null;
+  /** Hash list on the drive, relative to the picked folder. */
+  manifest: string | null;
+  seconds: number;
+  /** Every photo and video on the card is on the drive, read back and matched. */
+  allSafe: boolean;
+}
 
 /** Half-open index range [start, end) into a plan's photo list. */
 export interface Group {

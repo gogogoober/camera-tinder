@@ -9,7 +9,7 @@
   import { api, type Decision, type OutcomeEntry, type Photo, type TagSuggestion, type TriageItem } from '../api';
   import type { IssueKind } from '../api/analysisTypes';
   import { DECISIONS } from '../decisions';
-  import { daysLabel, short } from '../days';
+  import { daysLabel, photoDay, short } from '../days';
   import { formatCount, previewEdge } from '../format';
   import { ISSUE_LABELS, matchesChips, nextRescueMark } from '../triage';
   import { viewport } from '../viewport.svelte';
@@ -53,7 +53,7 @@
         .flatMap((s) => [s, ...s.children])
         .filter((e) => e.source === 'calendar' && days.some((d) => d >= e.startDay && d <= e.endDay));
       rows = plan.photos
-        .map((photo, i) => ({ photo, item: plan.triage[i], day: photo.capturedAt?.slice(0, 10) ?? 'unknown' }))
+        .map((photo, i) => ({ photo, item: plan.triage[i], day: photoDay(photo.capturedAt) ?? 'unknown' }))
         .filter((r) => r.item?.question === 'sweep' && !r.photo.decision);
       const ids = new Set(rows.map((r) => r.photo.id));
       marks = new Map([...marks].filter(([id]) => ids.has(id))); // forget marks for photos decided elsewhere

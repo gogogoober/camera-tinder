@@ -26,6 +26,9 @@ import type {
   SourceInfo,
   LibrarySource,
   ForgetReport,
+  FolderChoice,
+  OffloadPlan,
+  OffloadReport,
   Stats,
   TagSuggestion,
 } from './types';
@@ -116,6 +119,21 @@ export interface CullerApi {
   photoIssues(filter: Filter): Promise<PhotoIssues[]>;
   /** Near-duplicate groups, each best-first. Needs analyzePhotos first. */
   similarGroups(filter: Filter, options?: GroupingOptions): Promise<SimilarGroup[]>;
+
+  // Offload: back up a card to a drive — see docs/offload.md.
+  /** Platform-specific way to choose the card to back up. Null if cancelled. */
+  pickOffloadCard(): Promise<string | null>;
+  /** Platform-specific way to choose the backup drive (or a folder on it). Null if cancelled. */
+  pickOffloadLibrary(): Promise<string | null>;
+  /** Read the card and the drive and propose folders (`offloadProgress` events). Writes nothing.
+   *  `fullCheck`: confirm "already on the drive" byte for byte (reads those files from the card again). */
+  offloadPlan(card: string, library: string, fullCheck: boolean): Promise<OffloadPlan>;
+  /** The current plan with folder choices applied (rename, split a trip by month). Reads nothing. */
+  offloadLayout(choices: FolderChoice[]): Promise<OffloadPlan>;
+  /** Copy the plan's new files and read each back from the drive. Uses up the plan. */
+  offloadStart(choices: FolderChoice[]): Promise<OffloadReport>;
+  /** Stop planning or copying. Verified files stay; the one being copied is removed. */
+  offloadStop(): Promise<void>;
 
   /** URL for a display-sized preview, usable directly in <img src>. */
   previewUrl(id: number, edge?: number): string;

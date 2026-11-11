@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, type Decision, type Photo, type StatusFilter } from '../api';
   import { DECISIONS, ORDER } from '../decisions';
-  import { daysLabel } from '../days';
+  import { daysLabel, photoDay } from '../days';
   import { formatCount, formatDay } from '../format';
   import { dragSelect } from '../select';
   import { viewport } from '../viewport.svelte';
@@ -64,7 +64,7 @@
   const dayRows = $derived.by(() => {
     const m = new Map<string, Record<string, number>>();
     for (const p of photos) {
-      const d = p.capturedAt?.slice(0, 10) ?? 'unknown';
+      const d = photoDay(p.capturedAt) ?? 'unknown';
       const r = m.get(d) ?? { n: 0 };
       r.n++;
       if (p.decision) r[p.decision] = (r[p.decision] ?? 0) + 1;
@@ -75,7 +75,7 @@
 
   const list = $derived(
     photos.filter((p) => {
-      if (day && !(p.capturedAt ?? 'unknown').startsWith(day)) return false;
+      if (day && (photoDay(p.capturedAt) ?? 'unknown') !== day) return false;
       if (filter === 'all') return true;
       if (filter === 'todo') return !p.decision;
       return p.decision === filter;

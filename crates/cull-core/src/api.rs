@@ -46,7 +46,7 @@ impl EventSink for WakeOnSaved<'_> {
 type PhotoSteps = std::result::Result<(PhotoId, Vec<StepResult>), (PhotoId, String)>;
 
 pub struct CullerService {
-    store: Mutex<Store>,
+    pub(crate) store: Mutex<Store>,
     /// The app's own folders (database folder, preview cache): never scanned as photos.
     app_dirs: Vec<std::path::PathBuf>,
     /// Sources in the current session (the folders/cards being culled).
@@ -54,7 +54,9 @@ pub struct CullerService {
     previews: PreviewCache,
     /// One entry per user action; a bulk decision is a single entry.
     undo: Mutex<Vec<Vec<(PhotoId, Option<Decision>)>>>,
-    calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
+    pub(crate) calendar: RwLock<Option<Arc<dyn CalendarSource>>>,
+    /// Card backup to a drive (see `offload/service.rs`).
+    pub(crate) offload: crate::offload::service::OffloadState,
     analyzers: RwLock<Arc<Analyzers>>,
     /// Where background errors go (see `errlog.rs`); stderr only until the platform sets a file.
     error_log: RwLock<Option<Arc<crate::errlog::ErrorLog>>>,
@@ -101,6 +103,7 @@ impl CullerService {
             previews: PreviewCache::new(cache_dir.to_path_buf())?,
             undo: Mutex::new(Vec::new()),
             calendar: RwLock::new(None),
+            offload: Default::default(),
             analyzers: RwLock::new(Arc::new(Analyzers::rust())),
             analysis_control: crate::worker::AnalysisControl::new(),
             error_log: RwLock::new(None),

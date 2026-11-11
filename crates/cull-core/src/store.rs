@@ -133,7 +133,7 @@ pub struct NewPhoto<'a> {
 }
 
 pub struct Store {
-    conn: Connection,
+    pub(crate) conn: Connection,
 }
 
 fn now() -> String {
@@ -147,7 +147,7 @@ fn days_condition(days: &[String]) -> (String, Vec<String>) {
     let dated: Vec<String> = days.iter().filter(|d| *d != "unknown").cloned().collect();
     let mut any = Vec::new();
     if !dated.is_empty() {
-        any.push(format!("substr(p.captured_at, 1, 10) IN ({})", placeholders(dated.len())));
+        any.push(format!("{} IN ({})", crate::days::SQL_PHOTO_DAY, placeholders(dated.len())));
     }
     if days.iter().any(|d| d == "unknown") {
         any.push("p.captured_at IS NULL".to_string());
@@ -219,6 +219,7 @@ impl Store {
         if !columns("sources")?.iter().any(|c| c == "in_session") {
             conn.execute_batch("ALTER TABLE sources ADD COLUMN in_session INTEGER NOT NULL DEFAULT 1")?;
         }
+        conn.execute_batch(crate::offload::journal::SCHEMA)?;
         Ok(Self { conn })
     }
 
@@ -560,11 +561,12 @@ impl Store {
             return Ok(vec![]);
         }
         let sql = format!(
-            "SELECT substr(p.captured_at, 1, 10) AS day, {STATS_COLS}
+            "SELECT {day} AS day, {STATS_COLS}
              FROM photos p LEFT JOIN decisions d ON d.photo_id = p.id
              WHERE p.source_id IN ({})
              GROUP BY day ORDER BY day IS NULL, day",
-            placeholders(source_ids.len())
+            placeholders(source_ids.len()),
+            day = crate::days::SQL_PHOTO_DAY,
         );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params_from_iter(source_ids.iter()), |r| {

@@ -124,5 +124,6 @@ fn convert(ev: &EKEvent) -> Option<CalendarEvent> {
     if end < start || (end - start).num_days() >= MAX_EVENT_DAYS {
         return None;
     }
-    Some(CalendarEvent { title: title.to_string(), start_day: start.to_string(), end_day: end.to_string() })
+    let all_day = unsafe { ev.isAllDay() } || end > start;
+    Some(CalendarEvent { title: title.to_string(), start_day: start.to_string(), end_day: end.to_string(), all_day })
 }

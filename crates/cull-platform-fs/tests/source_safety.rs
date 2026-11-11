@@ -238,6 +238,23 @@ fn only_audited_code_writes_to_disk() {
         // Export: writes only inside the (checked) destination; removes only its own temp file.
         // The exFAT path claims the final name with a new empty file and removes only that empty claim.
         ("crates/cull-platform-fs/src/lib.rs", &["create_dir_all(&dest)", "OpenOptions::new().write(true).create_new(true).open(&tmp)", "OpenOptions::new().write(true).create_new(true).open(&target)", "fs::hard_link(&tmp, &target)", "fs::rename(&tmp, &target)", "fs::remove_file(&tmp)", "fs::remove_file(&target); // our own empty claim"]),
+        // Offload: writes only under the picked backup folder, which is never on the card's volume
+        // (`FsLibrary::new`). New files only (`create_new`); final names by no-overwrite link or an exclusive
+        // claim; removes only its own `.darkroom-*.partial` temp files and its own empty claim.
+        // libc: F_NOCACHE (skip the OS cache), fsync / F_FULLFSYNC (flush), statfs (free space): none write data.
+        ("crates/cull-platform-fs/src/offload.rs", &[
+            "libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1)", "libc::fsync(f.as_raw_fd())", "libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC)",
+            "libc::statfs", "libc::statvfs",
+            "fs::create_dir_all(dir)?; // offload: under the picked backup folder only",
+            "OpenOptions::new().write(true).create_new(true).open(&path)?; // offload: new file, never an existing one",
+            "OpenOptions::new().write(true).create_new(true).open(dir.join(&partial_name))?; // offload: new temp file",
+            "fs::hard_link(&partial, &dest)", "fs::remove_file(&partial)?; // offload: our own temp file",
+            "OpenOptions::new().write(true).create_new(true).open(&dest)?; // offload: exclusive claim of the final name",
+            "fs::rename(&partial, &dest)", "fs::remove_file(&dest); // offload: our own empty claim, nothing else",
+            "fs::remove_file(&path)?), // offload: our own temp file only (name checked above)",
+        ]),
+        // Keep the Mac awake during an offload (`caffeinate -i`): starts a process, writes nothing.
+        ("src-tauri/src/lib.rs", &["std::process::Command::new(\"/usr/bin/caffeinate\")"]),
         // Preview cache: app cache dir only. Temp files are created new (never an existing file).
         // `clear` removes only cache-named regular files directly in the cache dir.
         ("crates/cull-core/src/preview.rs", &["fs::create_dir_all(&dir)", "OpenOptions::new().write(true).create_new(true).open(&tmp)", "fs::rename(&tmp, path)", "fs::remove_file(&tmp); // our own temp file only", "fs::remove_file(&path)"]),
@@ -279,6 +296,17 @@ fn only_audited_code_writes_to_disk() {
         }
     }
     assert!(problems.is_empty(), "unaudited filesystem writes:\n{}", problems.join("\n"));
+
+    // The backup drive's same-volume check is only ever skipped by tests.
+    for dir in ["crates/cull-core/src", "crates/cull-platform-fs/src", "crates/cull-platform-apple/src", "src-tauri/src"] {
+        for e in walkdir::WalkDir::new(repo.join(dir)) {
+            let e = e.unwrap();
+            if e.path().extension().is_some_and(|x| x == "rs") && !e.path().ends_with("cull-platform-fs/src/offload.rs") {
+                let text = fs::read_to_string(e.path()).unwrap();
+                assert!(!text.contains("allowing_same_volume_for_tests"), "{} skips the card check", e.path().display());
+            }
+        }
+    }
 }
 
 #[test]
@@ -292,6 +320,11 @@ fn sources_are_opened_read_only() {
     let mut buf = [0u8; 4];
     std::io::Read::read_exact(&mut r, &mut buf).unwrap();
     assert_eq!(&buf[..2], &[0xFF, 0xD8]);
+    // The offload's streaming read too.
+    let mut r = src.open_streaming("DCIM/100NIKON/DSC_0001.JPG").unwrap();
+    std::io::Read::read_exact(&mut r, &mut buf).unwrap();
+    assert_eq!(&buf[..2], &[0xFF, 0xD8]);
+    assert!(src.open_streaming("../card/DCIM/100NIKON/DSC_0001.JPG").is_err());
     // Path tricks can't escape the source root.
     assert!(src.open("../card/DCIM/100NIKON/DSC_0001.JPG").is_err());
     assert!(src.open("/etc/hosts").is_err());

@@ -6,12 +6,14 @@
 
 pub mod analysis;
 pub mod api;
+pub mod days;
 pub mod errlog;
 pub mod error;
 pub mod identity;
 pub mod metadata;
 pub mod model;
 pub mod moments;
+pub mod offload;
 pub mod ports;
 pub mod preview;
 pub mod scan;

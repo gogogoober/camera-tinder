@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { api, type CoreEvent, type Decision, type Group, type Photo, type Place, type TriageItem } from '../api';
   import { DECISIONS, ORDER, decisionForKey } from '../decisions';
-  import { daysLabel, minutesFor } from '../days';
+  import { daysLabel, minutesFor, photoDay } from '../days';
   import { formatCount, formatDay, formatTime, previewEdge } from '../format';
   import { viewport } from '../viewport.svelte';
   import {
@@ -313,7 +313,7 @@
   const dayRows = $derived.by(() => {
     const map = new Map<string, { day: string; start: number; n: number; done: number }>();
     photos.forEach((p, i) => {
-      const day = p.capturedAt?.slice(0, 10) ?? 'unknown';
+      const day = photoDay(p.capturedAt) ?? 'unknown';
       const r = map.get(day) ?? { day, start: i, n: 0, done: 0 };
       r.n++;
       if (p.decision) r.done++;
@@ -418,7 +418,7 @@
       {/if}
       {#if !compact && current}
         <div class="under muted">
-          <span>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} · {formatTime(current.capturedAt)}</span>
+          <span>{formatDay(photoDay(current.capturedAt))} · {formatTime(current.capturedAt)}</span>
           <span><kbd>⇧</kbd> + arrow: {leftInMoment} left in this moment</span>
         </div>
       {/if}
@@ -430,14 +430,14 @@
         <div class="eyebrow">Photo</div>
         {#if current}
           <div class="kv first"><span>File</span><b>{current.fileName}</b></div>
-          <div class="kv"><span>Taken</span><b>{formatDay(current.capturedAt?.slice(0, 10) ?? null)} {formatTime(current.capturedAt)}</b></div>
+          <div class="kv"><span>Taken</span><b>{formatDay(photoDay(current.capturedAt))} {formatTime(current.capturedAt)}</b></div>
           {#if current.camera}<div class="kv"><span>Camera</span><b>{current.camera}</b></div>{/if}
           <div class="kv"><span>Burst</span><b>{item?.group ? `${groupPos} of ${item.group.size}` : '—'}</b></div>
         {/if}
         <div class="eyebrow days-h">Days</div>
         <div class="days">
           {#each dayRows.slice(0, 14) as d (d.day)}
-            <button class="dr" class:now={current?.capturedAt?.startsWith(d.day)} onclick={() => snap(nextUndecidedIn(d.start, d.n))}>
+            <button class="dr" class:now={photoDay(current?.capturedAt) === d.day} onclick={() => snap(nextUndecidedIn(d.start, d.n))}>
               <span>{d.day === 'unknown' ? '?' : formatDay(d.day).replace(/^\w+, /, '')}</span>
               <i><b style:width="{(100 * d.done) / d.n}%"></b></i>
               <span class="muted r">{d.done}/{d.n}</span>

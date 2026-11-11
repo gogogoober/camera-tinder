@@ -14,6 +14,9 @@ pub struct CalendarEvent {
     pub title: String,
     pub start_day: String,
     pub end_day: String,
+    /// An all-day event (or one spanning several days), not a timed one inside a day. Only those can name
+    /// an offload folder: "Dinner 7–9 pm" must not claim a whole evening's photos.
+    pub all_day: bool,
 }
 
 /// Row ids. Multi-day calendar rows are keyed by their days alone (events on the same days share
@@ -96,8 +99,8 @@ mod tests {
     fn calendar_events_need_photos() {
         let days = [day("2026-09-19", 260)];
         let ev = [
-            CalendarEvent { title: "Maya's wedding".into(), start_day: "2026-09-19".into(), end_day: "2026-09-19".into() },
-            CalendarEvent { title: "Dentist".into(), start_day: "2026-09-21".into(), end_day: "2026-09-21".into() },
+            CalendarEvent { title: "Maya's wedding".into(), start_day: "2026-09-19".into(), end_day: "2026-09-19".into(), all_day: true },
+            CalendarEvent { title: "Dentist".into(), start_day: "2026-09-21".into(), end_day: "2026-09-21".into(), all_day: false },
         ];
         let s = from_calendar(&days, &ev, &[]);
         assert_eq!(s.len(), 1);
@@ -105,7 +108,7 @@ mod tests {
     }
 
     fn ev(t: &str, a: &str, b: &str) -> CalendarEvent {
-        CalendarEvent { title: t.into(), start_day: a.into(), end_day: b.into() }
+        CalendarEvent { title: t.into(), start_day: a.into(), end_day: b.into(), all_day: true }
     }
     fn busy() -> Vec<DaySummary> {
         (1..=12).map(|d| day(&format!("2026-11-{d:02}"), 10)).collect()

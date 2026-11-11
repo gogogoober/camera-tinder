@@ -71,3 +71,14 @@ export function rangeForBudget(days: DaySummary[], minutes: number, order: 'olde
   }
   return { from, to };
 }
+
+/** Photos taken before this hour count as the previous day (mirrors `cull_core::days`). */
+export const DAY_START_HOUR = 6;
+
+/** The day (`YYYY-MM-DD`) a photo belongs to, or null when undated. `capturedAt` is local `YYYY-MM-DDTHH:MM:SS`. */
+export function photoDay(capturedAt: string | null | undefined): string | null {
+  if (!capturedAt) return null;
+  const hour = Number(capturedAt.slice(11, 13));
+  const day = capturedAt.slice(0, 10);
+  return Number.isFinite(hour) && hour < DAY_START_HOUR ? addDays(day, -1) : day;
+}

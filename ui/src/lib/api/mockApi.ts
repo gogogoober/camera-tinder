@@ -1,5 +1,7 @@
 import type { CullerApi } from './CullerApi';
 import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, LibrarySource, Photo, Plan, SavedTag, ScanRequest, SourceInfo, Stats, TagSuggestion } from './types';
+import { photoDay } from '../days';
+import { mockOffload } from './mockOffload';
 import type { PhotoAnalysis } from './analysisTypes';
 import { mockTriage } from './mockTriage';
 import { MOCK_ANALYZERS, mockAnalysis, mockGroups, mockIssues, mockSharpness } from './mockAnalysis';
@@ -124,7 +126,7 @@ function makePhotos(sourceId: string, startId: number): Photo[] {
   }
   // Pre-cull everything before August and half the wedding, like a real library.
   for (const p of out) {
-    const day = p.capturedAt!.slice(0, 10);
+    const day = photoDay(p.capturedAt)!;
     if (day < '2026-08-01' || (day >= '2026-08-04' && day < '2026-09-19')) p.decision = 'like';
   }
   return out;
@@ -148,7 +150,7 @@ let nextTagId = 1;
 function exportSelection(o: import('./types').ExportOptions): Photo[] {
   return active().filter((p) => {
     if (o.includeExported === false && exportedIds.has(p.id)) return false;
-    if (o.days != null && !o.days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown')) return false;
+    if (o.days != null && !o.days.includes(photoDay(p.capturedAt) ?? 'unknown')) return false;
     return (
       (p.decision === 'like' && o.includeLikes) ||
       (p.decision === 'favorite' && o.includeFavorites) ||
@@ -164,7 +166,7 @@ function query(filter: Filter): Photo[] {
   return active()
     .filter((p) => {
       if (filter.days == null) return true;
-      return filter.days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown');
+      return filter.days.includes(photoDay(p.capturedAt) ?? 'unknown');
     })
     .filter((p) => {
       switch (filter.status) {
@@ -232,6 +234,7 @@ async function scanOnce(request: ScanRequest) {
 
 
 export const mockApi: CullerApi = {
+  ...mockOffload((e) => listeners.forEach((cb) => cb(e))),
   async pickSourceFolder() {
     return `/Volumes/MOCK_CARD_${sources.length + 1}`;
   },
@@ -307,7 +310,7 @@ export const mockApi: CullerApi = {
   async days() {
     const byDay = new Map<string | null, Photo[]>();
     for (const p of active()) {
-      const d = p.capturedAt?.slice(0, 10) ?? null;
+      const d = photoDay(p.capturedAt);
       byDay.set(d, [...(byDay.get(d) ?? []), p]);
     }
     return [...byDay.entries()].map(([day, list]): DaySummary => ({ day, stats: statsOf(list) })).sort((a, b) => (a.day ?? '9').localeCompare(b.day ?? '9'));
@@ -447,7 +450,7 @@ export const mockApi: CullerApi = {
   },
   async logOutcomes() {},
   async resetDays({ days, decisions, analysis }) {
-    const hit = active().filter((p) => days.includes(p.capturedAt?.slice(0, 10) ?? 'unknown')); // session sources only
+    const hit = active().filter((p) => days.includes(photoDay(p.capturedAt) ?? 'unknown')); // session sources only
     let d = 0;
     let a = 0;
     for (const p of hit) {

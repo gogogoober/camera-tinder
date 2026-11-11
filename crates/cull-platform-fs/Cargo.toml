@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 cull-core = { version = "0.1.0", path = "../cull-core" }
+libc = "0.2.191"
 walkdir = "2.5.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 

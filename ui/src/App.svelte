@@ -5,8 +5,9 @@
   import Rescue from './lib/components/Rescue.svelte';
   import Review from './lib/components/Review.svelte';
   import ExportPanel from './lib/components/ExportPanel.svelte';
+  import Offload from './lib/components/Offload.svelte';
 
-  type View = 'home' | 'cull' | 'rescue' | 'review' | 'export';
+  type View = 'home' | 'cull' | 'rescue' | 'review' | 'export' | 'offload';
   let view = $state<View>('home');
   /** The days picked on the Pick screen's calendar; Cull and Review show exactly these. */
   let days = $state<string[] | null>(null);
@@ -27,7 +28,9 @@
 {/if}
 
 {#if view === 'home'}
-  <Home onStart={start} />
+  <Home onStart={start} onOffload={() => (view = 'offload')} />
+{:else if view === 'offload'}
+  <Offload onBack={() => (view = 'home')} />
 {:else if view === 'cull' && days}
   {#key focusId}
     <Cull {days} {focusId} onExit={() => (view = 'home')} onReview={() => (view = 'review')} onRescue={() => (view = 'rescue')} />

@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use cull_core::*;
-use cull_platform_fs::{CopyToDir, FsSource, is_external_and_connected};
+use cull_core::offload::{FolderChoice, OffloadPlan, OffloadReport};
+use cull_platform_fs::{CopyToDir, FsLibrary, FsSource, is_external_and_connected};
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -201,6 +202,67 @@ async fn export_count(state: State<'_, AppState>, options: ExportOptions) -> Cmd
     blocking(move || svc.export_count(options)).await
 }
 
+// ---- offload: back up a card to a drive (docs/offload.md) --------------
+
+/// Read the card and the drive and propose folders. Writes nothing.
+#[tauri::command]
+async fn offload_plan(app: AppHandle, state: State<'_, AppState>, card: String, library: String, full_check: bool) -> CmdResult<OffloadPlan> {
+    let svc = state.0.clone();
+    blocking(move || {
+        let card_src = FsSource::new(&card)?;
+        let card_root = card_src.root().to_string_lossy().into_owned();
+        // Refuses a drive on the card's volume (nothing is ever written onto a card).
+        let lib = FsLibrary::new(&library, card_src.root())?;
+        let reader = FsSource::new(&library)?.excluding(svc.app_dirs());
+        svc.offload_plan(Arc::new(card_src), card_root, Arc::new(reader), Arc::new(lib), full_check, &TauriSink(app))
+    })
+    .await
+}
+
+/// The current plan with folder choices applied. Reads nothing.
+#[tauri::command]
+async fn offload_layout(state: State<'_, AppState>, choices: Vec<FolderChoice>) -> CmdResult<OffloadPlan> {
+    let svc = state.0.clone();
+    blocking(move || svc.offload_layout(&choices)).await
+}
+
+/// Keeps the Mac awake (not the display) while it lives: `caffeinate -i`, ended on drop.
+struct KeepAwake(Option<std::process::Child>);
+impl KeepAwake {
+    fn new() -> Self {
+        // Writes nothing: macOS's own power assertion tool, for the duration of the copy.
+        #[cfg(target_os = "macos")]
+        return Self(std::process::Command::new("/usr/bin/caffeinate").arg("-i").spawn().ok());
+        #[allow(unreachable_code)]
+        Self(None)
+    }
+}
+impl Drop for KeepAwake {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+/// Copy the plan's new files, read each back from the drive, and report. Keeps the Mac awake meanwhile.
+#[tauri::command]
+async fn offload_start(app: AppHandle, state: State<'_, AppState>, choices: Vec<FolderChoice>) -> CmdResult<OffloadReport> {
+    let svc = state.0.clone();
+    blocking(move || {
+        let _awake = KeepAwake::new();
+        svc.offload_start(&choices, &TauriSink(app))
+    })
+    .await
+}
+
+/// Stop planning or copying; verified files stay, the one in progress is removed.
+#[tauri::command]
+fn offload_stop(state: State<'_, AppState>) {
+    state.0.offload_stop();
+}
+
 // ---- saved tags (a name for a set of days) ----------------------------
 
 #[tauri::command]
@@ -380,7 +442,11 @@ pub fn run() {
             photo_analysis,
             photo_analyses,
             photo_issues,
-            similar_groups
+            similar_groups,
+            offload_plan,
+            offload_layout,
+            offload_start,
+            offload_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running Darkroom");

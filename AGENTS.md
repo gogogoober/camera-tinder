@@ -53,9 +53,12 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
                            See docs/photo-analysis.md; the smart-triage build plan is docs/triage-build-plan.md
   triage/                  Smart triage: which question each photo gets (Judge / Pick burst / Sweep set aside), computed on
                            every plan() from stored analysis (pure functions, nothing stored). See docs/smart-triage.md
+  offload/                 Back up a card to a drive (docs/offload.md): plan (match by content, folders by brand/
+                           year/trip or month), three-thread copy with read-back verification, journal
+  days.rs                  The 6 a.m. day (before 06:00 = the previous day), Rust + SQL; UI mirror in ui/src/lib/days.ts
   worker.rs                Background analysis thread: woken by the scan, Stop/Resume analysis. Reads cached previews only
   api.rs                   CullerService — the ONLY facade any UI uses (plan, decide_many, suggest_tags, analyze, reset_days…)
-crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export
+crates/cull-platform-fs/   Desktop impls: FsSource (walkdir), CopyToDir export, FsLibrary (offload destination)
 crates/cull-platform-apple/ macOS (iOS later): EventKitCalendar (CalendarSource) + CalendarAccess permission;
                            vision.rs = Apple Vision analysis engines (faces, eyes input, aesthetics, feature print…);
                            imageio.rs = ImageIoPreviewMaker (the macOS PreviewMaker; see Gotchas);
@@ -117,6 +120,15 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
 
 ## Gotchas learned
 
+- **Offload** (card → backup drive, docs/offload.md; Pick → "Back up a card…"): copies photos and videos only, into
+  `Photos/<Brand>/<Year>/<Trip or YYYY-MM>/` with `RAW/`, `HIF/`, `Videos/` subfolders. "Already backed up" = same
+  fingerprint anywhere in the picked folder (optional byte-for-byte check). The run writes with `F_NOCACHE` so the
+  read-back really reads the drive (an `F_NOCACHE` read alone is still served from memory if pages are resident), flushes
+  with `F_FULLFSYNC` per batch, then names files without overwriting. `FsLibrary::new` refuses a drive on the card's
+  volume; tests use `allowing_same_volume_for_tests`, which app code must never call (checked).
+- **A day starts at 6 a.m.** everywhere (`cull_core::days`, `photoDay()` in the UI): a 1 a.m. photo belongs to the day
+  before. Never cut a day with `captured_at[..10]` / `capturedAt.slice(0, 10)`.
+
 - **Background analysis:** `CullerService::start_analysis_worker` (called in `setup`) analyses every scanned photo from the
   cached 2048 px master and never reads originals (no cached master = skipped). It is woken by the scan and by
   `add_source`; a crash on one photo is reported, not fatal. Results count only while their implementation id matches
@@ -174,7 +186,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   exactly those days (`Filter.days`: any set of days, `"unknown"` = undated, absent = all). Suggestions are grouped in core
   (`suggest::from_calendar`); dismissing passes row ids back to `suggest_tags` so the rest regroups.
 - Calendar: `EventKitCalendar` implements `CalendarSource`. The app never prompts at launch; Pick shows a
-  "Connect Calendar" button (`connect_calendar` command). Events ≥21 days long are ignored; recurring events are
+  "Connect Calendar" button (`connect_calendar` command). Events ≥60 days long are ignored (`MAX_EVENT_DAYS`); recurring events are
   de-duplicated per title+day. Mock backend fakes the connect flow.
 
 - macOS window has no title bar (`titleBarStyle: "Overlay"`, traffic lights at 18,22 in tauri.conf.json). AppShell
@@ -214,6 +226,8 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
 - [x] Sweep narrowed (Nov 2026): accidental + ruined blur only; score it with `cargo run --release -p cull-platform-apple --example score_set -- test-photos-v2/set`.
 - [ ] Triage tuning: thresholds (`triage/route.rs`), eyes-closed as a sweep reason, all-bad bursts, from the `outcomes` table.
 - [ ] Photo analysis: tune eyes/noise on real photos.
+- [x] Offload: back up a card to a drive (docs/offload.md). Tests + real disk images + browser mock; not yet run in the
+      real Tauri app on a real card.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
 - [ ] iOS (`tauri ios init`, SD-card MediaSource, share-sheet export). Later: cloud sync, Android, Lightroom.

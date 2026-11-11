@@ -9,6 +9,8 @@ use exif::{In, Tag, Value};
 pub struct PhotoMeta {
     pub captured_at: Option<NaiveDateTime>,
     pub camera: Option<String>,
+    /// EXIF Make as written by the camera ("NIKON CORPORATION", "FUJIFILM").
+    pub make: Option<String>,
 }
 
 pub fn read_meta<R: BufRead + Seek>(r: &mut R) -> PhotoMeta {
@@ -40,7 +42,8 @@ pub fn read_meta<R: BufRead + Seek>(r: &mut R) -> PhotoMeta {
             )
         });
 
-    let camera = match (ascii(Tag::Make), ascii(Tag::Model)) {
+    let make = ascii(Tag::Make);
+    let camera = match (make.clone(), ascii(Tag::Model)) {
         // Many models already include the make ("NIKON Z 6_2"), avoid "NIKON CORPORATION NIKON Z 6_2".
         (Some(make), Some(model)) => {
             let brand = make.split_whitespace().next().unwrap_or(&make).to_string();
@@ -51,5 +54,5 @@ pub fn read_meta<R: BufRead + Seek>(r: &mut R) -> PhotoMeta {
         (None, None) => None,
     };
 
-    PhotoMeta { captured_at, camera }
+    PhotoMeta { captured_at, camera, make }
 }

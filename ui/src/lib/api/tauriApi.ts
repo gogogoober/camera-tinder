@@ -55,6 +55,13 @@ export const tauriApi: CullerApi = {
   photoIssues: (filter) => invoke('photo_issues', { filter }),
   similarGroups: (filter, options) => invoke('similar_groups', { filter, options: options ?? null }),
 
+  pickOffloadCard: () => pickDirectory('Choose the SD card to back up'),
+  pickOffloadLibrary: () => pickDirectory('Choose your backup drive'),
+  offloadPlan: (card, library, fullCheck) => invoke('offload_plan', { card, library, fullCheck }),
+  offloadLayout: (choices) => invoke('offload_layout', { choices }),
+  offloadStart: (choices) => invoke('offload_start', { choices }),
+  offloadStop: () => invoke('offload_stop'),
+
   // preview://localhost/<id> on macOS/iOS, http://preview.localhost/<id> on Windows/Android.
   previewUrl: (id, edge = 2048) => `${convertFileSrc(String(id), 'preview')}?edge=${edge}`,
   onEvent: (cb) => listen<CoreEvent>('core-event', (e) => cb(e.payload)),

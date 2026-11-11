@@ -566,6 +566,7 @@ dependencies = [
  "chrono",
  "cull-core",
  "image",
+ "libc",
  "tempfile",
  "walkdir",
  "xxhash-rust",

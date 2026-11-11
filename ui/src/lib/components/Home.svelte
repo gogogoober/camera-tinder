@@ -14,7 +14,7 @@
   import AppShell from './layout/AppShell.svelte';
   import { withLayoutTransition } from '../transition';
 
-  let { onStart }: { onStart: (days: string[]) => void } = $props();
+  let { onStart, onOffload }: { onStart: (days: string[]) => void; onOffload: () => void } = $props();
 
   type Range = { from: string; to: string };
 
@@ -429,6 +429,7 @@
       {/if}
     {/each}
     {#if forgetMessage}<p class="muted small note">{forgetMessage}</p>{/if}
+    <button class="ghost left small" title="Copy what's new on a card to your backup drive, checked file by file" onclick={onOffload}>Back up a card…</button>
     {#if sources.length}<button class="ghost left small" title="Folders are checked by themselves at launch and after adding or clearing; use this after copying photos in yourself. Photos already scanned aren't read again." onclick={rescanAll} disabled={scanning}>Check for new photos</button>{/if}
 
     <div class="eyebrow">Suggestions from</div>

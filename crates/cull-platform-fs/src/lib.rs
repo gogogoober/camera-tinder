@@ -8,6 +8,9 @@ use cull_core::{CoreError, CoreEvent, EventSink, ExportItem, ExportReport, Expor
 use walkdir::WalkDir;
 use xxhash_rust::xxh3::Xxh3;
 
+mod offload;
+pub use offload::FsLibrary;
+
 /// A folder on disk (or a mounted SD card), scanned recursively.
 pub struct FsSource {
     root: PathBuf,
@@ -111,6 +114,11 @@ impl MediaSource for FsSource {
         // Read-only, always. This is the only way the app touches a source file.
         let file = OpenOptions::new().read(true).open(self.resolve(rel_path)?)?;
         Ok(Box::new(file))
+    }
+
+    fn open_streaming(&self, rel_path: &str) -> Result<Box<dyn ReadSeek>> {
+        // Read-only too; skips the OS cache so offloading a whole card doesn't evict everything else.
+        Ok(Box::new(offload::open_uncached(&self.resolve(rel_path)?)?))
     }
 }
 
