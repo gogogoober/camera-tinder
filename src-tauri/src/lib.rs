@@ -368,12 +368,40 @@ fn handle_preview(app: &AppHandle, uri: &tauri::http::Uri) -> Response<Vec<u8>> 
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// The app used to be "Camera Tinder" (identifier `app.cameratinder.desktop`, `camera-tinder.db`). On the first
+/// launch under the new name, move its database (with its `-wal`/`-shm` files) and preview cache over, so decisions
+/// and previews survive. Runs only while the new database doesn't exist; each file moves only if its target is free,
+/// and the database moves last, so an interrupted move finishes on the next launch. Failures are logged, not fatal.
+fn move_data_from_camera_tinder(db: &std::path::Path, cache: &std::path::Path) {
+    const OLD_ID: &str = "app.cameratinder.desktop";
+    let (Some(data_dir), Some(cache_dir)) = (db.parent(), cache.parent()) else { return };
+    let (Some(data_root), Some(cache_root)) = (data_dir.parent(), cache_dir.parent()) else { return };
+    let old_data = data_root.join(OLD_ID);
+    if db.exists() || !old_data.join("camera-tinder.db").exists() {
+        return;
+    }
+    let mut moves: Vec<(std::path::PathBuf, std::path::PathBuf)> = vec![(cache_root.join(OLD_ID).join("previews"), cache.to_path_buf())];
+    for suffix in ["-wal", "-shm", ""] {
+        moves.push((old_data.join(format!("camera-tinder.db{suffix}")), data_dir.join(format!("darkroom.db{suffix}"))));
+    }
+    for (from, to) in moves {
+        if !from.exists() || to.exists() {
+            continue;
+        }
+        let moved = to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::rename(&from, &to));
+        if let Err(e) = moved {
+            eprintln!("Couldn't move {} to {}: {e}", from.display(), to.display());
+        }
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let db = app.path().app_data_dir()?.join("camera-tinder.db");
+            let db = app.path().app_data_dir()?.join("darkroom.db");
             let cache = app.path().app_cache_dir()?.join("previews");
+            move_data_from_camera_tinder(&db, &cache);
             let svc = Arc::new(CullerService::open(&db, &cache)?);
             // Only reconnect if the user already said yes; never prompt at launch.
             #[cfg(target_os = "macos")]
@@ -450,4 +478,35 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Darkroom");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    #[test]
+    fn camera_tinder_data_moves_once_and_never_overwrites() {
+        let root = std::env::temp_dir().join(format!("darkroom-move-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let (old_data, old_cache) = (root.join("data/app.cameratinder.desktop"), root.join("cache/app.cameratinder.desktop/previews"));
+        fs::create_dir_all(&old_data).unwrap();
+        fs::create_dir_all(&old_cache).unwrap();
+        for f in ["camera-tinder.db", "camera-tinder.db-wal", "camera-tinder.db-shm"] {
+            fs::write(old_data.join(f), f).unwrap();
+        }
+        fs::write(old_cache.join("a_256.jpg"), "thumb").unwrap();
+        let (db, cache) = (root.join("data/app.darkroom.desktop/darkroom.db"), root.join("cache/app.darkroom.desktop/previews"));
+
+        super::move_data_from_camera_tinder(&db, &cache);
+        assert_eq!(fs::read_to_string(&db).unwrap(), "camera-tinder.db");
+        assert_eq!(fs::read_to_string(db.with_file_name("darkroom.db-wal")).unwrap(), "camera-tinder.db-wal");
+        assert_eq!(fs::read_to_string(cache.join("a_256.jpg")).unwrap(), "thumb");
+        assert!(!old_data.join("camera-tinder.db").exists());
+
+        // A new old database later (e.g. the old build ran again) is left alone: the new one already exists.
+        fs::write(old_data.join("camera-tinder.db"), "newer").unwrap();
+        super::move_data_from_camera_tinder(&db, &cache);
+        assert_eq!(fs::read_to_string(&db).unwrap(), "camera-tinder.db");
+        fs::remove_dir_all(&root).unwrap();
+    }
 }

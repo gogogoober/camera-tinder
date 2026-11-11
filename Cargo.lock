@@ -246,20 +246,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "camera-tinder"
-version = "0.1.0"
-dependencies = [
- "cull-core",
- "cull-platform-apple",
- "cull-platform-fs",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
-]
-
-[[package]]
 name = "camino"
 version = "1.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -570,6 +556,20 @@ dependencies = [
  "tempfile",
  "walkdir",
  "xxhash-rust",
+]
+
+[[package]]
+name = "darkroom"
+version = "0.1.0"
+dependencies = [
+ "cull-core",
+ "cull-platform-apple",
+ "cull-platform-fs",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
 ]
 
 [[package]]

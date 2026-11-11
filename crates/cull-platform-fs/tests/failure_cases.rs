@@ -229,8 +229,8 @@ fn a_folder_containing_the_apps_own_cache_does_not_index_the_cache() {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join("home");
     card(&home.join("Pictures"), 3);
-    let cache = home.join("Library/Caches/app.cameratinder.desktop/previews");
-    let db = home.join("Library/Application Support/app.cameratinder.desktop/camera-tinder.db");
+    let cache = home.join("Library/Caches/app.darkroom.desktop/previews");
+    let db = home.join("Library/Application Support/app.darkroom.desktop/darkroom.db");
     let svc = CullerService::open(&db, &cache).unwrap();
     fs::copy(root_photo(&home), db.parent().unwrap().join("stray.jpg")).unwrap(); // anything in the app's data folder
     // What the desktop app does when a folder is added.
@@ -423,7 +423,7 @@ fn decisions_survive_a_restart() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("card");
     card(&root, 3);
-    let (db, cache) = (tmp.path().join("data/camera-tinder.db"), tmp.path().join("cache"));
+    let (db, cache) = (tmp.path().join("data/darkroom.db"), tmp.path().join("cache"));
     {
         let svc = CullerService::open(&db, &cache).unwrap();
         svc.add_source(Arc::new(FsSource::new(&root).unwrap())).unwrap();

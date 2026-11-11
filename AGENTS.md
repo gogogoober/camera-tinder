@@ -1,8 +1,8 @@
 # Darkroom — agent guide
 
-(Formerly "Camera Tinder". Internal names keep the old one: crate/package `camera-tinder`,
-identifier `app.cameratinder.desktop`, `camera-tinder.db`. Changing the identifier would move the
-app data folder, so it stays.)
+(Formerly "Camera Tinder". Renamed everywhere in Nov 2026: package/crate `darkroom`, identifier
+`app.darkroom.desktop`, database `darkroom.db`. On first launch src-tauri moves the old
+`app.cameratinder.desktop` database and preview cache over (`move_data_from_camera_tinder`).)
 
 Tinder-style photo culling app. Point it at folders / SD cards, it scans and
 groups photos, you swipe to decide, then export the keepers.
@@ -92,8 +92,8 @@ Key design decisions:
 - iOS port plan: new `MediaSource` (security-scoped URL or ImageCaptureCore for the SD reader),
   share-sheet `ExportTarget`, bounded memory (embedded previews, capped decode concurrency).
 
-Data locations (macOS): DB at app data dir `camera-tinder.db`; previews at app cache dir `previews/`
-(identifier `app.cameratinder.desktop`). Preview cache has no size limit yet.
+Data locations (macOS): DB at app data dir `darkroom.db`; previews at app cache dir `previews/`
+(identifier `app.darkroom.desktop`). Preview cache has no size limit yet.
 
 ## Commands
 

@@ -294,7 +294,7 @@ mod tests {
             "0123456789ABCDEF0123456789ABCDEF_2048.jpg",
             "0123456789abcdef0123456789abcdef_.jpg",
             "0123456789abcdef0123456789abcdef_2048.jpg.bak",
-            "camera-tinder.db",
+            "darkroom.db",
             ".DS_Store",
             ".notes.tmp",
             ".DSC_0001.JPG.123.4.tmp",

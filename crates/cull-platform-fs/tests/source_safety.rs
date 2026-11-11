@@ -256,7 +256,12 @@ fn only_audited_code_writes_to_disk() {
             "fs::remove_file(&path)?), // offload: our own temp file only (name checked above)",
         ]),
         // Keep the Mac awake during an offload (`caffeinate -i`): starts a process, writes nothing.
-        ("src-tauri/src/lib.rs", &["std::process::Command::new(\"/usr/bin/caffeinate\")"]),
+        // Rename migration: moves the old Camera Tinder database and preview cache between the app's own data/cache
+        // folders (paths from Tauri's app dirs, never a source); never onto an existing file.
+        ("src-tauri/src/lib.rs", &[
+            "std::process::Command::new(\"/usr/bin/caffeinate\")",
+            "to.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::rename(&from, &to))",
+        ]),
         // Preview cache: app cache dir only. Temp files are created new (never an existing file).
         // `clear` removes only cache-named regular files directly in the cache dir.
         ("crates/cull-core/src/preview.rs", &["fs::create_dir_all(&dir)", "OpenOptions::new().write(true).create_new(true).open(&tmp)", "fs::rename(&tmp, path)", "fs::remove_file(&tmp); // our own temp file only", "fs::remove_file(&path)"]),
