@@ -246,6 +246,7 @@ fn only_audited_code_writes_to_disk() {
             "libc::fcntl(f.as_raw_fd(), libc::F_NOCACHE, 1)", "libc::fsync(f.as_raw_fd())", "libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC)",
             "libc::statfs", "libc::statvfs",
             "fs::create_dir(&cur) {", // one level at a time, each checked to stay inside the picked folder
+            "self.file.set_modified(t); // offload: the date of our own new temp file",
             "m.file_type().is_symlink()", // a check (not a write): symlinks must resolve inside the picked folder
             "OpenOptions::new().write(true).create_new(true).open(&path)?; // offload: new file, never an existing one",
             "OpenOptions::new().write(true).create_new(true).open(dir.join(&partial_name))?; // offload: new temp file",

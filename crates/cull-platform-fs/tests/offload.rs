@@ -63,6 +63,38 @@ fn backs_up_every_photo_and_video_into_trip_and_month_folders() {
     assert_eq!(p.last_backups.iter().map(|b| b.brand.as_str()).collect::<Vec<_>>(), ["Fuji", "Nikon"]);
 }
 
+/// Copies keep the card's file dates. A video's only date is its file date, so without this a backup
+/// of the backup (or culling from the drive) would see it as shot on the day it was copied.
+#[test]
+fn copies_keep_the_cards_file_dates() {
+    let e = env();
+    put(&e.card.join("DCIM/100_FUJI/DSCF0500.MOV"), &noise(200_000, 42), Some("2026-03-14T09:30:00"));
+    plan(&e);
+    assert!(start(&e).all_safe);
+    let card_time = |p: &str| fs::metadata(e.card.join(p)).unwrap().modified().unwrap();
+    let drive_time = |p: &str| fs::metadata(e.ssd.join(p)).unwrap().modified().unwrap();
+    assert_eq!(drive_time("Photos/Fuji/2026/2026-03/Videos/DSCF0500.MOV"), card_time("DCIM/100_FUJI/DSCF0500.MOV"));
+    assert_eq!(drive_time("Photos/Fuji/2026/Japan trip/RAW/DSCF0001.RAF"), card_time("DCIM/100_FUJI/DSCF0001.RAF"));
+    // Backing the backup up again puts the video in the same month, and knows the rest is new to that drive.
+    let second = e.ssd.parent().unwrap().join("second");
+    fs::create_dir_all(&second).unwrap();
+    let src = e.ssd.join("Photos");
+    let p = e
+        .svc
+        .offload_plan(
+            Arc::new(FsSource::new(&src).unwrap()),
+            src.to_string_lossy().into_owned(),
+            Arc::new(FsSource::new(&second).unwrap()),
+            Arc::new(FsLibrary::allowing_same_volume_for_tests(&second, &src).unwrap()),
+            false,
+            &NullSink,
+        )
+        .unwrap();
+    assert!(p.folders.iter().any(|f| f.path == "Photos/Fuji/2026/2026-03" && f.video == 1), "{:?}", p.folders.iter().map(|f| &f.path).collect::<Vec<_>>());
+    // The plan's fingerprint cache still works with kept dates: a second plan of the card finds nothing new.
+    assert_eq!(plan(&e).new_files, 0);
+}
+
 /// Planning reads only the start of a RAW file for its camera and date, not the whole file.
 #[test]
 fn planning_reads_only_the_start_of_raw_files() {
@@ -344,7 +376,7 @@ fn the_drive_refuses_unsafe_operations() {
     let mut w = lib.begin("a/b.jpg", "t1").unwrap();
     w.write(b"hello").unwrap();
     let rel = w.rel_path().to_string();
-    w.finish().unwrap();
+    w.finish(None).unwrap();
     assert!(lib.commit(&rel, "keep.jpg").is_err(), "never overwrites");
     assert_eq!(fs::read(e.ssd.join("keep.jpg")).unwrap(), b"keep");
     assert!(lib.commit("keep.jpg", "other.jpg").is_err(), "only our temp files are committed");
@@ -392,7 +424,7 @@ fn verification_reads_from_the_drive_not_from_memory() {
         w.write(c).unwrap();
     }
     let rel = w.rel_path().to_string();
-    w.finish().unwrap();
+    w.finish(None).unwrap();
     lib.flush_to_media(&rel).unwrap();
     assert_eq!(resident_pages(&e.ssd.join(&rel)).0, 0, "the copy must not be in memory before it is read back");
     let mut h = xxhash_rust::xxh3::Xxh3::new();
@@ -488,6 +520,10 @@ fn real_volumes_card_and_drive_files_untouched() {
             assert!(r.all_safe, "{card_fs}/{drive_fs}: {r:?}");
             assert!(partials(drive.path()).is_empty());
             assert!(drive.path().join("Photos/Nikon/2026/2026-11/DSC_0001-1.JPG").exists());
+            let t = |p: std::path::PathBuf| fs::metadata(p).unwrap().modified().unwrap();
+            let (c, d) = (t(card.path().join("DCIM/100_FUJI/DSCF0002.MOV")), t(drive.path().join("Photos/Fuji/2026/Japan trip/Videos/DSCF0002.MOV")));
+            let apart = c.duration_since(d).or_else(|_| d.duration_since(c)).unwrap();
+            assert!(apart.as_secs() < 3, "{card_fs}/{drive_fs}: the copy's date is {apart:?} from the card's");
 
             // Everything that was on the drive is byte for byte the same (macOS's own `._` files aside).
             let after = snapshot(drive.path());

@@ -32,6 +32,8 @@ pub struct CardFile {
     pub kind: FileKind,
     pub fingerprint: String,
     pub captured_at: Option<NaiveDateTime>,
+    /// The file's modified time on the card; the copy keeps it.
+    pub modified: Option<SystemTime>,
     pub brand: String,
     /// Already on the drive (same content), at this path.
     pub on_drive: Option<String>,
@@ -264,6 +266,7 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
                     kind,
                     fingerprint: fp,
                     captured_at: meta.captured_at.or_else(|| e.modified.map(local_naive)),
+                    modified: e.modified,
                     brand: String::new(),
                     on_drive: None,
                 });
@@ -653,6 +656,7 @@ mod tests {
             kind: FileKind::of(path).unwrap(),
             fingerprint: format!("fp-{path}"),
             captured_at: t(when),
+            modified: None,
             brand: brand.into(),
             on_drive: None,
         }

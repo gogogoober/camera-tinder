@@ -257,6 +257,19 @@ reader (90–300 MB/s) is the limit. Per-file overhead is ~0.4 ms.
   pace, so tuning is based on a real card, not guesses.
 - **The byte-for-byte check reads the card copy and the drive copy at the same time** (different devices).
 
+**Against plain `cp`** (release build, 80 × 25 MB RAW + 1,500 × 300 KB JPEG = 2.4 GB, exFAT card image → drive
+image, both on the internal SSD): `cp -R` + `sync` 10.3 s vs copy + read-back check 8.8 s to exFAT; 6.7 s vs 5.6 s to
+APFS. Step speeds 830–1,330 MB/s; everything outside read/write/check costs ~0.3 ms per file. So the pipeline is
+not the limit with any card reader. Disk images on one SSD share a device, so this bounds overhead; it doesn't
+predict a real card's MB/s.
+
+**Copies keep the card's file dates** (`PartialWrite::finish(modified)`): a video's only date is its file date, so a
+copy stamped with the copy time would land in the wrong month when the drive is culled or backed up again.
+
+Not done, the one remaining safety gap: the check proves the drive holds exactly what was *read* from the card. A
+card read that returns wrong bytes without an error (a failing reader or cable) would be copied faithfully. Pro
+tools offer a second read of the source for this; it doubles the card time. Open question for the owner.
+
 Considered and not done: dropping the per-file folder fsync (crash safety for seconds), caching card fingerprints
 between runs (a different card can share names, sizes and times: the one mistake that loses photos), several card
 reads at once (no evidence it helps one SD card; revisit with the stage timings).

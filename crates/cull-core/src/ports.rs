@@ -99,8 +99,9 @@ pub trait Library: Send + Sync {
 pub trait PartialWrite: Send {
     fn rel_path(&self) -> &str;
     fn write(&mut self, buf: &[u8]) -> Result<()>;
-    /// Flush it to the drive (`fsync`) and close it.
-    fn finish(self: Box<Self>) -> Result<()>;
+    /// Give it the original's modified time (videos have no other date), flush it to the drive
+    /// (`fsync`) and close it.
+    fn finish(self: Box<Self>, modified: Option<SystemTime>) -> Result<()>;
 }
 
 #[derive(Debug, Clone, Serialize)]

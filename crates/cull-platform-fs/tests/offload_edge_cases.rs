@@ -77,8 +77,8 @@ impl PartialWrite for FaultyPartial {
         }
         self.inner.write(buf)
     }
-    fn finish(self: Box<Self>) -> Result<()> {
-        self.inner.finish()
+    fn finish(self: Box<Self>, modified: Option<SystemTime>) -> Result<()> {
+        self.inner.finish(modified)
     }
 }
 

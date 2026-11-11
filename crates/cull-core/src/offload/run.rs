@@ -500,7 +500,7 @@ fn write_files(sh: &Shared<'_>, rx: Receiver<Msg>, btx: &SyncSender<Vec<Written>
                     sh.fail(p, "the file on the card changed since the plan was made; plan again", Some(&partial));
                     continue;
                 }
-                match timed(&sh.write_ns, || w.finish()) {
+                match timed(&sh.write_ns, || w.finish(f.modified)) {
                     Ok(()) => {
                         fails.set(0);
                         batch.push(Written { p, partial, hash });

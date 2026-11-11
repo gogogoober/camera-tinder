@@ -192,7 +192,11 @@ impl PartialWrite for FsPartial {
         Ok(self.file.write_all(buf)?)
     }
 
-    fn finish(self: Box<Self>) -> Result<()> {
+    fn finish(self: Box<Self>, modified: Option<SystemTime>) -> Result<()> {
+        if let Some(t) = modified {
+            // Best effort: a drive that can't store the time still gets a verified copy.
+            let _ = self.file.set_modified(t); // offload: the date of our own new temp file
+        }
         fsync(&self.file)?;
         Ok(())
     }
