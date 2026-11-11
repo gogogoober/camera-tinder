@@ -207,6 +207,10 @@ impl Library for FsLibrary {
         Ok(LibrarySpace { card_like: self.card_like, ..statfs(&self.root)? })
     }
 
+    fn dir_exists(&self, rel_path: &str) -> bool {
+        self.resolve(rel_path).is_ok_and(|p| self.inside(&p).is_ok())
+    }
+
     fn read_text(&self, rel_path: &str) -> Option<String> {
         let mut s = String::new();
         File::open(self.resolve(rel_path).ok()?).ok()?.take(4096).read_to_string(&mut s).ok()?;

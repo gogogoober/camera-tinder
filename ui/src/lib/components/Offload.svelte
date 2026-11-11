@@ -227,6 +227,15 @@
           · {formatCount(plan.alreadyFiles)} already on the drive{plan.fullCheck ? ' (checked byte for byte)' : ''}
           · {formatBytes(plan.freeBytes)} free
         </div>
+        {#if plan.alreadyIn.length}
+          <details class="muted small">
+            <summary>Where the {formatCount(plan.alreadyFiles)} already on the drive were found</summary>
+            <ul class="found">
+              {#each plan.alreadyIn.slice(0, 40) as a (a.folder)}<li><span class="path">{a.folder || '(top of the folder you picked)'}</span><span>{formatCount(a.files)}</span></li>{/each}
+            </ul>
+            {#if plan.alreadyIn.length > 40}<div>…and {formatCount(plan.alreadyIn.length - 40)} more folders.</div>{/if}
+          </details>
+        {/if}
         {#if plan.lastBackups.length}
           <div class="muted small">
             Last backups to this drive:
@@ -402,4 +411,7 @@
   .actions { display: flex; justify-content: flex-end; gap: 10px; }
   .copying { display: grid; gap: 8px; }
   .slowest { color: var(--text); font-weight: 600; }
+  .found { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 2px; }
+  .found li { display: flex; justify-content: space-between; gap: 12px; }
+  summary { cursor: pointer; }
 </style>

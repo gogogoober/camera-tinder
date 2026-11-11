@@ -196,6 +196,28 @@ photo; a 1 a.m. photo just shows under the day before.
 Formatting or deleting from the card, a second backup drive in the same run, adding the SSD as a cull source
 automatically, copying only keepers, renaming existing SSD folders.
 
+## Any folder structure (Nov 2026 review, tests/offload_any_structure.rs)
+
+The source can be any folder (not only a card with DCIM) and the destination any folder; neither layout matters.
+The test uses a source of loose and deeply nested files with spaces, accents and CJK names, and a drive where copies
+are renamed, nested 6 levels deep, at the top, duplicated, with another extension case, plus lookalikes that are
+*not* copies (a truncated file, same name and size with other content, an empty file of the same name). The plan's
+"already there" and "new" counts are exact with and without the byte-for-byte check, the run copies exactly the
+missing files once each into brand / year / trip-or-month folders, nothing that was on the drive changes, and a
+second plan finds nothing to do. Picking the drive or its `Photos` folder both work (no `Photos/Photos`).
+
+- **The plan says where the already-copied files were found** (`OffloadPlan.already_in`: drive folder → count),
+  shown under "Where the N already on the drive were found".
+- **Fixed: remembered fingerprints could apply to the wrong file.** They are stored by path relative to the picked
+  folder, and picking the drive or its `Photos` folder share one drive id, so the same relative path could mean two
+  files; with equal size and time a missing photo was reported as backed up (reproduced in a test). The cache key is
+  now id + which pick (`cache_key_for`), and a drive without an id yet has no cache.
+- **Fixed: a remembered trip folder that is empty** was treated as renamed and looked up by a file's name and size.
+  The drive is now asked whether the folder exists (`Library::dir_exists`).
+
+Limits, by design: only the picked destination folder is searched (pick the drive itself to search all of it);
+hidden folders are ignored on both sides; the source and destination must be on different volumes.
+
 ## Source and drive safety (Nov 2026 review)
 
 The card is touched in four places, all reads: listing it (plan, final re-check), `open` (fingerprint + EXIF while

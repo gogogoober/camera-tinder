@@ -75,6 +75,10 @@ pub trait Library: Send + Sync {
     /// The picked folder, for display.
     fn root_display(&self) -> String;
     fn space(&self) -> Result<LibrarySpace>;
+    /// Whether this folder exists on the drive (even empty). Used to find folders earlier runs made.
+    fn dir_exists(&self, _rel_path: &str) -> bool {
+        false
+    }
     /// A small text file of ours (the library id), if it exists.
     fn read_text(&self, rel_path: &str) -> Option<String>;
     /// Create a new text file (and its folders). Fails if the name exists.

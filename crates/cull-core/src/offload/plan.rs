@@ -51,8 +51,8 @@ pub struct PlanInput {
     /// "Photos/" (or "" when the picked folder is itself called Photos): where new folders go.
     pub prefix: String,
     pub library_id: Option<String>,
-    /// Key of the drive's fingerprint cache: the library id, or the picked path before the drive has one.
-    pub cache_key: String,
+    /// Key of the drive's fingerprint cache (`cache_key_for`); `None` until the drive has an id: no cache.
+    pub cache_key: Option<String>,
     pub files: Vec<CardFile>,
     /// Card files that are not photos or videos, by extension: never copied.
     pub skipped: BTreeMap<String, u64>,
@@ -130,6 +130,14 @@ pub struct CountByType {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FoundIn {
+    /// Folder on the drive, relative to the picked folder ("" = the picked folder itself).
+    pub folder: String,
+    pub files: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FailedFile {
     pub path: String,
     pub error: String,
@@ -144,6 +152,8 @@ pub struct OffloadPlan {
     pub new_bytes: u64,
     pub already_files: u64,
     pub already_bytes: u64,
+    /// Where the files already on the drive were found: its folders, most files first.
+    pub already_in: Vec<FoundIn>,
     pub skipped: Vec<CountByType>,
     pub unreadable: Vec<FailedFile>,
     pub folders: Vec<PlanFolder>,
@@ -180,6 +190,13 @@ pub fn prefix_for(library_root: &str) -> String {
     if last.eq_ignore_ascii_case("photos") { String::new() } else { "Photos/".into() }
 }
 
+/// Key of a drive's fingerprint cache. Cached paths are relative to the picked folder, and picking the drive
+/// or its `Photos` folder share one library id, so the key says which of the two it was. A drive without
+/// an id yet has no cache: a mount path alone doesn't identify a drive.
+pub fn cache_key_for(library_id: &str, prefix: &str) -> String {
+    format!("{library_id}|{prefix}")
+}
+
 pub struct Gather<'a> {
     pub card: &'a dyn MediaSource,
     pub card_root: String,
@@ -204,7 +221,7 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
     let library_root = g.lib.root_display();
     let prefix = prefix_for(&library_root);
     let library_id = g.lib.read_text(&format!("{prefix}{LIBRARY_ID_FILE}")).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-    let cache_key = library_id.clone().unwrap_or_else(|| format!("path:{library_root}"));
+    let cache_key = library_id.as_deref().map(|id| cache_key_for(id, &prefix));
     let space = g.lib.space()?;
 
     // 1. The card: every photo and video, read once each for its fingerprint and metadata.
@@ -280,7 +297,10 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
             candidates.push(e);
         }
     }
-    let cached = g.store.lock().unwrap().offload_cached_files(&cache_key)?;
+    let cached = match &cache_key {
+        Some(k) => g.store.lock().unwrap().offload_cached_files(k)?,
+        None => HashMap::new(),
+    };
     let mut fresh = Vec::new();
     let mut on_drive: HashMap<String, Vec<String>> = HashMap::new();
     let ctotal = candidates.len() as u64;
@@ -305,8 +325,8 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
         };
         on_drive.entry(fp).or_default().push(e.rel_path);
     }
-    if !fresh.is_empty() {
-        g.store.lock().unwrap().offload_cache_files(&cache_key, &fresh)?;
+    if let (Some(k), false) = (&cache_key, fresh.is_empty()) {
+        g.store.lock().unwrap().offload_cache_files(k, &fresh)?;
     }
     let matched: Vec<usize> = (0..files.len()).filter(|i| on_drive.contains_key(&files[*i].fingerprint)).collect();
     let check_total = matched.len() as u64;
@@ -368,7 +388,8 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
     if let Some(id) = &library_id {
         let store = g.store.lock().unwrap();
         for ((brand, year, key), rel) in store.offload_folders(id)? {
-            if existing_dirs.contains(&rel.to_lowercase()) {
+            // Still there (a folder emptied by hand has no files in the listing, so ask the drive too).
+            if existing_dirs.contains(&rel.to_lowercase()) || g.lib.dir_exists(&rel) {
                 remembered.insert((brand, year, key), rel);
                 continue;
             }
@@ -570,6 +591,12 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
 
     let new_bytes: u64 = planned.iter().map(|p| input.files[p.index].size).sum();
     let already: Vec<&CardFile> = input.files.iter().filter(|f| f.on_drive.is_some()).collect();
+    let mut found: BTreeMap<&str, u64> = BTreeMap::new();
+    for f in &already {
+        *found.entry(parent(f.on_drive.as_deref().unwrap_or(""))).or_default() += 1;
+    }
+    let mut already_in: Vec<FoundIn> = found.into_iter().map(|(folder, files)| FoundIn { folder: folder.to_string(), files }).collect();
+    already_in.sort_by(|a, b| b.files.cmp(&a.files).then(a.folder.cmp(&b.folder)));
     let mut warnings = Vec::new();
     if matches!(input.space.fs_type.as_str(), "exfat" | "msdos" | "fat32" | "vfat") {
         warnings.push(format!(
@@ -599,6 +626,7 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
         new_bytes,
         already_files: already.len() as u64,
         already_bytes: already.iter().map(|f| f.size).sum(),
+        already_in,
         skipped: input.skipped.iter().map(|(e, n)| CountByType { extension: e.clone(), count: *n }).collect(),
         unreadable: input.unreadable.iter().map(|(p, e)| FailedFile { path: p.clone(), error: e.clone() }).collect(),
         folders,
@@ -639,7 +667,7 @@ mod tests {
             library_root: "/Volumes/T7".into(),
             prefix: "Photos/".into(),
             library_id: None,
-            cache_key: "k".into(),
+            cache_key: None,
             files,
             skipped: BTreeMap::new(),
             unreadable: vec![],

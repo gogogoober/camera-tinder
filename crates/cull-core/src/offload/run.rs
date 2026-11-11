@@ -583,7 +583,7 @@ fn verify_batches(sh: &Shared<'_>, brx: Receiver<Vec<Written>>) {
             }
             sh.verified.lock().unwrap_or_else(PoisonError::into_inner).push((w.p, w.hash));
         }
-        let _ = store.offload_cache_files(&sh.library_id, &cache);
+        let _ = store.offload_cache_files(&super::plan::cache_key_for(&sh.library_id, &a.input.prefix), &cache);
         drop(store);
         sh.emit(&a.input.files[a.planned[last.p].index].rel_path, true);
     }

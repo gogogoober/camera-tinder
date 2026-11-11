@@ -91,6 +91,12 @@ export function mockOffload(emit: Emit): Pick<CullerApi, 'pickOffloadCard' | 'pi
         cardRoot, libraryRoot: library,
         newFiles: fresh.length, newBytes,
         alreadyFiles: already.length, alreadyBytes: already.reduce((s, f) => s + f.bytes, 0),
+        alreadyIn: already.length
+          ? [
+              { folder: 'Photos/Fuji/2026/Japan trip', files: Math.max(0, already.length - 24) },
+              { folder: 'Old backups/2026 japan (copy)', files: Math.min(24, already.length) },
+            ].filter((x) => x.files > 0)
+          : [],
         skipped: [{ extension: 'LRF', count: 7 }, { extension: 'THM', count: 3 }],
         unreadable: [],
         folders,

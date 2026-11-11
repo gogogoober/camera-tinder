@@ -173,6 +173,8 @@ export interface OffloadPlan {
   newBytes: number;
   alreadyFiles: number;
   alreadyBytes: number;
+  /** Where the files already on the drive were found: its folders ("" = the picked folder), most files first. */
+  alreadyIn: { folder: string; files: number }[];
   /** Not photos or videos: never copied. */
   skipped: CountByType[];
   unreadable: FailedFile[];
