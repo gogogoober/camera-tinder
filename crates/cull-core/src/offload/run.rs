@@ -54,6 +54,8 @@ pub struct OffloadReport {
     pub seconds: f64,
     /// Every photo and video on the card is on the drive, read back and matched.
     pub all_safe: bool,
+    /// Every file was read from the card twice and both reads matched before it was copied.
+    pub card_read_twice: bool,
     /// Where the time went: busy time and bytes of each step (they overlap, so the slowest one sets the pace).
     pub stages: StageTimes,
 }
@@ -88,6 +90,9 @@ pub struct RunArgs<'a> {
     pub store: &'a Mutex<Store>,
     pub sink: &'a dyn EventSink,
     pub stop: &'a AtomicBool,
+    /// Read every file from the card twice and copy it only if both reads match. Catches a reader, cable
+    /// or card that returns wrong bytes without an error; about doubles the card time.
+    pub read_twice: bool,
 }
 
 enum Msg {
@@ -335,6 +340,7 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
         manifest,
         seconds: started.elapsed().as_secs_f64(),
         all_safe,
+        card_read_twice: a.read_twice,
         stages,
     })
 }
@@ -348,6 +354,9 @@ fn read_card(sh: &Shared<'_>, tx: SyncSender<Msg>) {
         }
         let f = &sh.a.input.files[pf.index];
         let res = (|| -> std::result::Result<(u128, String, u64), String> {
+            // Optional first read: hash only. The second read (below) is the one that is copied, and
+            // must give the same hash. Both come from the card itself (streaming reads skip the OS cache).
+            let first = if sh.a.read_twice { Some(hash_only(sh, &f.rel_path, f.size)?) } else { None };
             let r = sh.a.card.open_streaming(&f.rel_path).map_err(|e| e.to_string())?;
             let mut r = r.take(f.size + 1);
             let mut hash = Xxh3::new();
@@ -369,7 +378,11 @@ fn read_card(sh: &Shared<'_>, tx: SyncSender<Msg>) {
                 len += n as u64;
                 tx.send(Msg::Chunk(buf)).map_err(|_| STOPPED.to_string())?;
             }
-            Ok((hash.digest128(), fp.finish(), len))
+            let hash = hash.digest128();
+            if first.is_some_and(|h| h != hash) {
+                return Err(MISREAD.into());
+            }
+            Ok((hash, fp.finish(), len))
         })();
         match res {
             Ok((hash, fingerprint, len)) => {
@@ -391,6 +404,28 @@ fn read_card(sh: &Shared<'_>, tx: SyncSender<Msg>) {
                 }
             }
         }
+    }
+}
+
+const MISREAD: &str = "the card gave different data on two reads (a faulty reader, cable or card?); not copied";
+
+/// One full read of a card file, hashed and thrown away.
+fn hash_only(sh: &Shared<'_>, rel: &str, size: u64) -> std::result::Result<u128, String> {
+    let r = sh.a.card.open_streaming(rel).map_err(|e| e.to_string())?;
+    let mut r = r.take(size + 1);
+    let mut hash = Xxh3::new();
+    let mut buf = vec![0u8; CHUNK];
+    loop {
+        if sh.halted() {
+            return Err(STOPPED.into());
+        }
+        let n = timed(&sh.read_ns, || read_full(&mut r, &mut buf)).map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Ok(hash.digest128());
+        }
+        sh.read_bytes.fetch_add(n as u64, Ordering::Relaxed);
+        hash.update(&buf[..n]);
+        sh.emit(rel, false);
     }
 }
 

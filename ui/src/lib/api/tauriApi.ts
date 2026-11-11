@@ -59,7 +59,7 @@ export const tauriApi: CullerApi = {
   pickOffloadLibrary: () => pickDirectory('Choose your backup drive'),
   offloadPlan: (card, library, fullCheck) => invoke('offload_plan', { card, library, fullCheck }),
   offloadLayout: (choices) => invoke('offload_layout', { choices }),
-  offloadStart: (choices) => invoke('offload_start', { choices }),
+  offloadStart: (choices, readTwice) => invoke('offload_start', { choices, readTwice }),
   offloadStop: () => invoke('offload_stop'),
 
   // preview://localhost/<id> on macOS/iOS, http://preview.localhost/<id> on Windows/Android.

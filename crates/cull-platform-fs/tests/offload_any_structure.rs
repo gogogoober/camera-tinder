@@ -160,7 +160,7 @@ fn picking_the_drive_or_a_folder_inside_it_gives_the_same_answer() {
     assert_eq!((p.already_files, p.new_files), (inside, media - inside), "{:?}", p.already_in);
     // New folders go straight into it: no Photos/Photos.
     assert!(p.folders.iter().all(|f| !f.path.starts_with("Photos/")), "{:?}", p.folders.iter().map(|f| &f.path).collect::<Vec<_>>());
-    let r = e.svc.offload_start(&[], &NullSink).unwrap();
+    let r = e.svc.offload_start(&[], false, &NullSink).unwrap();
     assert!(r.all_safe, "{r:?}");
     assert!(!photos.join("Photos").exists());
 
@@ -195,7 +195,7 @@ fn a_source_that_is_a_previous_backup_layout_works_too() {
     let p = plan_at(&e.svc, &e.ssd.join("Photos"), &second, false);
     assert_eq!(p.already_files, 0);
     assert_eq!(p.new_files, 7);
-    let r = e.svc.offload_start(&[], &NullSink).unwrap();
+    let r = e.svc.offload_start(&[], false, &NullSink).unwrap();
     assert!(r.all_safe, "{r:?}");
     assert_eq!(plan_at(&e.svc, &e.ssd.join("Photos"), &second, true).new_files, 0);
 }

@@ -130,8 +130,9 @@ export interface CullerApi {
   offloadPlan(card: string, library: string, fullCheck: boolean): Promise<OffloadPlan>;
   /** The current plan with folder choices applied (rename, split a trip by month). Reads nothing. */
   offloadLayout(choices: FolderChoice[]): Promise<OffloadPlan>;
-  /** Copy the plan's new files and read each back from the drive. Uses up the plan. */
-  offloadStart(choices: FolderChoice[]): Promise<OffloadReport>;
+  /** Copy the plan's new files and read each back from the drive. Uses up the plan.
+   *  `readCardTwice`: read every file from the card twice and copy it only if both reads match (slower). */
+  offloadStart(choices: FolderChoice[], readCardTwice: boolean): Promise<OffloadReport>;
   /** Stop planning or copying. Verified files stay; the one being copied is removed. */
   offloadStop(): Promise<void>;
 

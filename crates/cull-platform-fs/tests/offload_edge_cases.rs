@@ -142,6 +142,32 @@ struct FaultyCard {
     bad: HashSet<String>,
     /// Every streaming open fails (card pulled out after planning).
     pulled: bool,
+    /// The n-th streaming read (1-based) of this file returns one wrong byte in the middle, with no error.
+    misread: Option<(String, usize)>,
+    reads: AtomicUsize,
+}
+
+/// Flips one byte at offset 100,000 as it passes.
+struct FlippingReader {
+    inner: Box<dyn ReadSeek>,
+    pos: u64,
+}
+impl Read for FlippingReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        let at = 100_000u64;
+        if self.pos <= at && at < self.pos + n as u64 {
+            buf[(at - self.pos) as usize] ^= 0x01;
+        }
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+impl Seek for FlippingReader {
+    fn seek(&mut self, p: SeekFrom) -> io::Result<u64> {
+        self.pos = self.inner.seek(p)?;
+        Ok(self.pos)
+    }
 }
 
 struct FailingReader {
@@ -186,6 +212,9 @@ impl MediaSource for FaultyCard {
             return Err(io::Error::new(io::ErrorKind::NotFound, "card pulled out").into());
         }
         let r = self.inner.open_streaming(rel)?;
+        if self.misread.as_ref().is_some_and(|(file, nth)| file == rel && self.reads.fetch_add(1, Ordering::SeqCst) + 1 == *nth) {
+            return Ok(Box::new(FlippingReader { inner: r, pos: 0 }));
+        }
         Ok(if self.bad.contains(rel) { Box::new(FailingReader { inner: r, pos: 0 }) } else { r })
     }
 }
@@ -282,7 +311,7 @@ fn e04_another_card_at_the_same_path_copies_nothing_wrong() {
 #[test]
 fn e05_a_read_error_mid_file_fails_only_that_file() {
     let e = env();
-    let card = FaultyCard { inner: FsSource::new(&e.card).unwrap(), bad: ["DCIM/100_FUJI/DSCF0002.MOV".to_string()].into(), pulled: false };
+    let card = FaultyCard { inner: FsSource::new(&e.card).unwrap(), bad: ["DCIM/100_FUJI/DSCF0002.MOV".to_string()].into(), pulled: false, misread: None, reads: Default::default() };
     try_plan(&e, Arc::new(card), fs_lib(&e), false).unwrap();
     let r = start(&e);
     assert!(!r.all_safe && r.error.is_none(), "{r:?}");
@@ -295,7 +324,7 @@ fn e05_a_read_error_mid_file_fails_only_that_file() {
 #[test]
 fn e06_a_card_pulled_out_stops_the_run_cleanly() {
     let e = env();
-    let card = FaultyCard { inner: FsSource::new(&e.card).unwrap(), bad: HashSet::new(), pulled: true };
+    let card = FaultyCard { inner: FsSource::new(&e.card).unwrap(), bad: HashSet::new(), pulled: true, misread: None, reads: Default::default() };
     try_plan(&e, Arc::new(card), fs_lib(&e), false).unwrap();
     let r = start(&e);
     assert!(r.error.as_deref().is_some_and(|m| m.contains("card")), "{r:?}");
@@ -439,7 +468,7 @@ fn e16_folder_names_cannot_escape_the_drive_folder() {
         let e = env();
         plan(&e);
         let id = "Fuji|2026|trip:japan trip".to_string();
-        let r = e.svc.offload_start(&[FolderChoice { id, name: Some(evil.into()), by_month: false }], &NullSink).unwrap();
+        let r = e.svc.offload_start(&[FolderChoice { id, name: Some(evil.into()), by_month: false }], false, &NullSink).unwrap();
         assert!(r.all_safe, "{evil:?}: {r:?}");
         let outside: Vec<String> = snapshot(e.ssd.parent().unwrap())
             .into_keys()
@@ -473,7 +502,7 @@ fn e18_a_bug_mid_run_never_locks_backups_forever() {
     let e = env();
     plan_on(&e, drive(&e, Faults { panic_in_begin: true, ..Default::default() }));
     let svc = e.svc.clone();
-    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svc.offload_start(&[], &NullSink)));
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| svc.offload_start(&[], false, &NullSink)));
     assert!(matches!(res, Ok(Err(_))), "a panic inside the run comes back as an error");
     assert_drive_consistent(&e);
     assert_rerun_finishes(&e);
@@ -502,9 +531,9 @@ fn e20_two_runs_at_once_are_refused() {
     let (go_tx, go_rx) = sync_channel(1);
     plan_on(&e, drive(&e, Faults { hold_first_begin: Some((started_tx, Mutex::new(go_rx))), ..Default::default() }));
     let svc = e.svc.clone();
-    let first = std::thread::spawn(move || svc.offload_start(&[], &NullSink));
+    let first = std::thread::spawn(move || svc.offload_start(&[], false, &NullSink));
     started_rx.recv().unwrap();
-    let second = e.svc.offload_start(&[], &NullSink);
+    let second = e.svc.offload_start(&[], false, &NullSink);
     assert!(second.is_err_and(|e| e.to_string().contains("already running")));
     assert!(try_plan(&e, Arc::new(FsSource::new(&e.card).unwrap()), fs_lib(&e), false).is_err());
     go_tx.send(()).unwrap();
@@ -527,7 +556,7 @@ fn e22_too_little_space_is_refused_before_anything_is_written() {
     let e = env();
     let p = plan_on(&e, drive(&e, Faults { free_bytes: Some(10 << 20), ..Default::default() }));
     assert!(p.warnings.iter().any(|w| w.contains("space")), "{:?}", p.warnings);
-    assert!(e.svc.offload_start(&[], &NullSink).is_err());
+    assert!(e.svc.offload_start(&[], false, &NullSink).is_err());
     assert!(fs::read_dir(&e.ssd).unwrap().next().is_none(), "nothing written");
 }
 
@@ -536,7 +565,7 @@ fn e23_a_broken_library_id_stops_cleanly() {
     let e = env();
     fs::create_dir_all(e.ssd.join("Photos/_darkroom/library-id")).unwrap(); // a folder, not a file
     plan(&e);
-    let r = e.svc.offload_start(&[], &NullSink);
+    let r = e.svc.offload_start(&[], false, &NullSink);
     assert!(r.is_err(), "{r:?}");
     assert!(photo_files(&e.ssd).iter().all(|p| p.starts_with("Photos/_darkroom")), "nothing copied");
 }
@@ -552,7 +581,7 @@ fn e24_a_symlink_on_the_drive_cannot_redirect_writes_onto_the_card() {
     std::os::unix::fs::symlink(e.card.join("DCIM"), e.ssd.join("Photos")).unwrap();
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         plan(&e);
-        e.svc.offload_start(&[], &NullSink)
+        e.svc.offload_start(&[], false, &NullSink)
     }));
     let report = res.expect("no panic");
     assert!(report.is_err() || !report.as_ref().unwrap().all_safe, "{report:?}");
@@ -601,4 +630,57 @@ fn e27_picking_the_card_as_the_drive_is_refused() {
     // Both look like cards: allowed, with a warning in the plan.
     let p = plan(&e);
     assert!(p.warnings.iter().any(|w| w.contains("DCIM")), "{:?}", p.warnings);
+}
+
+// ---- 28-30: a card that misreads without an error ---------------------------
+
+const MOV: &str = "DCIM/100_FUJI/DSCF0002.MOV";
+
+fn misreading_card(e: &Env, nth: usize) -> Arc<FaultyCard> {
+    Arc::new(FaultyCard { inner: FsSource::new(&e.card).unwrap(), bad: HashSet::new(), pulled: false, misread: Some((MOV.into(), nth)), reads: Default::default() })
+}
+
+/// The gap the option closes: without it, one wrong byte from the reader is copied and passes every check.
+#[test]
+fn e28_without_reading_twice_a_silent_misread_is_copied() {
+    let e = env();
+    try_plan(&e, misreading_card(&e, 1), fs_lib(&e), false).unwrap();
+    let r = e.svc.offload_start(&[], false, &NullSink).unwrap();
+    assert!(r.all_safe && !r.card_read_twice);
+    let copy = fs::read(e.ssd.join("Photos/Fuji/2026/Japan trip/Videos/DSCF0002.MOV")).unwrap();
+    assert_ne!(copy, fs::read(e.card.join(MOV)).unwrap(), "the copy holds the misread byte");
+}
+
+#[test]
+fn e29_reading_twice_catches_a_misread_on_either_read() {
+    for nth in [1, 2] {
+        let e = env();
+        try_plan(&e, misreading_card(&e, nth), fs_lib(&e), false).unwrap();
+        let r = e.svc.offload_start(&[], true, &NullSink).unwrap();
+        assert!(!r.all_safe && r.card_read_twice, "read {nth}: {r:?}");
+        assert_eq!((r.copied, r.failed.len()), (4, 1));
+        assert!(r.failed[0].error.contains("different data on two reads"), "{:?}", r.failed);
+        assert_eq!(r.not_backed_up, [MOV]);
+        assert!(!e.ssd.join("Photos/Fuji/2026/Japan trip/Videos/DSCF0002.MOV").exists(), "a file that misread is never named");
+        assert_drive_consistent(&e);
+        // The next run (the card reads fine now) copies it, bit for bit.
+        plan(&e);
+        let r = e.svc.offload_start(&[], true, &NullSink).unwrap();
+        assert!(r.all_safe && r.copied == 1, "{r:?}");
+        assert_eq!(fs::read(e.ssd.join("Photos/Fuji/2026/Japan trip/Videos/DSCF0002.MOV")).unwrap(), fs::read(e.card.join(MOV)).unwrap());
+    }
+}
+
+#[test]
+fn e30_reading_twice_reads_every_byte_of_the_card_two_times() {
+    let e = env();
+    let bytes = Arc::new(AtomicU64::new(0));
+    let card = CountingSource { inner: FsSource::new(&e.card).unwrap(), bytes: bytes.clone() };
+    try_plan(&e, Arc::new(card), fs_lib(&e), false).unwrap();
+    bytes.store(0, Ordering::SeqCst);
+    let r = e.svc.offload_start(&[], true, &NullSink).unwrap();
+    assert!(r.all_safe && r.card_read_twice, "{r:?}");
+    assert_eq!(bytes.load(Ordering::SeqCst), 2 * r.bytes);
+    assert_eq!(r.stages.read_bytes, 2 * r.bytes);
+    assert_drive_consistent(&e);
 }

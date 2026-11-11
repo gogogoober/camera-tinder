@@ -190,7 +190,7 @@ fn folder_choices_rename_and_split_by_month() {
     assert!(p.folders.iter().any(|f| f.path == "Photos/Fuji/2026/Japan"));
     let p = e.svc.offload_layout(&[FolderChoice { id: id.clone(), name: None, by_month: true }]).unwrap();
     assert!(p.folders.iter().any(|f| f.path == "Photos/Fuji/2026/2026-10"));
-    let r = e.svc.offload_start(&[FolderChoice { id, name: Some("Japan".into()), by_month: false }], &NullSink).unwrap();
+    let r = e.svc.offload_start(&[FolderChoice { id, name: Some("Japan".into()), by_month: false }], false, &NullSink).unwrap();
     assert!(r.all_safe);
     assert!(e.ssd.join("Photos/Fuji/2026/Japan/RAW/DSCF0001.RAF").exists());
 }
@@ -295,7 +295,7 @@ fn stopping_mid_copy_leaves_only_complete_verified_files() {
     }
     let lib = StopAtBegin(FsLibrary::allowing_same_volume_for_tests(&e.ssd, &e.card).unwrap(), e.svc.clone(), Default::default(), 4);
     plan_with(&e, Arc::new(lib));
-    let r = e.svc.offload_start(&[], &NullSink).unwrap();
+    let r = e.svc.offload_start(&[], false, &NullSink).unwrap();
     assert!(r.stopped && !r.all_safe);
     assert!(r.copied >= 3 && r.copied < 9, "{}", r.copied);
     assert!(partials(&e.ssd).is_empty());
@@ -512,11 +512,11 @@ fn real_volumes_card_and_drive_files_untouched() {
             let stopper = StopAtBegin(FsLibrary::new(drive.path(), card.path()).unwrap(), svc.clone(), Default::default(), 3);
             let p = plan_once(Arc::new(stopper));
             assert_eq!((p.new_files, p.already_files), (4, 1), "{card_fs}/{drive_fs}");
-            let r = svc.offload_start(&[], &NullSink).unwrap();
+            let r = svc.offload_start(&[], false, &NullSink).unwrap();
             assert!(r.stopped, "{card_fs}/{drive_fs}: {r:?}");
             // Run 2 finishes.
             plan_once(Arc::new(FsLibrary::new(drive.path(), card.path()).unwrap()));
-            let r = svc.offload_start(&[], &NullSink).unwrap();
+            let r = svc.offload_start(&[], false, &NullSink).unwrap();
             assert!(r.all_safe, "{card_fs}/{drive_fs}: {r:?}");
             assert!(partials(drive.path()).is_empty());
             assert!(drive.path().join("Photos/Nikon/2026/2026-11/DSC_0001-1.JPG").exists());

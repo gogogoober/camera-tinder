@@ -16,6 +16,8 @@
   let card = $state<string | null>(null);
   let library = $state<string | null>(null);
   let fullCheck = $state(false);
+  /** Read every file from the card twice before copying it (slower; for a reader you don't trust). */
+  let readTwice = $state(false);
   let plan = $state<OffloadPlan | null>(null);
   let choices = $state<FolderChoice[]>([]);
   let report = $state<OffloadReport | null>(null);
@@ -147,7 +149,7 @@
     samples = [];
     stage = 'copying';
     try {
-      report = await api.offloadStart($state.snapshot(choices));
+      report = await api.offloadStart($state.snapshot(choices), readTwice);
       stage = 'report';
     } catch (e) {
       error = String(e);
@@ -304,6 +306,13 @@
       {/each}
 
       {#if stage === 'plan'}
+        <label class="check">
+          <input type="checkbox" bind:checked={readTwice} disabled={plan.newFiles === 0} />
+          <span>
+            Read the card twice
+            <span class="muted small block">Copies a file only if two reads of it match. Catches a faulty card reader or cable. Takes about twice as long.</span>
+          </span>
+        </label>
         <div class="actions">
           <button class="ghost" onclick={again}>Start over</button>
           <button class="primary go" onclick={copy} disabled={plan.newFiles === 0 || tooBig}>
@@ -323,6 +332,7 @@
             {formatBytes(progress?.bytesDone ?? 0)} of {formatBytes(plan.newBytes)}
             {#if speed > 0} · {formatBytes(speed)}/s{/if}
             {#if secondsLeft != null} · about {duration(secondsLeft)} left{/if}
+            {#if readTwice} · reading the card twice{/if}
           </div>
           {#if progress?.current}<div class="muted small path">{progress.current}</div>{/if}
           <p class="muted small">Your Mac stays awake until this finishes. Stop is safe: copies already checked stay, the file in progress is removed, and running it again picks up the rest.</p>
@@ -335,6 +345,7 @@
     <section class="panel">
       {#if report.allSafe}
         <p class="ok big">✓ Every photo and video on this card is on the drive, read back and matched.</p>
+        {#if report.cardReadTwice && report.copied}<div class="muted small">Each copied file was read from the card twice, and both reads matched.</div>{/if}
       {:else}
         <p class="bad big">
           {report.error ? `Stopped: ${report.error}.` : report.stopped ? 'Stopped before the end.' : 'Not everything on the card is backed up.'}

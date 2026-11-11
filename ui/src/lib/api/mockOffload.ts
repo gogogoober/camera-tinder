@@ -140,7 +140,7 @@ export function mockOffload(emit: Emit): Pick<CullerApi, 'pickOffloadCard' | 'pi
       if (!files) throw new Error('no backup plan yet');
       return layout(choices).plan;
     },
-    async offloadStart(choices): Promise<OffloadReport> {
+    async offloadStart(choices, readCardTwice): Promise<OffloadReport> {
       if (!files) throw new Error('no backup plan yet');
       stop = false;
       const { plan, dest } = layout(choices);
@@ -155,7 +155,7 @@ export function mockOffload(emit: Emit): Pick<CullerApi, 'pickOffloadCard' | 'pi
           if (stop) break;
           bytes += Math.min(speed / 4, f.bytes - b);
           emit({ type: 'offloadProgress', phase: 'copy', done, total: todo.length, bytesDone: bytes, bytesTotal: plan.newBytes, current: f.path });
-          await sleep(10);
+          await sleep(readCardTwice ? 20 : 10);
         }
         if (stop) break;
         done++;
@@ -179,8 +179,9 @@ export function mockOffload(emit: Emit): Pick<CullerApi, 'pickOffloadCard' | 'pi
         manifest: done ? 'Photos/_darkroom/offload-2026-11-10-153000.txt' : null,
         seconds: (Date.now() - started) / 1000,
         allSafe: !stopped && notBackedUp.length === 0,
+        cardReadTwice: readCardTwice,
         stages: {
-          readBytes: bytes, readSeconds: bytes / (180 * MB),
+          readBytes: bytes * (readCardTwice ? 2 : 1), readSeconds: (bytes * (readCardTwice ? 2 : 1)) / (180 * MB),
           writeBytes: bytes, writeSeconds: bytes / (850 * MB),
           checkBytes: bytes, checkSeconds: bytes / (1000 * MB),
         },

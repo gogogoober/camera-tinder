@@ -248,11 +248,11 @@ impl Drop for KeepAwake {
 
 /// Copy the plan's new files, read each back from the drive, and report. Keeps the Mac awake meanwhile.
 #[tauri::command]
-async fn offload_start(app: AppHandle, state: State<'_, AppState>, choices: Vec<FolderChoice>) -> CmdResult<OffloadReport> {
+async fn offload_start(app: AppHandle, state: State<'_, AppState>, choices: Vec<FolderChoice>, read_twice: bool) -> CmdResult<OffloadReport> {
     let svc = state.0.clone();
     blocking(move || {
         let _awake = KeepAwake::new();
-        svc.offload_start(&choices, &TauriSink(app))
+        svc.offload_start(&choices, read_twice, &TauriSink(app))
     })
     .await
 }

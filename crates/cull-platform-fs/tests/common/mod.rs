@@ -196,7 +196,7 @@ pub fn plan(e: &Env) -> cull_core::offload::OffloadPlan {
 }
 
 pub fn start(e: &Env) -> cull_core::offload::OffloadReport {
-    e.svc.offload_start(&[], &NullSink).unwrap()
+    e.svc.offload_start(&[], false, &NullSink).unwrap()
 }
 
 /// Every file: relative path → bytes hash, size, mtime.

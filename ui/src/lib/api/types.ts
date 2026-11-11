@@ -203,6 +203,8 @@ export interface OffloadReport {
   seconds: number;
   /** Every photo and video on the card is on the drive, read back and matched. */
   allSafe: boolean;
+  /** Every file was read from the card twice and both reads matched. */
+  cardReadTwice: boolean;
   /** Busy time and bytes per step (they overlap: the slowest sets the pace). */
   stages: StageTimes;
 }

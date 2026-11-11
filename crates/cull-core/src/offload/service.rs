@@ -89,7 +89,8 @@ impl CullerService {
 
     /// Copy the current plan's new files. Blocks until done, stopped, or the card or drive is gone.
     /// The plan is used up: plan again before another run.
-    pub fn offload_start(&self, choices: &[FolderChoice], sink: &dyn EventSink) -> Result<OffloadReport> {
+    /// `read_twice`: read every card file twice and copy it only if both reads match (slower, see `RunArgs`).
+    pub fn offload_start(&self, choices: &[FolderChoice], read_twice: bool, sink: &dyn EventSink) -> Result<OffloadReport> {
         let _busy = self.offload.begin()?;
         let p = self.offload.current().take().ok_or_else(|| CoreError::Other("no backup plan yet".into()))?;
         self.offload.stop.store(false, Ordering::Relaxed);
@@ -102,6 +103,7 @@ impl CullerService {
             store: &self.store,
             sink,
             stop: &self.offload.stop,
+            read_twice,
         }))
     }
 

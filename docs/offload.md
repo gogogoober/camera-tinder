@@ -159,7 +159,7 @@ one line per copied file, `xxh3-128  size  relative path`. It lets anyone re-che
 - **Entry:** a "Back up a card" button on the Pick screen.
 - **Choose:** the card (removable volumes, those with `DCIM` first; any folder works) and the library (remembered).
   Shows "Last backup to this SSD: Fuji, Nov 2 · Nikon, Oct 28".
-- **Plan:** "1,240 new files · 38 GB · 2 cameras · 412 already on the SSD · 23 other files skipped", and the folder tree
+- **Plan** (also holds the "Read the card twice" checkbox)**:** "1,240 new files · 38 GB · 2 cameras · 412 already on the SSD · 23 other files skipped", and the folder tree
   (brand → year → folder) with counts and sizes. Each folder row has a menu of name options. Start.
 - **Copying:** progress, MB/s, time left, current file, Stop (no separate Pause: Stop, then run again).
 - **Report:** "Every photo and video on this card is on the SSD, read back and matched ✓", or the list of files that
@@ -266,9 +266,13 @@ predict a real card's MB/s.
 **Copies keep the card's file dates** (`PartialWrite::finish(modified)`): a video's only date is its file date, so a
 copy stamped with the copy time would land in the wrong month when the drive is culled or backed up again.
 
-Not done, the one remaining safety gap: the check proves the drive holds exactly what was *read* from the card. A
-card read that returns wrong bytes without an error (a failing reader or cable) would be copied faithfully. Pro
-tools offer a second read of the source for this; it doubles the card time. Open question for the owner.
+**Read the card twice** (optional, plan screen; `offload_start(.., read_twice, ..)`): the read-back check proves the
+drive holds exactly what was *read* from the card, so a reader, cable or card that returns wrong bytes without an
+error would be copied faithfully (test e28 shows it). With the option on, each file is first read once and only
+hashed, then read again for the copy; the two hashes must match or the file fails ("different data on two reads") and
+is never named on the drive (e29, either read wrong; e30, every byte read exactly twice). Both reads skip the OS
+cache, so both come from the card. About doubles the card time; off by default. It can't catch data that is stored
+wrong on the card: that reads the same every time.
 
 Considered and not done: dropping the per-file folder fsync (crash safety for seconds), caching card fingerprints
 between runs (a different card can share names, sizes and times: the one mistake that loses photos), several card
@@ -307,6 +311,9 @@ Each was checked by removing its fix and watching the test fail.
 | 25 | A symlinked folder pointing outside the drive folder | refused for that folder; others still copied |
 | 26 | A symlink that stays inside the drive folder | allowed |
 | 27 | The card picked as the drive (swapped) | **refused** (was: allowed when on different volumes); both card-like → warning |
+| 28 | A silent misread (one wrong byte, no error), option off | copied as read: the documented gap |
+| 29 | A silent misread, "Read the card twice" on | **file refused, never named**; next run copies it right |
+| 30 | "Read the card twice" | every byte of every new file is read from the card exactly twice |
 | — | FAT32 drive, video ≥ 4 GB | **warning** in the plan (new) |
 | — | Temp names | include the process id, so two app copies never share one |
 
