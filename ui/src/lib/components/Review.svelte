@@ -87,6 +87,8 @@
   const exportDays = $derived(day ? [day] : pickedDays);
   /** What the Export screen will start with: these decisions and days, minus photos exported before. */
   let exportCount = $state(0);
+  /** The same, exported before included: the button stays usable to export them again. */
+  let exportAll = $state(0);
   /** Bumped once a decision change is saved, so the count is asked for after the write. */
   let saved = $state(0);
   let exportTicket = 0;
@@ -96,20 +98,21 @@
     void saved; // re-count after a decision change is saved
     const mine = ++exportTicket;
     if (!ds.length) {
-      exportCount = 0;
+      exportCount = exportAll = 0;
       return;
     }
-    api
-      .exportCount({
-        includeFavorites: ds.includes('favorite'),
-        includeLikes: ds.includes('like'),
-        includeDislikes: ds.includes('dislike'),
-        includeHates: ds.includes('hate'),
-        includeExported: false,
-        days: scope,
-      })
-      .then((n) => {
-        if (mine === exportTicket) exportCount = n;
+    const opts = {
+      includeFavorites: ds.includes('favorite'),
+      includeLikes: ds.includes('like'),
+      includeDislikes: ds.includes('dislike'),
+      includeHates: ds.includes('hate'),
+      days: scope,
+    };
+    Promise.all([api.exportCount({ ...opts, includeExported: false }), api.exportCount({ ...opts, includeExported: true })])
+      .then(([fresh, all]) => {
+        if (mine !== exportTicket) return;
+        exportCount = fresh;
+        exportAll = all;
       })
       .catch(() => {});
   });
@@ -218,8 +221,8 @@
 
       <footer>
         <div><b>{formatCount(counts.like + counts.favorite)} keepers</b> <span class="muted">· ✓ {counts.like} + ★ {counts.favorite}{compact ? '' : ' · originals never touched'}</span></div>
-        <button class="primary" onclick={() => onExport(exportDecisions, exportDays)} disabled={!exportCount} title="Export the originals of what this filter shows that weren't exported before; adjust on the next screen">
-          {compact ? 'Share' : 'Export'} {formatCount(exportCount)}{filter === 'all' || filter === 'todo' ? '' : ` ${FILTERS.find((f) => f[0] === filter)?.[1]}`}
+        <button class="primary" onclick={() => onExport(exportDecisions, exportDays)} disabled={!exportAll} title={exportCount ? "Export the originals of what this filter shows that weren't exported before; adjust on the next screen" : 'Everything here was exported before; the next screen exports it again'}>
+          {compact ? 'Share' : 'Export'}{exportCount ? '' : ' again'} {formatCount(exportCount || exportAll)}{filter === 'all' || filter === 'todo' ? '' : ` ${FILTERS.find((f) => f[0] === filter)?.[1]}`}
         </button>
       </footer>
     </section>

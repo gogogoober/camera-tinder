@@ -67,12 +67,16 @@
 
   // Live count for the current choice (ignore answers that arrive out of order).
   let ticket = 0;
+  /** Opened when everything in scope was exported before (Review's "Export again"): start with them included. */
+  let firstCount = true;
   $effect(() => {
     const o = $state.snapshot(options);
     const mine = ++ticket;
     void exported; // re-count after an export
     Promise.all([api.exportCount({ ...o, includeExported: true }), api.exportCount({ ...o, includeExported: false })]).then(([all, fresh]) => {
       if (mine !== ticket) return;
+      if (firstCount && fresh === 0 && all > 0 && !o.includeExported) includeExported = true;
+      firstCount = false;
       count = o.includeExported ? all : fresh;
       previouslyExported = all - fresh;
       error = null;
