@@ -29,6 +29,11 @@ pub trait MediaSource: Send + Sync {
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
     fn list(&self) -> Result<Vec<MediaEntry>>;
+    /// Like `list`, but fails if any folder can't be read, instead of skipping it. An offload may only
+    /// say "everything on the card is backed up" when it saw everything.
+    fn list_complete(&self) -> Result<Vec<MediaEntry>> {
+        self.list()
+    }
     fn open(&self, rel_path: &str) -> Result<Box<dyn ReadSeek>>;
     /// Open for one front-to-back read of a big file (offload copies). Platforms may skip the OS
     /// cache so a whole card doesn't push everything else out of memory. Still read-only.

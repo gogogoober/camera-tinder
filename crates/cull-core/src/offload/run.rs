@@ -165,7 +165,7 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
     let input = a.input;
     let total_bytes: u64 = a.planned.iter().map(|p| input.files[p.index].size).sum();
     let space = a.lib.space()?;
-    if total_bytes + SPACE_MARGIN > space.free_bytes {
+    if total_bytes > 0 && total_bytes + SPACE_MARGIN > space.free_bytes {
         return Err(CoreError::Other(format!(
             "not enough space on the drive: {} MB needed (plus 1 GB to spare), {} MB free",
             total_bytes >> 20,
@@ -232,7 +232,7 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
         let f = &input.files[a.planned[*p].index];
         (f.rel_path.as_str(), f.size)
     }));
-    let (not_backed_up, recheck_error) = match a.card.list() {
+    let (not_backed_up, recheck_error) = match a.card.list_complete() {
         Ok(list) => (
             list.into_iter()
                 .filter(|e| FileKind::of(&e.rel_path).is_some() && !covered.contains(&(e.rel_path.as_str(), e.size)))
@@ -394,7 +394,8 @@ fn write_files(sh: &Shared<'_>, rx: Receiver<Msg>, btx: &SyncSender<Vec<Written>
                     cur = None;
                     continue;
                 }
-                match a.lib.begin(&pf.dest_rel, &format!("{}-{p}", sh.run_id)) {
+                // Unique across runs and app copies (two databases can both have a run 1).
+                match a.lib.begin(&pf.dest_rel, &format!("{}-{}-{p}", std::process::id(), sh.run_id)) {
                     Ok(w) => {
                         let started = sh.lock().offload_item_started(
                             sh.run_id,

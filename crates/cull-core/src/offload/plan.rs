@@ -208,7 +208,8 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
     let space = g.lib.space()?;
 
     // 1. The card: every photo and video, read once each for its fingerprint and metadata.
-    let listing = g.card.list()?;
+    // Strict: an unreadable folder stops the plan rather than hiding photos from "all backed up".
+    let listing = g.card.list_complete()?;
     let mut skipped: BTreeMap<String, u64> = BTreeMap::new();
     let mut media = Vec::new();
     for e in listing {
@@ -441,6 +442,14 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
         split_from: BTreeSet<(String, String)>,
     }
     let mut groups: BTreeMap<(String, i32, FolderKey), Group> = BTreeMap::new();
+    // Trips are keyed case-insensitively ("Japan trip" tag + "JAPAN TRIP" event = one folder, one id).
+    // The folder takes the spelling of a saved tag over a calendar event, then of the longest span.
+    let mut trip_names: HashMap<String, String> = HashMap::new();
+    let mut ranked: Vec<&Span> = input.spans.iter().collect();
+    ranked.sort_by_key(|s| (std::cmp::Reverse(s.saved), std::cmp::Reverse(s.days.len()), s.first(), s.name.clone()));
+    for s in ranked {
+        trip_names.entry(s.name.to_lowercase()).or_insert_with(|| s.name.clone());
+    }
     for (i, f) in input.files.iter().enumerate() {
         if f.on_drive.is_some() {
             continue;
@@ -450,7 +459,7 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
             Some(day) => match broadest(&input.spans, day) {
                 Some(span) => {
                     let year = span.first().year();
-                    let trip = FolderKey::Trip(span.name.clone());
+                    let trip = FolderKey::Trip(span.name.to_lowercase());
                     let id = folder_id(&f.brand, year, &trip);
                     if choice(&id).is_some_and(|c| c.by_month) {
                         (day.year(), FolderKey::month_of(day), Some((id, span.name.clone())))
@@ -476,7 +485,13 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
         let typed = choice(&id).and_then(|c| c.name.as_deref()).map(str::trim).filter(|n| !n.is_empty());
         let folder_rel = match typed {
             Some(n) => format!("{base}/{}", sanitize(n)),
-            None => input.remembered.get(&(brand.clone(), year, db_key.clone())).cloned().unwrap_or_else(|| format!("{base}/{}", key.default_name())),
+            None => input.remembered.get(&(brand.clone(), year, db_key.clone())).cloned().unwrap_or_else(|| {
+                let name = match &key {
+                    FolderKey::Trip(lower) => sanitize(trip_names.get(lower).unwrap_or(lower)),
+                    k => k.default_name(),
+                };
+                format!("{base}/{name}")
+            }),
         };
         let name = file_name(&folder_rel).to_string();
 
@@ -552,8 +567,17 @@ pub fn layout(input: &PlanInput, choices: &[FolderChoice]) -> (Vec<PlannedFile>,
             input.space.fs_type.to_uppercase()
         ));
     }
-    if new_bytes + SPACE_MARGIN > input.space.free_bytes {
+    if new_bytes > 0 && new_bytes + SPACE_MARGIN > input.space.free_bytes {
         warnings.push("Not enough free space on this drive for the new files (plus 1 GB to spare).".into());
+    }
+    // FAT32 can't hold a file of 4 GiB or more: those copies would fail.
+    const FAT32_MAX: u64 = (4 << 30) - 1;
+    let too_big = planned.iter().filter(|p| input.files[p.index].size > FAT32_MAX).count();
+    if too_big > 0 && matches!(input.space.fs_type.as_str(), "msdos" | "fat32" | "vfat") {
+        warnings.push(format!(
+            "{too_big} {} 4 GB or larger, which this drive's format (FAT32) can't store. Use an exFAT or APFS drive for videos.",
+            if too_big == 1 { "file is" } else { "files are" }
+        ));
     }
     let plan = OffloadPlan {
         card_root: input.card_root.clone(),
@@ -711,6 +735,19 @@ mod tests {
         assign_brands(&mut files, &[Some("Fuji".into()), None, None, None]);
         let b: Vec<&str> = files.iter().map(|f| f.brand.as_str()).collect();
         assert_eq!(b, ["Fuji", "Fuji", "Nikon", UNKNOWN_BRAND]);
+    }
+
+    #[test]
+    fn warns_when_a_fat32_drive_cant_hold_a_big_video() {
+        let mut big = file("DCIM/A/DSCF0001.MOV", "2026-10-05T10:00:00", "Fuji");
+        big.size = 5 << 30;
+        let mut inp = input(vec![big, file("DCIM/A/DSCF0002.JPG", "2026-10-05T10:00:00", "Fuji")], vec![]);
+        inp.space.fs_type = "msdos".into();
+        let (_, plan) = layout(&inp, &[]);
+        assert!(plan.warnings.iter().any(|w| w.contains("1 file is 4 GB")), "{:?}", plan.warnings);
+        inp.space.fs_type = "exfat".into();
+        let (_, plan) = layout(&inp, &[]);
+        assert!(!plan.warnings.iter().any(|w| w.contains("4 GB")));
     }
 
     #[test]

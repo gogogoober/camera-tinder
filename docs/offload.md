@@ -196,6 +196,42 @@ photo; a 1 a.m. photo just shows under the day before.
 Formatting or deleting from the card, a second backup drive in the same run, adding the SSD as a cull source
 automatically, copying only keepers, renaming existing SSD folders.
 
+## Edge cases (tests/offload_edge_cases.rs)
+
+Each was checked by removing its fix and watching the test fail.
+
+| # | Case | What must hold |
+|---|---|---|
+| 1 | A card file edited after planning (same size) | not copied, reported; a rerun copies the new version |
+| 2 | A card file that grew | not copied (reads stop at the listed size + 1) |
+| 3 | A card file deleted after planning | reported; never "all safe" |
+| 4 | Another card at the same mount path | nothing copied under the old plan's names |
+| 5 | A read error mid-file | only that file fails; its temp file is removed |
+| 6 | Card pulled out | run stops after 3 failures in a row; nothing half-written |
+| 7 | Drive full mid-file | run stops; no truncated file under a final name |
+| 8 | Drive unplugged mid-run | stops; files already verified stay |
+| 9 | A file appears at the target name just before naming | never overwritten; next plan picks `-1` |
+| 10 | A file where a folder should be | fails cleanly; that file untouched |
+| 11 | The same photo twice on a card | both backed up |
+| 12 | An empty file | copied and checked |
+| 13 | An unreadable folder on the card | **planning fails** (was: skipped, so "all safe" could be wrong) |
+| 14 | macOS `._` and `.Spotlight` files | ignored |
+| 15 | "Japan trip" tag + "JAPAN TRIP" event | **one folder, one id** (was: two groups with the same id); saved tag's spelling wins |
+| 16 | Folder names like `../../x`, `/etc`, `.`, NUL | always inside `Photos/<Brand>/<Year>/`, never hidden |
+| 17 | 3 a.m. on Jan 1; a broken EXIF date | previous year's December; file time used |
+| 18 | A bug (panic) mid-run | **comes back as an error, backups not locked** (was: would take the command down) |
+| 19 | Named on the drive, crash before recording | next plan finds them by content; no second copies |
+| 20 | Two runs at once | the second is refused |
+| 21 | Nothing to copy on a nearly full drive | **no false "not enough space"** (was: refused) |
+| 22 | Not enough space | refused before anything is written |
+| 23 | `library-id` is a folder | stops with an error, nothing copied |
+| — | FAT32 drive, video ≥ 4 GB | **warning** in the plan (new) |
+| — | Temp names | include the process id, so two app copies never share one |
+
+Not handled (judged unlikely): two different files on the drive with the same size and the same first 64 KiB and last
+16 KiB (use the byte-for-byte check); Unicode-normalization twins of a target file name (the no-overwrite naming
+still protects the existing file; the copy fails and is reported).
+
 ## Still to do
 
 - A real-card run in the Tauri app, timed (MB/s on the owner's reader), and a look at the screens there.

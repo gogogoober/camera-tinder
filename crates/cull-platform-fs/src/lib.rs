@@ -48,6 +48,38 @@ impl FsSource {
         &self.root
     }
 
+    /// Every file under the root. `strict`: a folder or file that can't be read is an error (offload);
+    /// otherwise it is skipped (scans keep going).
+    fn walk(&self, strict: bool) -> Result<Vec<MediaEntry>> {
+        let mut out = Vec::new();
+        let walker = WalkDir::new(&self.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|e| e.depth() == 0 || (!is_hidden(e.file_name()) && !self.excluded.iter().any(|x| e.path().starts_with(x))));
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(e) if strict => {
+                    let at = e.path().map(|p| p.strip_prefix(&self.root).unwrap_or(p).display().to_string()).unwrap_or_default();
+                    return Err(CoreError::Other(format!("couldn't read \"{at}\" on {}: {e}", self.name)));
+                }
+                Err(_) => continue, // unreadable dirs: skip, don't abort the scan
+            };
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(e) if strict => return Err(CoreError::Other(format!("couldn't read {}: {e}", entry.path().display()))),
+                Err(_) => continue,
+            };
+            let Ok(rel) = entry.path().strip_prefix(&self.root) else { continue };
+            let rel_path = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            out.push(MediaEntry { rel_path, size: meta.len(), modified: meta.modified().ok() });
+        }
+        Ok(out)
+    }
+
     fn resolve(&self, rel_path: &str) -> Result<PathBuf> {
         let rel = Path::new(rel_path);
         if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
@@ -92,22 +124,11 @@ impl MediaSource for FsSource {
     }
 
     fn list(&self) -> Result<Vec<MediaEntry>> {
-        let mut out = Vec::new();
-        let walker = WalkDir::new(&self.root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(|e| e.depth() == 0 || (!is_hidden(e.file_name()) && !self.excluded.iter().any(|x| e.path().starts_with(x))));
-        for entry in walker {
-            let Ok(entry) = entry else { continue }; // unreadable dirs: skip, don't abort the scan
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
-            let Ok(rel) = entry.path().strip_prefix(&self.root) else { continue };
-            let rel_path = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-            out.push(MediaEntry { rel_path, size: meta.len(), modified: meta.modified().ok() });
-        }
-        Ok(out)
+        self.walk(false)
+    }
+
+    fn list_complete(&self) -> Result<Vec<MediaEntry>> {
+        self.walk(true)
     }
 
     fn open(&self, rel_path: &str) -> Result<Box<dyn ReadSeek>> {
