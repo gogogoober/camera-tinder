@@ -196,6 +196,23 @@ photo; a 1 a.m. photo just shows under the day before.
 Formatting or deleting from the card, a second backup drive in the same run, adding the SSD as a cull source
 automatically, copying only keepers, renaming existing SSD folders.
 
+## Speed (Nov 2026 review)
+
+Measured (release build, internal SSD, generated files): copying runs at ~1 GB/s including the read-back, so a card
+reader (90–300 MB/s) is the limit. Per-file overhead is ~0.4 ms.
+
+- **RAW metadata reads 1 MiB, not the whole file.** The EXIF library reads TIFF-based RAW files (NEF, DNG, ARW…) in
+  full; planning a card of NEFs read every byte twice (plan + copy). `meta::read_file_meta` now parses the first
+  `RAW_PREFIX` (1 MiB) and falls back to the full read only if Make or the date isn't there. Test:
+  `planning_reads_only_the_start_of_raw_files` (40 MB → ~6 MB read for 5 NEFs). Not yet confirmed on a real NEF.
+- **The report shows each step's speed** (`OffloadReport.stages`: card read, drive write, check) and which set the
+  pace, so tuning is based on a real card, not guesses.
+- **The byte-for-byte check reads the card copy and the drive copy at the same time** (different devices).
+
+Considered and not done: dropping the per-file folder fsync (crash safety for seconds), caching card fingerprints
+between runs (a different card can share names, sizes and times: the one mistake that loses photos), several card
+reads at once (no evidence it helps one SD card; revisit with the stage timings).
+
 ## Edge cases (tests/offload_edge_cases.rs)
 
 Each was checked by removing its fix and watching the test fail.

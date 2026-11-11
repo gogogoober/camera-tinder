@@ -173,6 +173,11 @@ export function mockOffload(emit: Emit): Pick<CullerApi, 'pickOffloadCard' | 'pi
         manifest: done ? 'Photos/_darkroom/offload-2026-11-10-153000.txt' : null,
         seconds: (Date.now() - started) / 1000,
         allSafe: !stopped && notBackedUp.length === 0,
+        stages: {
+          readBytes: bytes, readSeconds: bytes / (180 * MB),
+          writeBytes: bytes, writeSeconds: bytes / (850 * MB),
+          checkBytes: bytes, checkSeconds: bytes / (1000 * MB),
+        },
       };
     },
     async offloadStop() {

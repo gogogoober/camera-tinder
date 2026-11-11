@@ -54,6 +54,30 @@ pub struct OffloadReport {
     pub seconds: f64,
     /// Every photo and video on the card is on the drive, read back and matched.
     pub all_safe: bool,
+    /// Where the time went: busy time and bytes of each step (they overlap, so the slowest one sets the pace).
+    pub stages: StageTimes,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageTimes {
+    /// Reading the card.
+    pub read_bytes: u64,
+    pub read_seconds: f64,
+    /// Writing to the drive (including the per-file fsync).
+    pub write_bytes: u64,
+    pub write_seconds: f64,
+    /// Reading copies back from the drive and checking them.
+    pub check_bytes: u64,
+    pub check_seconds: f64,
+}
+
+/// Adds the time `f` takes to `ns`.
+fn timed<T>(ns: &AtomicU64, f: impl FnOnce() -> T) -> T {
+    let t = Instant::now();
+    let out = f();
+    ns.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    out
 }
 
 pub struct RunArgs<'a> {
@@ -91,6 +115,11 @@ struct Shared<'a> {
     verified: Mutex<Vec<(usize, u128)>>,
     bytes_written: AtomicU64,
     last_emit: Mutex<Instant>,
+    read_bytes: AtomicU64,
+    read_ns: AtomicU64,
+    write_ns: AtomicU64,
+    check_bytes: AtomicU64,
+    check_ns: AtomicU64,
 }
 
 impl Shared<'_> {
@@ -208,6 +237,11 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
         verified: Mutex::new(Vec::new()),
         bytes_written: AtomicU64::new(0),
         last_emit: Mutex::new(Instant::now() - Duration::from_secs(1)),
+        read_bytes: AtomicU64::new(0),
+        read_ns: AtomicU64::new(0),
+        write_ns: AtomicU64::new(0),
+        check_bytes: AtomicU64::new(0),
+        check_ns: AtomicU64::new(0),
     };
     sh.emit("", true);
 
@@ -223,6 +257,16 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
             sh.give_up("the verifier crashed; files not recorded as verified stay unconfirmed".into());
         }
     });
+
+    let secs = |ns: &AtomicU64| ns.load(Ordering::Relaxed) as f64 / 1e9;
+    let stages = StageTimes {
+        read_bytes: sh.read_bytes.load(Ordering::Relaxed),
+        read_seconds: secs(&sh.read_ns),
+        write_bytes: sh.bytes_written.load(Ordering::Relaxed),
+        write_seconds: secs(&sh.write_ns),
+        check_bytes: sh.check_bytes.load(Ordering::Relaxed),
+        check_seconds: secs(&sh.check_ns),
+    };
 
     // Re-list the card: every photo and video on it must be on the drive.
     let verified = sh.verified.into_inner().unwrap_or_else(PoisonError::into_inner);
@@ -291,6 +335,7 @@ pub fn run(a: RunArgs<'_>) -> Result<OffloadReport> {
         manifest,
         seconds: started.elapsed().as_secs_f64(),
         all_safe,
+        stages,
     })
 }
 
@@ -313,7 +358,8 @@ fn read_card(sh: &Shared<'_>, tx: SyncSender<Msg>) {
                     return Err(STOPPED.into());
                 }
                 let mut buf = vec![0u8; CHUNK];
-                let n = read_full(&mut r, &mut buf).map_err(|e| e.to_string())?;
+                let n = timed(&sh.read_ns, || read_full(&mut r, &mut buf)).map_err(|e| e.to_string())?;
+                sh.read_bytes.fetch_add(n as u64, Ordering::Relaxed);
                 if n == 0 {
                     break;
                 }
@@ -430,7 +476,7 @@ fn write_files(sh: &Shared<'_>, rx: Receiver<Msg>, btx: &SyncSender<Vec<Written>
             }
             Msg::Chunk(buf) => {
                 if let Some((p, w)) = cur.as_mut() {
-                    match w.write(&buf) {
+                    match timed(&sh.write_ns, || w.write(&buf)) {
                         Ok(()) => {
                             sh.bytes_written.fetch_add(buf.len() as u64, Ordering::Relaxed);
                             sh.emit(&a.input.files[a.planned[*p].index].rel_path, false);
@@ -454,7 +500,7 @@ fn write_files(sh: &Shared<'_>, rx: Receiver<Msg>, btx: &SyncSender<Vec<Written>
                     sh.fail(p, "the file on the card changed since the plan was made; plan again", Some(&partial));
                     continue;
                 }
-                match w.finish() {
+                match timed(&sh.write_ns, || w.finish()) {
                     Ok(()) => {
                         fails.set(0);
                         batch.push(Written { p, partial, hash });
@@ -494,7 +540,11 @@ fn verify_batches(sh: &Shared<'_>, brx: Receiver<Vec<Written>>) {
         for w in batch {
             let pf = &a.planned[w.p];
             let f = &a.input.files[pf.index];
-            match a.lib.verify(&w.partial, f.size, w.hash) {
+            let checked = timed(&sh.check_ns, || a.lib.verify(&w.partial, f.size, w.hash));
+            if checked.is_ok() {
+                sh.check_bytes.fetch_add(f.size, Ordering::Relaxed);
+            }
+            match checked {
                 Err(e) => sh.fail(w.p, &format!("the copy doesn't match the card: {e}"), Some(&w.partial)),
                 Ok(()) => match a.lib.commit(&w.partial, &pf.dest_rel) {
                     Ok(mtime) => named.push((w, mtime)),

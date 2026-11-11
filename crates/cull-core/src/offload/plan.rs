@@ -326,9 +326,19 @@ pub fn gather(g: Gather<'_>) -> Result<PlanInput> {
             bytes_total: 0,
             current: f.rel_path.clone(),
         });
+        // The card and the drive are different devices: read both copies at the same time.
+        let (first, others) = paths.split_first().expect("matches have paths");
+        let (card_hash, drive_hash) = std::thread::scope(|s| {
+            let drive = s.spawn(|| full_hash(g.library, first));
+            (full_hash(g.card, &f.rel_path), drive.join().unwrap_or_else(|_| Err(CoreError::Other("read failed".into()))))
+        });
         // A card file that can't be read stays "not backed up": the copy will try (and report) it.
-        let Ok(want) = full_hash(g.card, &f.rel_path) else { continue };
-        f.on_drive = paths.iter().find(|p| full_hash(g.library, p).is_ok_and(|h| h == want)).cloned();
+        let Ok(want) = card_hash else { continue };
+        f.on_drive = if drive_hash.is_ok_and(|h| h == want) {
+            Some(first.clone())
+        } else {
+            others.iter().find(|p| full_hash(g.library, p).is_ok_and(|h| h == want)).cloned()
+        };
     }
 
     // 3. Names for folders: saved tags, and all-day / multi-day calendar events over the card's days.

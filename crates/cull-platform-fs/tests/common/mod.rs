@@ -59,6 +59,56 @@ pub fn jpeg(make: &str, when: &str, seed: u8) -> Vec<u8> {
     out
 }
 
+/// A Nikon NEF-like TIFF: the EXIF (Make, DateTimeOriginal) at the start, then `len` bytes of "sensor data".
+pub fn nef(when: &str, seed: u8, len: usize) -> Vec<u8> {
+    let app1 = exif_app1("NIKON CORPORATION", when);
+    let mut out = app1[10..].to_vec(); // the TIFF inside "FF E1 len Exif\0\0"
+    out.extend(noise(len, seed));
+    out
+}
+
+/// Counts what is read from a source (to prove how much of the card a step touches).
+pub struct CountingSource {
+    pub inner: FsSource,
+    pub bytes: Arc<std::sync::atomic::AtomicU64>,
+}
+struct CountingReader {
+    r: Box<dyn cull_core::ReadSeek>,
+    n: Arc<std::sync::atomic::AtomicU64>,
+}
+impl std::io::Read for CountingReader {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        let k = self.r.read(b)?;
+        self.n.fetch_add(k as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(k)
+    }
+}
+impl std::io::Seek for CountingReader {
+    fn seek(&mut self, p: std::io::SeekFrom) -> std::io::Result<u64> {
+        self.r.seek(p)
+    }
+}
+impl MediaSource for CountingSource {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+    fn display_name(&self) -> &str {
+        self.inner.display_name()
+    }
+    fn list(&self) -> cull_core::Result<Vec<cull_core::MediaEntry>> {
+        self.inner.list()
+    }
+    fn list_complete(&self) -> cull_core::Result<Vec<cull_core::MediaEntry>> {
+        self.inner.list_complete()
+    }
+    fn open(&self, r: &str) -> cull_core::Result<Box<dyn cull_core::ReadSeek>> {
+        Ok(Box::new(CountingReader { r: self.inner.open(r)?, n: self.bytes.clone() }))
+    }
+    fn open_streaming(&self, r: &str) -> cull_core::Result<Box<dyn cull_core::ReadSeek>> {
+        Ok(Box::new(CountingReader { r: self.inner.open_streaming(r)?, n: self.bytes.clone() }))
+    }
+}
+
 /// A Fuji RAF: header, then the embedded JPEG (with its EXIF), then "sensor data".
 pub fn raf(when: &str, seed: u8) -> Vec<u8> {
     let embedded = jpeg("FUJIFILM", when, seed);

@@ -2,7 +2,6 @@
 
 use std::io::{BufReader, Cursor, Read, SeekFrom};
 
-
 use super::kind::FileKind;
 use crate::metadata::{PhotoMeta, read_meta};
 use crate::ports::ReadSeek;
@@ -15,8 +14,26 @@ pub fn read_file_meta(kind: FileKind, name: &str, r: &mut dyn ReadSeek) -> Photo
     if super::kind::extension(name).as_deref() == Some("raf") {
         return read_raf(r).unwrap_or_default();
     }
+    if kind == FileKind::Raw {
+        // TIFF-based RAW (NEF, DNG, ARW…): the EXIF reader would read the whole file (25–60 MB) to find
+        // two fields that sit near the start. Try the first 1 MiB; only if Make or the date isn't
+        // there, read it all as before.
+        if let Some(meta) = read_prefix(r, RAW_PREFIX).filter(|m| m.make.is_some() && m.captured_at.is_some()) {
+            return meta;
+        }
+    }
     let _ = r.seek(SeekFrom::Start(0));
     read_meta(&mut BufReader::new(r))
+}
+
+/// How much of a TIFF-based RAW is read first for its EXIF.
+pub const RAW_PREFIX: u64 = 1 << 20;
+
+fn read_prefix(r: &mut dyn ReadSeek, len: u64) -> Option<PhotoMeta> {
+    r.seek(SeekFrom::Start(0)).ok()?;
+    let mut head = Vec::with_capacity(len as usize);
+    r.take(len).read_to_end(&mut head).ok()?;
+    Some(read_meta(&mut Cursor::new(head)))
 }
 
 /// Fuji RAF: a header, then an embedded JPEG whose EXIF holds Make and the capture time.

@@ -29,6 +29,10 @@ fn backs_up_every_photo_and_video_into_trip_and_month_folders() {
     let r = start(&e);
     assert!(r.all_safe, "{r:?}");
     assert_eq!((r.copied, r.already), (5, 0));
+    // Each step's bytes and time are reported.
+    let s = &r.stages;
+    assert_eq!((s.read_bytes, s.write_bytes, s.check_bytes), (r.bytes, r.bytes, r.bytes));
+    assert!(s.read_seconds > 0.0 && s.write_seconds > 0.0 && s.check_seconds > 0.0, "{s:?}");
     let mut got = photo_files(&e.ssd);
     got.sort();
     let mut want: Vec<String> = EXPECTED.iter().map(|s| s.to_string()).collect();
@@ -57,6 +61,27 @@ fn backs_up_every_photo_and_video_into_trip_and_month_folders() {
     let r = start(&e);
     assert!(r.all_safe && r.copied == 0 && r.already == 5);
     assert_eq!(p.last_backups.iter().map(|b| b.brand.as_str()).collect::<Vec<_>>(), ["Fuji", "Nikon"]);
+}
+
+/// Planning reads only the start of a RAW file for its camera and date, not the whole file.
+#[test]
+fn planning_reads_only_the_start_of_raw_files() {
+    let e = env();
+    fs::remove_dir_all(&e.card).unwrap();
+    for i in 0..5u8 {
+        put(&e.card.join(format!("DCIM/100NIKON/DSC_{i:04}.NEF")), &nef("2026:11:03 15:00:00", i, 8 << 20), None);
+    }
+    // No EXIF at all: still works, by reading the whole file (as before).
+    put(&e.card.join("DCIM/100NIKON/DSC_0099.NEF"), &noise(3 << 20, 9), Some("2026-11-04T10:00:00"));
+    let bytes = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let card = CountingSource { inner: FsSource::new(&e.card).unwrap(), bytes: bytes.clone() };
+    let p = try_plan(&e, Arc::new(card), fs_lib(&e), false).unwrap();
+    let read = bytes.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(read < 5 * (1 << 20) + (4 << 20), "planning read {} MB of a 43 MB card", read >> 20);
+    assert_eq!(p.folders.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["Photos/Nikon/2026/2026-11"]);
+    let r = start(&e);
+    assert!(r.all_safe, "{r:?}");
+    assert!(e.ssd.join("Photos/Nikon/2026/2026-11/RAW/DSC_0000.NEF").exists());
 }
 
 #[test]

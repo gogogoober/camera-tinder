@@ -67,6 +67,20 @@
   });
   const tooBig = $derived(!!plan && plan.newBytes + 2 ** 30 > plan.freeBytes);
 
+  /** Speed of each step and which one set the pace. */
+  const stageSpeeds = $derived.by(() => {
+    const s = report?.stages;
+    if (!s) return null;
+    const rate = (b: number, t: number) => (t > 0 && b > 0 ? b / t : null);
+    const rows = [
+      { label: 'Card read', v: rate(s.readBytes, s.readSeconds) },
+      { label: 'Drive write', v: rate(s.writeBytes, s.writeSeconds) },
+      { label: 'Check', v: rate(s.checkBytes, s.checkSeconds) },
+    ].filter((r): r is { label: string; v: number } => r.v != null);
+    const slowest = rows.reduce<{ label: string; v: number } | null>((m, r) => (!m || r.v < m.v ? r : m), null);
+    return rows.length ? { rows, slowest: slowest!.label } : null;
+  });
+
   function name(path: string | null) {
     return path ? path.split('/').filter(Boolean).pop() ?? path : '';
   }
@@ -334,6 +348,12 @@
         {#if report.notBackedUp.length > 30}<div class="muted small">…and {formatCount(report.notBackedUp.length - 30)} more.</div>{/if}
       {/if}
       {#if report.recheckError}<p class="bad">Couldn't re-check the card at the end: {report.recheckError}</p>{/if}
+      {#if stageSpeeds}
+        <div class="muted small">
+          {#each stageSpeeds.rows as r, i (r.label)}{i ? ' · ' : ''}<span class:slowest={r.label === stageSpeeds.slowest}>{r.label} {formatBytes(r.v)}/s</span>{/each}
+          · the {stageSpeeds.slowest.toLowerCase()} set the pace.
+        </div>
+      {/if}
       {#if report.manifest}<div class="muted small">Hash list: <code>{report.manifest}</code></div>{/if}
       <div class="actions">
         <button class="ghost" onclick={onBack}>Done</button>
@@ -381,4 +401,5 @@
   .chip { padding: 3px 10px; border-radius: 99px; border: 1px solid var(--border); background: transparent; font-size: 12.5px; }
   .actions { display: flex; justify-content: flex-end; gap: 10px; }
   .copying { display: grid; gap: 8px; }
+  .slowest { color: var(--text); font-weight: 600; }
 </style>

@@ -14,4 +14,4 @@ pub mod service;
 pub use journal::BrandBackup;
 pub use kind::FileKind;
 pub use plan::{FolderChoice, OffloadPlan, PlanFolder};
-pub use run::OffloadReport;
+pub use run::{OffloadReport, StageTimes};
