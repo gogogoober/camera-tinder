@@ -508,6 +508,9 @@ fn real_volumes_card_and_drive_files_untouched() {
                 svc.offload_plan(Arc::new(FsSource::new(card.path()).unwrap()), card.mount.clone(), Arc::new(FsSource::new(drive.path()).unwrap()), lib, true, &NullSink)
                     .unwrap()
             };
+            // Planning alone writes nothing to the drive: every file there is as it was, and no new ones.
+            plan_once(Arc::new(FsLibrary::new(drive.path(), card.path()).unwrap()));
+            assert_eq!(snapshot(drive.path()), drive_before, "{card_fs}/{drive_fs}: planning changed the drive");
             // Run 1 stops when the 3rd file starts.
             let stopper = StopAtBegin(FsLibrary::new(drive.path(), card.path()).unwrap(), svc.clone(), Default::default(), 3);
             let p = plan_once(Arc::new(stopper));
@@ -534,5 +537,36 @@ fn real_volumes_card_and_drive_files_untouched() {
             card.eject();
             assert_eq!(raw(&card), before, "{card_fs}/{drive_fs}: every raw byte of the card is unchanged");
         }
+    }
+}
+
+/// The read-back comes from the drive, not from memory, on the formats a backup drive really has.
+/// The everyday test checks this on the Mac's own disk; this one checks exFAT and APFS volumes.
+#[test]
+#[ignore]
+#[cfg(target_vendor = "apple")]
+fn real_volumes_read_back_comes_from_the_drive() {
+    for drive_fs in ["ExFAT", "APFS"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let card = tmp.path().join("card");
+        fs::create_dir_all(&card).unwrap();
+        let drive = Volume::mount(tmp.path(), "drive", drive_fs, "2g", true);
+        let lib = FsLibrary::new(drive.path(), &card).unwrap();
+        let data = noise(32 << 20, 77);
+        let mut w = lib.begin("Photos/big.mov", "readback").unwrap();
+        for c in data.chunks(4 << 20) {
+            w.write(c).unwrap();
+        }
+        let rel = w.rel_path().to_string();
+        w.finish(None).unwrap();
+        lib.flush_to_media(&rel).unwrap();
+        let (before, total) = resident_pages(&drive.path().join(&rel));
+        let mut h = xxhash_rust::xxh3::Xxh3::new();
+        h.update(&data);
+        lib.verify(&rel, data.len() as u64, h.digest128()).unwrap();
+        let (after, _) = resident_pages(&drive.path().join(&rel));
+        eprintln!("READBACK {drive_fs}: pages in memory before the check {before}/{total}, after {after}/{total}");
+        assert_eq!(before, 0, "{drive_fs}: the copy was still in memory when it was checked");
+        lib.discard(&rel).unwrap();
     }
 }

@@ -196,6 +196,26 @@ photo; a 1 a.m. photo just shows under the day before.
 Formatting or deleting from the card, a second backup drive in the same run, adding the SSD as a cull source
 automatically, copying only keepers, renaming existing SSD folders.
 
+## Before formatting a card: an independent check
+
+`python3 scripts/verify-backup.py /Volumes/CARD /Volumes/SSD` shares no code with the app. It reads both sides
+read-only and compares SHA-256 of whole files, wherever the copies are and whatever they're called, then lists any
+photo or video on the card with no identical copy on the drive ("Do NOT format this card"). It reads the whole card
+again, so it takes about as long as a copy.
+
+What the three safety statements mean exactly (validated Nov 2026):
+- **The card is only read**: the backup's five card accesses are two listings and three read-only opens; the
+  card-side interface has no write methods. Tested on exFAT and FAT32 images mounted read-write: every raw byte
+  unchanged. Not covered: macOS's own housekeeping files on a real card, and hardware faults.
+- **Nothing on the drive is overwritten or deleted**: final names are taken with a no-overwrite link (exFAT: an
+  exclusive empty claim, then a rename onto it). The only deletions are the app's own
+  `.<name>.darkroom-<tag>.partial` temp files and its own empty claim. Planning writes nothing (also checked on
+  real volumes).
+- **Every copy is read back and compared before it is named**: compared with what was read from the card (so tick
+  "Read the card twice" to also catch a misreading reader). The read-back comes from the drive, not memory: checked
+  on the Mac's disk and, with `-- --ignored`, on exFAT and APFS volumes. Not verifiable in software: a drive that
+  claims to have flushed and hasn't.
+
 ## Any folder structure (Nov 2026 review, tests/offload_any_structure.rs)
 
 The source can be any folder (not only a card with DCIM) and the destination any folder; neither layout matters.
