@@ -2,9 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>NSCalendarsFullAccessUsageDescription</key>
-  <string>Darkroom reads your calendar to group the days you shot, like "Maya's wedding". Nothing leaves your Mac.</string>
-  <key>NSCalendarsUsageDescription</key>
-  <string>Darkroom reads your calendar to group the days you shot.</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Darkroom reads your calendar to group the days you shot, like "Maya's wedding". Nothing leaves your Mac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Darkroom reads your calendar to group the days you shot.</string>
 </dict>
 </plist>

@@ -5,3 +5,5 @@
 .DS_Store
 /test-photos
 /test-photos-v2
+/src-tauri/appstore/.build
+/src-tauri/appstore/*.provisionprofile

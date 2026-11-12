@@ -22,3 +22,7 @@ pub mod vision;
 /// Fast preview maker (decode at reduced size + rotate + scale in one ImageIO call).
 #[cfg(target_os = "macos")]
 pub mod imageio;
+
+/// Keep the Mac awake during an offload (Foundation activity; no subprocess).
+#[cfg(target_os = "macos")]
+pub mod power;

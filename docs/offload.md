@@ -145,7 +145,7 @@ Three read or write failures in a row (card or drive unplugged) end the run; a f
 
 - Refuse a library inside the card, on the card's volume, or inside any culling source (existing `CopyToDir` checks).
 - **Free space** checked before starting (plan size + 1 GB) and before every batch.
-- **Keep the Mac awake** while a run is going (`caffeinate -i` started by src-tauri, ended when the run returns).
+- **Keep the Mac awake** while a run is going (an `NSProcessInfo` activity, `cull_platform_apple::power::KeepAwake`, ended when the run returns; no subprocess, so it works in the App Sandbox).
 - **exFAT/FAT SSD:** warning that it has no journal and a power cut can damage its folders; APFS is safer.
 - Card read error: the run stops, the file's partial is removed, the journal keeps everything done so far.
 

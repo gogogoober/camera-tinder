@@ -226,32 +226,14 @@ async fn offload_layout(state: State<'_, AppState>, choices: Vec<FolderChoice>) 
     blocking(move || svc.offload_layout(&choices)).await
 }
 
-/// Keeps the Mac awake (not the display) while it lives: `caffeinate -i`, ended on drop.
-struct KeepAwake(Option<std::process::Child>);
-impl KeepAwake {
-    fn new() -> Self {
-        // Writes nothing: macOS's own power assertion tool, for the duration of the copy.
-        #[cfg(target_os = "macos")]
-        return Self(std::process::Command::new("/usr/bin/caffeinate").arg("-i").spawn().ok());
-        #[allow(unreachable_code)]
-        Self(None)
-    }
-}
-impl Drop for KeepAwake {
-    fn drop(&mut self) {
-        if let Some(mut c) = self.0.take() {
-            let _ = c.kill();
-            let _ = c.wait();
-        }
-    }
-}
-
 /// Copy the plan's new files, read each back from the drive, and report. Keeps the Mac awake meanwhile.
 #[tauri::command]
 async fn offload_start(app: AppHandle, state: State<'_, AppState>, choices: Vec<FolderChoice>, read_twice: bool) -> CmdResult<OffloadReport> {
     let svc = state.0.clone();
     blocking(move || {
-        let _awake = KeepAwake::new();
+        // Keep the Mac awake (not the display) for the duration of the copy.
+        #[cfg(target_os = "macos")]
+        let _awake = cull_platform_apple::power::KeepAwake::new("Backing up a card");
         svc.offload_start(&choices, read_twice, &TauriSink(app))
     })
     .await

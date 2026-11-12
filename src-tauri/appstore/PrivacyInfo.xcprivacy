@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSPrivacyTracking</key>
+  <false/>
+  <key>NSPrivacyTrackingDomains</key>
+  <array/>
+  <!-- Nothing leaves the Mac. -->
+  <key>NSPrivacyCollectedDataTypes</key>
+  <array/>
+  <key>NSPrivacyAccessedAPITypes</key>
+  <array>
+    <!-- Scan: size + modification time of files in folders the user picked; offload keeps the card's file dates. -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>3B52.1</string>
+        <string>C617.1</string>
+      </array>
+    </dict>
+    <!-- Offload: checks the backup drive has room before copying. -->
+    <dict>
+      <key>NSPrivacyAccessedAPIType</key>
+      <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+      <key>NSPrivacyAccessedAPITypeReasons</key>
+      <array>
+        <string>E174.1</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>

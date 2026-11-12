@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Required for the Mac App Store. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <!-- Folders and cards the user picks (scan, export, offload). -->
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+  <!-- Reopen those folders at the next launch (security-scoped bookmarks; not implemented yet, see docs/app-store.md). -->
+  <key>com.apple.security.files.bookmarks.app-scope</key>
+  <true/>
+  <!-- EventKit day suggestions ("Connect Calendar"). -->
+  <key>com.apple.security.personal-information.calendars</key>
+  <true/>
+  <!-- scripts/build-appstore.sh adds com.apple.application-identifier and com.apple.developer.team-identifier
+       from APPLE_TEAM_ID (they must match the provisioning profile). -->
+</dict>
+</plist>

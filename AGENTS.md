@@ -232,6 +232,8 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
       real Tauri app on a real card.
 - [ ] RAW on desktop (NEF/RAF embedded previews; `rawler` or a direct parser), RAW+JPEG pairing.
 - [ ] Preview cache size management.
+- [ ] Mac App Store (docs/app-store.md): config, entitlements, privacy manifest and `scripts/build-appstore.sh` done;
+      security-scoped bookmarks + fail-closed safety checks still needed before the sandboxed build works.
 - [ ] iOS (`tauri ios init`, SD-card MediaSource, share-sheet export). Later: cloud sync, Android, Lightroom.
 
 ## Source safety (originals are sacred)
