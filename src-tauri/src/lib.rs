@@ -349,7 +349,6 @@ fn handle_preview(app: &AppHandle, uri: &tauri::http::Uri) -> Response<Vec<u8>> 
     .expect("valid response")
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// The app used to be "Camera Tinder" (identifier `app.cameratinder.desktop`, `camera-tinder.db`). On the first
 /// launch under the new name, move its database (with its `-wal`/`-shm` files) and preview cache over, so decisions
 /// and previews survive. Runs only while the new database doesn't exist; each file moves only if its target is free,
@@ -377,6 +376,7 @@ fn move_data_from_camera_tinder(db: &std::path::Path, cache: &std::path::Path) {
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())

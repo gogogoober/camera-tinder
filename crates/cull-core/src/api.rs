@@ -81,6 +81,15 @@ fn merge_scans(a: ScanRequest, b: &ScanRequest) -> ScanRequest {
     }
 }
 
+/// Exactly `YYYY-MM-DD` or "unknown" (chrono alone accepts "2026-7-1", which would silently match no photo).
+fn check_day(day: &str) -> Result<()> {
+    let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
+    if day != "unknown" && canonical.as_deref() != Ok(day) {
+        return Err(CoreError::Other(format!("not a day (YYYY-MM-DD or \"unknown\"): {day:?}")));
+    }
+    Ok(())
+}
+
 impl CullerService {
     pub fn open(db_path: &Path, cache_dir: &Path) -> Result<Self> {
         if let Some(parent) = db_path.parent() {
@@ -321,13 +330,7 @@ impl CullerService {
     /// triaged or analysed again from scratch (mainly for testing). Database only: photos, previews and
     /// the original files are never touched. An empty `days` does nothing.
     pub fn reset_days(&self, req: &ResetRequest) -> Result<ResetReport> {
-        for day in &req.days {
-            // Exactly YYYY-MM-DD (chrono alone accepts "2026-7-1", which would silently match no photo).
-            let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
-            if day != "unknown" && canonical.as_deref() != Ok(day.as_str()) {
-                return Err(CoreError::Other(format!("not a day (YYYY-MM-DD or \"unknown\"): {day:?}")));
-            }
-        }
+        req.days.iter().try_for_each(|day| check_day(day))?;
         if req.days.is_empty() || !(req.decisions || req.analysis) {
             return Ok(ResetReport::default());
         }
@@ -691,9 +694,7 @@ impl CullerService {
 
     /// Create the tag `name` or replace the days of the existing one. Days must be `YYYY-MM-DD` or `"unknown"`.
     pub fn save_tag(&self, name: &str, days: &[String]) -> Result<SavedTag> {
-        if let Some(bad) = days.iter().find(|d| *d != "unknown" && chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err()) {
-            return Err(CoreError::Other(format!("not a day: {bad}")));
-        }
+        days.iter().try_for_each(|day| check_day(day))?;
         let mut days = days.to_vec();
         days.sort();
         days.dedup();

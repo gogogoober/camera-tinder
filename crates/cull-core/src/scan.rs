@@ -135,7 +135,7 @@ pub fn scan_source(
                     seen.insert(id);
                     s.touch_photo(id, &src, &e.rel_path)?;
                     let fp = s.photo(id)?.fingerprint;
-                    if !previews.has_master(&fp) {
+                    if !previews.has_master(&fp) && !previews.is_undecodable(&fp) {
                         backfill.push((e.rel_path.clone(), e.size, fp));
                     }
                 }
@@ -220,7 +220,7 @@ pub fn scan_source(
                     if cancel.load(Ordering::Relaxed) {
                         return None;
                     }
-                    let result = read_original(source, rel, *size, Some(fp)).and_then(|bytes| previews.store_from_original(fp, &bytes));
+                    let result = read_original(source, rel, *size, Some(fp)).and_then(|bytes| previews.store_from_original(fp, &bytes)).and_then(|stored| stored.then_some(()).ok_or_else(|| CoreError::Other("can't decode this photo".into())));
                     read_backfill.fetch_add(1, Ordering::Relaxed);
                     result.err().map(|e| (rel.clone(), e.to_string()))
                 })

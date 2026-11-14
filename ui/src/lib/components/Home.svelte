@@ -330,7 +330,7 @@
       if (!scansInFlight) {
         stopping = false;
         await refresh();
-        applyBudget();
+        if (!selected.size) applyBudget();
       }
     }
   }
