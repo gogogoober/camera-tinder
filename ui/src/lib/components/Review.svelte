@@ -111,8 +111,8 @@
     Promise.all([api.exportCount({ ...opts, includeExported: false }), api.exportCount({ ...opts, includeExported: true })])
       .then(([fresh, all]) => {
         if (mine !== exportTicket) return;
-        exportCount = fresh;
-        exportAll = all;
+        exportCount = fresh.ready + fresh.waiting;
+        exportAll = all.ready + all.waiting;
       })
       .catch(() => {});
   });

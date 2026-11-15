@@ -82,3 +82,19 @@ export function photoDay(capturedAt: string | null | undefined): string | null {
   const day = capturedAt.slice(0, 10);
   return Number.isFinite(hour) && hour < DAY_START_HOUR ? addDays(day, -1) : day;
 }
+
+/** Suggestions touching a visible month, plus any `keep` says to keep; children follow the same rule. */
+export function suggestionsInView<T extends { startDay: string; endDay: string; children: T[] }>(
+  list: T[],
+  months: Set<string> | null,
+  keep: (s: T) => boolean,
+): T[] {
+  if (!months) return list;
+  const touchesMonth = (s: T) => [...months].some((m) => s.startDay <= `${m}-31` && s.endDay >= `${m}-01`);
+  const shown: T[] = [];
+  for (const s of list) {
+    const children = s.children.filter((c) => touchesMonth(c) || keep(c));
+    if (touchesMonth(s) || keep(s) || children.length) shown.push({ ...s, children });
+  }
+  return shown;
+}

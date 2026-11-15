@@ -95,6 +95,8 @@ pub struct SourceInfo {
     pub id: SourceId,
     pub name: String,
     pub photo_count: u64,
+    /// The folder or card can be read right now (an unplugged card keeps its photos but is not connected).
+    pub connected: bool,
 }
 
 /// How much disk the preview cache uses, and what blocks clearing it.
@@ -209,6 +211,28 @@ pub struct ExportReport {
     /// but a later export that leaves out exported photos will copy them again.
     #[serde(default)]
     pub not_marked: Option<String>,
+    /// Unplugged sources whose selected photos were left for later.
+    #[serde(default)]
+    pub waiting: Vec<ExportSourceCount>,
+}
+
+/// How many selected photos one source holds.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSourceCount {
+    pub source_id: SourceId,
+    pub name: String,
+    pub count: u64,
+    pub connected: bool,
+}
+
+/// What an export would do now: `ready` photos can be copied, `waiting` are on unplugged sources.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCount {
+    pub ready: u64,
+    pub waiting: u64,
+    pub sources: Vec<ExportSourceCount>,
 }
 
 /// Which decisions to export, optionally only for some days. The originals are always what is copied.

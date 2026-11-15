@@ -98,10 +98,10 @@ fn export_only_the_chosen_decisions_and_days_copies_the_originals_and_tags_persi
     assert!(q.iter().all(|p| p.rel_path == format!("DCIM/100NIKON/{}", p.file_name)));
 
     let only = |likes, favs, nopes, hates| ExportOptions { include_likes: likes, include_favorites: favs, include_dislikes: nopes, include_hates: hates, include_exported: true, days: None };
-    assert_eq!(svc.export_count(only(false, true, false, false)).unwrap(), 1);
-    assert_eq!(svc.export_count(only(true, false, false, false)).unwrap(), 1);
-    assert_eq!(svc.export_count(only(true, true, true, true)).unwrap(), 4);
-    assert_eq!(svc.export_count(only(false, false, false, false)).unwrap(), 0);
+    assert_eq!(svc.export_count(only(false, true, false, false)).unwrap().ready, 1);
+    assert_eq!(svc.export_count(only(true, false, false, false)).unwrap().ready, 1);
+    assert_eq!(svc.export_count(only(true, true, true, true)).unwrap().ready, 4);
+    assert_eq!(svc.export_count(only(false, false, false, false)).unwrap().ready, 0);
 
     // Favorites only: exactly that original (full-size bytes, same name) lands in the folder.
     let dest = tmp.path().join("favs");
@@ -115,7 +115,7 @@ fn export_only_the_chosen_decisions_and_days_copies_the_originals_and_tags_persi
 
     // Days: a day nobody shot on selects nothing.
     let none = ExportOptions { days: Some(vec!["1999-01-01".into()]), ..only(true, true, true, true) };
-    assert_eq!(svc.export_count(none).unwrap(), 0);
+    assert_eq!(svc.export_count(none).unwrap().ready, 0);
 
     // Tags: overlapping days, case-insensitive names, replaced days, deletion; nothing else touched.
     let japan = svc.save_tag("Japan trip", &["2026-03-02".into(), "2026-03-01".into(), "2026-03-01".into()]).unwrap();
@@ -145,17 +145,17 @@ fn exported_photos_are_remembered_and_can_be_left_out_next_time() {
     svc.decide(q[0].id, Decision::Favorite).unwrap();
     svc.decide(q[1].id, Decision::Like).unwrap();
     let fresh = ExportOptions { include_exported: false, ..Default::default() };
-    assert_eq!(svc.export_count(fresh.clone()).unwrap(), 2);
+    assert_eq!(svc.export_count(fresh.clone()).unwrap().ready, 2);
 
     let first = ExportOptions { include_exported: false, include_likes: false, ..Default::default() };
     let r = svc.export(&CopyToDir::new(tmp.path().join("one")), first, &NullSink).unwrap();
     assert_eq!(r.copied, 1);
     // The favourite is marked; leaving exported ones out leaves just the like, including them gives both.
-    assert_eq!(svc.export_count(fresh.clone()).unwrap(), 1);
-    assert_eq!(svc.export_count(ExportOptions::default()).unwrap(), 2);
+    assert_eq!(svc.export_count(fresh.clone()).unwrap().ready, 1);
+    assert_eq!(svc.export_count(ExportOptions::default()).unwrap().ready, 2);
     let r = svc.export(&CopyToDir::new(tmp.path().join("two")), fresh.clone(), &NullSink).unwrap();
     assert_eq!(r.copied, 1);
-    assert_eq!(svc.export_count(fresh).unwrap(), 0, "everything has been exported");
+    assert_eq!(svc.export_count(fresh).unwrap().ready, 0, "everything has been exported");
     // Nothing about the photos' decisions changed.
     assert_eq!(svc.stats().unwrap().favorite, 1);
 }

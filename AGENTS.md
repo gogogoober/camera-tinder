@@ -137,7 +137,9 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   the registered step (`PhotoAnalysis::retain_current`). Stop analysis is sticky until Resume or restart. A new
   analysis step = one `steps.push(...)` in `analysis/pipeline.rs`.
 - **Sources persist and one scan runs at a time** (Nov 2026): `sources.in_session` remembers the session; src-tauri
-  reconnects those folders at launch when they exist, and the Pick screen runs one catch-up scan per launch (also after
+  reconnects those folders at launch, as offline sources (`FsSource::offline`, `MediaSource::is_available` = false) when the
+  card or drive is unplugged: their photos stay in plan/days/stats and previews keep serving from the cache, so you can
+  cull with the card out. Scans skip unavailable sources (so `forget_vanished` never runs for them). The Pick screen runs one catch-up scan per launch (also after
   Clear previews, a reset of analysis, and Forget). `CullerService::scan` called while a scan runs merges the request
   into the running one and returns at once with `queued: true`; the running scan does it before it returns. Stop drops
   queued requests. So Add photos is never disabled by a scan.
@@ -157,8 +159,12 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   of days, overlapping allowed. Pick screen: save the selection as a tag, click a tag to select its days. Tags are also export scopes.
 - **Exports are remembered** (`exports` table, append-only, one row per photo per export; set by `CullerService::export` from `ExportReport.delivered`). `ExportOptions.include_exported` (Rust default true, Export screen default off) leaves previously exported photos out. It is a filter on the export button only, not on what you see.
 - **Export** (`ExportOptions`): any mix of Favorite / Keep / Nope / Hate, optionally only some days; `export_count` gives the live
-  count. Always copies the original (source file + stored `rel_path`/`file_name`), never a preview. Review's "Export" passes the
-  decisions of the filter on screen and its day.
+  `ExportCount` (ready = on a connected drive, waiting = on an unplugged one, one row per source). `export` copies the original
+  (source file + stored `rel_path`/`file_name`) only for connected sources and lists the rest in `ExportReport.waiting`. Review's
+  "Export" passes the decisions of the filter on screen and its day.
+- **Preview export** (`export_previews`, Export screen → "Previews instead", behind an "I understand…" checkbox): the only
+  place a preview leaves the app. Copies the cached 2048 px master as `<stem>_preview.jpg` into `<dest>/Previews` through the same
+  `CopyToDir` rules, works with every card unplugged, and never records photos as exported (so the originals still export later).
 - **Bursts need a visual second pass**: ≤3 s apart is only a candidate (`grouping::same_general_scene`).
 - UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
@@ -269,7 +275,8 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
 - Preview cache costs ~0.5 MB per photo. **Clear previews** (Pick → Advanced), refused while a scan runs; a catch-up scan follows, which rebuilds previews for folders still there:
   - Locked while any known source is on a plugged-in **external** volume (`is_external_and_connected`: the folder
     exists and its filesystem device differs from `/`, the Data volume and $HOME). Internal folders never block.
-    Core enforces this too, not only the UI.
+    Core enforces this too, not only the UI. Also refused while a folder in the session is unplugged (offline): its
+    previews are all that's left of it here.
   - Deletes only regular files directly in the cache folder named exactly like cache output (`is_cache_file`);
     never recursive, never follows symlinks, refuses if the cache folder itself is a symlink.
   - Real-volume checks: `cargo test -p cull-platform-fs --test source_safety -- --ignored` (mounts exFAT disk

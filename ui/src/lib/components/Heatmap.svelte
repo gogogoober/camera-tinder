@@ -13,10 +13,12 @@
     days,
     selected,
     onChange,
+    onVisibleMonths,
   }: {
     days: DaySummary[];
     selected: Set<string>;
     onChange: (next: Set<string>) => void;
+    onVisibleMonths?: (months: string[]) => void;
   } = $props();
 
   let rowEl = $state<HTMLElement>();
@@ -29,7 +31,7 @@
 
   /** Every month from the first photo to the last, complete. `cells` indexes every day shown. */
   const view = $derived.by(() => {
-    const months: { title: string; blanks: number; days: { day: string; i: number }[] }[] = [];
+    const months: { key: string; title: string; blanks: number; days: { day: string; i: number }[] }[] = [];
     const cells: string[] = [];
     if (!dated.length) return { months, cells };
     const a = parseDay(dated[0]);
@@ -45,7 +47,7 @@
         cells.push(day);
         return { day, i: cells.length - 1 };
       });
-      months.push({ title: `${MONTHS[m]} ${y}`, blanks: new Date(y, m, 1).getDay(), days: list });
+      months.push({ key: `${y}-${String(m + 1).padStart(2, '0')}`, title: `${MONTHS[m]} ${y}`, blanks: new Date(y, m, 1).getDay(), days: list });
     }
     return { months, cells };
   });
@@ -57,6 +59,26 @@
     const el = rowEl;
     requestAnimationFrame(() => (el.scrollLeft = el.scrollWidth));
     positioned = newest;
+  });
+
+  // Report the months any part of which is on screen.
+  $effect(() => {
+    if (!rowEl || !onVisibleMonths) return;
+    void view.months.map((m) => m.key).join(); // new months mean new sections to watch
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          const month = (e.target as HTMLElement).dataset.month as string;
+          if (e.isIntersecting) visible.add(month);
+          else visible.delete(month);
+        }
+        onVisibleMonths([...visible].sort());
+      },
+      { root: rowEl, threshold: 0 },
+    );
+    for (const section of rowEl.querySelectorAll('section[data-month]')) observer.observe(section);
+    return () => observer.disconnect();
   });
 
   // A drag adds days, or removes them when it starts on a selected day. It applies to the
@@ -92,7 +114,7 @@
 
 <div class="row" bind:this={rowEl} use:dragSelect={{ onSelect: drag, onClick: click, onStart: start }}>
   {#each view.months as m (m.title)}
-    <section>
+    <section data-month={m.key}>
       <h5>{m.title}</h5>
       <div class="grid">
         {#each ['S', 'M', 'T', 'W', 'T', 'F', 'S'] as w, i (i)}<span class="dow">{w}</span>{/each}

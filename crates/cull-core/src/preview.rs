@@ -258,6 +258,38 @@ impl PreviewCache {
     }
 }
 
+/// Serves the cached masters as if they were files, so a preview export can go through an `ExportTarget`.
+/// `open` takes the photo's id (as text) and never touches the original's source.
+pub struct PreviewSource<'a> {
+    cache: &'a PreviewCache,
+    photos: std::collections::HashMap<String, &'a Photo>,
+}
+
+impl<'a> PreviewSource<'a> {
+    pub fn new(cache: &'a PreviewCache, photos: &'a [Photo]) -> Self {
+        Self { cache, photos: photos.iter().map(|p| (p.id.to_string(), p)).collect() }
+    }
+}
+
+impl MediaSource for PreviewSource<'_> {
+    fn id(&self) -> &str {
+        "previews"
+    }
+
+    fn display_name(&self) -> &str {
+        "Cached previews"
+    }
+
+    fn list(&self) -> Result<Vec<crate::ports::MediaEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn open(&self, rel_path: &str) -> Result<Box<dyn crate::ports::ReadSeek>> {
+        let photo = self.photos.get(rel_path).ok_or_else(|| CoreError::Other(format!("no cached preview for {rel_path}")))?;
+        Ok(Box::new(Cursor::new(self.cache.get(photo, None, MASTER_EDGE)?)))
+    }
+}
+
 /// The portable preview maker: full decode with the `image` crate, then downscale and encode.
 /// Slower than a native codec (it can't decode at a reduced size), but runs everywhere.
 pub struct RustPreviewMaker;
