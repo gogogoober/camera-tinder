@@ -53,7 +53,8 @@ Pick days → Cull queue in timeline order:
    second timeline of the burst's frames, between the photo and the main filmstrip. **Nothing is
    pre-selected**: every frame starts undecided. The big photo is the selected frame and takes the same
    decisions as any photo (← Meh, ↓ Hate, space Skip, ↑ Favorite, → Keep); deciding moves to the next
-   frame, and after the last frame the cursor leaves the burst. Click a frame (or `[` `]`) to jump.
+   frame in order, rated or not, and the cursor leaves the burst once every frame is decided (or with
+   Shift+Enter, which goes to the next photo; Shift+B goes one photo back). Click a frame (or `[` `]`) to jump.
    ★ = suggested best (a hint only), red underline = frame has an issue, each frame shows its decision badge.
    No burst-only buttons (no "keep none", "toggle" or "done").
 3. **Red set-aside sliver.** A swept photo stays in its timeline position as a thin red rectangle.

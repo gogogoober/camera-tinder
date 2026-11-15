@@ -123,8 +123,8 @@ export function loopPrev(s: Structure, i: number): number | null {
 }
 
 /**
- * Shift+Enter ("next photo"): the next photo in capture order after the current group, rated or not.
- * A group is entered at its first frame. Set-aside photos are skipped; null at the end (no wrap).
+ * Shift+Enter ("next photo"): the next photo in capture order after this one, rated or not, skipping the
+ * rest of this group's frames. A group is entered at its first frame. Set-aside photos are skipped; null at the end.
  */
 export function linearNext(s: Structure, i: number): number | null {
   // From i + 1, not the group's last frame: a group can have other photos between its frames.

@@ -140,23 +140,20 @@ test('loopNext stays put when nothing else is left, and [ ] can wrap', () => {
   assert.equal(stepFrame(s, 0, 1, true), null);
 });
 
-test('linearNext goes to the next photo in capture order, rated or not, entering groups at their first frame', () => {
-  assert.equal(linearNext(s, 0), 2, 'skips the sweep');
-  assert.equal(linearNext(s, 3), 5, 'leaves the burst from any frame');
-  assert.equal(linearNext(s, 5), null, 'no wrap');
-});
-
-test('linearPrev goes exactly one photo back, group frames included', () => {
-  assert.equal(linearPrev(s, 5), 4, 'lands on the last frame of the burst');
-  assert.equal(linearPrev(s, 3), 2);
-  assert.equal(linearPrev(s, 2), 0, 'skips the sweep');
-  assert.equal(linearPrev(s, 0), null, 'no wrap');
-});
-
-test('afterDecideInGroup keeps cycling frames until the whole group is decided', () => {
-  assert.equal(afterDecideInGroup(s, photos([2]), 2), 3);
-  assert.equal(afterDecideInGroup(s, photos([2, 3]), 3), 4);
-  assert.equal(afterDecideInGroup(s, photos([2, 3]), 2), 3, 'rated frames are not skipped');
-  assert.equal(afterDecideInGroup(s, photos([2, 3, 4]), 4), null);
-  assert.equal(afterDecideInGroup(s, photos([0]), 0), null, 'a single');
+test('linear navigation: Shift+Enter / Shift+B step in capture order; deciding in a group cycles frames until all are decided', () => {
+  const rows: [string, number | null, number | null][] = [
+    ['next from the single, skipping the sweep', linearNext(s, 0), 2],
+    ['next leaves the burst from any frame', linearNext(s, 3), 5],
+    ['next has no wrap', linearNext(s, 5), null],
+    ['back lands on the last frame of the burst', linearPrev(s, 5), 4],
+    ['back steps one frame inside the burst', linearPrev(s, 3), 2],
+    ['back skips the sweep', linearPrev(s, 2), 0],
+    ['back has no wrap', linearPrev(s, 0), null],
+    ['decide moves to the next frame', afterDecideInGroup(s, photos([2]), 2), 3],
+    ['decide does not skip rated frames', afterDecideInGroup(s, photos([2, 3]), 2), 3],
+    ['decide cycles to the last frame', afterDecideInGroup(s, photos([2, 3]), 3), 4],
+    ['decide leaves once the group is done', afterDecideInGroup(s, photos([2, 3, 4]), 4), null],
+    ['decide on a single leaves', afterDecideInGroup(s, photos([0]), 0), null],
+  ];
+  for (const [name, got, want] of rows) assert.equal(got, want, name);
 });
