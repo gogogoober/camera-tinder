@@ -125,7 +125,7 @@
 </div>
 
 <style>
-  .strip { display: flex; gap: 6px; align-items: center; justify-content: center; user-select: none; touch-action: none; }
+  .strip { display: flex; gap: 6px; align-items: center; height: calc(var(--ts) + 12px); justify-content: center; user-select: none; touch-action: none; }
   .th { position: relative; flex: none; width: var(--ts); height: var(--ts); border-radius: 8px; cursor: pointer; transition: transform 0.12s; }
   .th:hover { transform: translateY(-2px); }
   .th img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }

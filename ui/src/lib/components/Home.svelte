@@ -6,13 +6,13 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type LibrarySource, type PreviewCacheStatus, type SavedTag, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
-  import { minutesFor, rangeForBudget, shortRange, suggestionsInView } from '../days';
+  import { minutesFor, photoDay, rangeForBudget, shortRange, suggestionsInView } from '../days';
+  import { previewGroups, samplePreviews, type SampleItem } from '../previewSample';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
   import Splash from './Splash.svelte';
   import AppShell from './layout/AppShell.svelte';
-  import { withLayoutTransition } from '../transition';
 
   let { onStart, onOffload }: { onStart: (days: string[]) => void; onOffload: () => void } = $props();
 
@@ -31,16 +31,8 @@
   let cache = $state<PreviewCacheStatus | null>(null);
   let confirmClear = $state(false);
   let advancedOpen = $state(false);
-  /** The right rail shows once there are photos; it slides in (and the main card glides) when that changes. */
-  let rightShown = $state(false);
-  /** Last state asked for: a scan refreshes `days` again before the transition's update runs. */
-  let requested = false;
-  $effect(() => {
-    const want = days.length > 0;
-    if (want === requested) return;
-    requested = want;
-    withLayoutTransition(() => (rightShown = want));
-  });
+  /** The right rail shows once there are photos. */
+  const rightShown = $derived(days.length > 0);
   let clearing = $state(false);
   let cleared = $state<number | null>(null);
   /** The one source of truth for what gets culled: selected days (`YYYY-MM-DD`). */
@@ -88,6 +80,8 @@
       if (e.type === 'analysisProgress') analysis = { done: e.done, total: e.total };
       // New photos were saved mid-scan: show them (days, counts, calendar suggestions) right away.
       if (e.type === 'scanSaved') liveRefresh();
+      // New photos or finished analysis change what the preview grid should show.
+      if (e.type === 'scanSaved' || (e.type === 'analysisProgress' && e.done === e.total)) previewStale++;
     });
     // Cards come and go without telling us: re-check what's connected every few seconds.
     loadCache();
@@ -155,6 +149,66 @@
     resetArmed = false;
     resetMessage = null;
   });
+
+  // Which day was selected when: later selections lead the preview grid. Days added together share a number.
+  // Not reactive: the pre-effect updates it before `previewSections` (which tracks `pickedDays`) reads it.
+  const selectionOrder = new Map<string, number>();
+  let selectionCounter = 0;
+  $effect.pre(() => {
+    const added = [...selected].filter((d) => !selectionOrder.has(d));
+    if (added.length) selectionCounter++;
+    for (const d of added) selectionOrder.set(d, selectionCounter);
+    for (const d of [...selectionOrder.keys()]) if (!selected.has(d)) selectionOrder.delete(d);
+  });
+
+  const PREVIEW_DELAY_MS = 250;
+  let previewItems = $state<SampleItem[]>([]);
+  let previewError = $state<string | null>(null);
+  let previewStale = $state(0);
+  let previewRequest = 0;
+  $effect(() => {
+    void previewStale;
+    const requested = pickedKey ? pickedKey.split(',') : [];
+    const request = ++previewRequest;
+    if (!requested.length) {
+      previewItems = [];
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const plan = await api.plan({ days: requested, status: 'all' });
+        if (request !== previewRequest) return;
+        previewError = null;
+        previewItems = plan.photos.map((p, i) => ({
+          id: p.id,
+          day: photoDay(p.capturedAt) ?? 'unknown',
+          score: plan.triage[i]?.score ?? null,
+          setAside: plan.triage[i]?.question === 'sweep',
+        }));
+      } catch (e) {
+        if (request === previewRequest) previewError = String(e);
+      }
+    }, PREVIEW_DELAY_MS);
+    return () => clearTimeout(timer);
+  });
+
+  // Saved tags and calendar suggestions (children too) are named sets of days that stay together in the grid.
+  const photoDays = $derived(new Set(days.filter((d) => d.day && d.stats.total > 0).map((d) => d.day as string)));
+  const namedDaySets = $derived([
+    ...tags.map((t) => ({ days: t.days.filter((d) => photoDays.has(d)) })),
+    ...suggestions.flatMap((s) => [s, ...s.children]).map((s) => ({ days: daysWithPhotos(s.startDay, s.endDay) })),
+  ]);
+  /** Labels carry the year only when the selection covers more than one. */
+  const spansYears = $derived(pickedDays.length > 0 && pickedDays[0].slice(0, 4) !== pickedDays[pickedDays.length - 1].slice(0, 4));
+  const previewSections = $derived(
+    previewGroups(pickedDays, selectionOrder, namedDaySets)
+      .map((g) => ({
+        firstDay: g[0],
+        label: shortRange(g[0], g[g.length - 1]) + (spansYears ? `, ${g[0].slice(0, 4)}` : ''),
+        ids: samplePreviews(previewItems.filter((p) => g.includes(p.day))),
+      }))
+      .filter((section) => section.ids.length),
+  );
 
   async function resetSelectedDays() {
     const days = [...pickedDays]; // exactly the days selected on the calendar
@@ -713,6 +767,18 @@
     <div class="kv"><span>Already triaged</span><b>{range ? formatCount(total - left) : '–'}</b></div>
     <div class="kv"><span>Time at your pace</span><b>{left ? `~${minutesFor(left)} min` : '–'}</b></div>
     <button class="primary go" onclick={() => onStart(pickedDays)} disabled={!left || scanning}>Start triage{compact ? '' : ' ↵'}</button>
+    <div class="preview">
+      <div class="eyebrow">Preview</div>
+      {#if previewError}<p class="error small">{previewError}</p>{/if}
+      {#each previewSections as section (section.firstDay)}
+        <div class="muted small">{section.label}</div>
+        <div class="grid">
+          {#each section.ids as id (id)}
+            <img src={api.previewUrl(id, 256)} loading="lazy" alt="" />
+          {/each}
+        </div>
+      {/each}
+    </div>
   </div>
 {/snippet}
 
@@ -787,6 +853,11 @@
   .plain { background: transparent; border: 0; padding: 4px 6px 4px 11px; }
 
   .summary { display: flex; flex-direction: column; gap: 11px; }
+  /* The rail gives its child `flex: 1 0 auto`; let the summary shrink so only the preview grid scrolls. */
+  .summary.summary { flex-shrink: 1; min-height: 0; }
+  .preview { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .grid img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; }
   .big { font-size: 34px; font-weight: 700; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
   .big .muted { font-size: 14px; font-weight: 500; letter-spacing: 0; }
   .go { margin-top: auto; padding: 12px; font-size: 16px; }
@@ -805,6 +876,7 @@
   :global(.shell.compact) .main { padding: 14px 16px 8px; gap: 10px; }
   :global(.shell.compact) .summary { gap: 8px; }
   :global(.shell.compact) .go { margin-top: 4px; }
+  :global(.shell.compact) .preview { flex: none; max-height: 320px; }
   :global(.shell.compact) .sug { grid-template-columns: 1fr auto; }
   :global(.shell.compact) .sug .why, :global(.shell.compact) .sug .mono { display: none; }
 </style>
