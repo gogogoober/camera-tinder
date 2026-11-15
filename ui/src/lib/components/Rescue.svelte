@@ -17,7 +17,7 @@
 
   // The end-of-session screen for photos that looked bad ("set aside"): one grid, neutral, nothing
   // X'd out. Click cycles ✓ Keep → ★ Favorite → ⊘ Hate → clear. Done decides all of them at once:
-  // marked ones as marked, the rest as ✕ Nope. Leaving without Done decides nothing.
+  // marked ones as marked, the rest as – Meh. Leaving without Done decides nothing.
   let { days, onBack, onDone }: {
     /** Exactly the days picked on the calendar (as Cull got them). */
     days: string[];
@@ -182,7 +182,7 @@
         <button class="primary" onclick={onDone}>Review &amp; export</button>
       </div>
     {:else}
-      <p class="lede">{formatCount(rows.length)} photos looked bad. Rescue any you want; the rest become ✕ Nope (nothing is deleted).</p>
+      <p class="lede">{formatCount(rows.length)} photos looked bad. Rescue any you want; the rest become – Meh (nothing is deleted).</p>
       <div class="chiprow"><span class="lbl">Events</span>
         <div class="chips">
           {#each eventChips as c (c.key)}

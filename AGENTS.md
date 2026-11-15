@@ -9,7 +9,7 @@ groups photos, you swipe to decide, then export the keepers.
 
 ## Product requirements (from the owner)
 
-- **Swipes:** ← Dislike ("nope"), → Like, ↑ Favorite, ↓ Hate. Plus undo (⌫ / ⌘Z / u) and skip (space).
+- **Swipes:** ← Dislike ("meh"), → Like, ↑ Favorite, ↓ Hate. Plus undo (⌫ / ⌘Z / u) and skip (space).
 - **Never delete or move originals.** Dislike/Hate are still recorded (with history) because a
   "clean up rejects" feature may come later.
 - **v1 export:** copy Likes + Favorites to a chosen folder. **v2:** other actions (send to Lightroom, etc.).
@@ -165,7 +165,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
 - **Saved tags are back** (Nov 2026, new `day_tags` / `day_tag_days` tables; the old `tags` table stays unused): a name for a set
   of days, overlapping allowed. Pick screen: save the selection as a tag, click a tag to select its days. Tags are also export scopes.
 - **Exports are remembered** (`exports` table, append-only, one row per photo per export; set by `CullerService::export` from `ExportReport.delivered`). `ExportOptions.include_exported` (Rust default true, Export screen default off) leaves previously exported photos out. It is a filter on the export button only, not on what you see.
-- **Export** (`ExportOptions`): any mix of Favorite / Keep / Nope / Hate, optionally only some days; `export_count` gives the live
+- **Export** (`ExportOptions`): any mix of Favorite / Keep / Meh / Hate, optionally only some days; `export_count` gives the live
   `ExportCount` (ready = on a connected drive, waiting = on an unplugged one, one row per source). `export` copies the original
   (source file + stored `rel_path`/`file_name`) only for connected sources and lists the rest in `ExportReport.waiting`. Review's
   "Export" passes the decisions of the filter on screen and its day.
@@ -173,7 +173,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   place a preview leaves the app. Copies the cached 2048 px master as `<stem>_preview.jpg` into `<dest>/Previews` through the same
   `CopyToDir` rules, works with every card unplugged, and never records photos as exported (so the originals still export later).
 - **Bursts need a visual second pass**: ≤3 s apart is only a candidate (`grouping::same_general_scene`).
-- UI says **Keep ✓** and **Nope ✕**, but the stored decisions are still `like` / `dislike` (DB compatibility).
+- UI says **Keep ✓** and **Meh –**, but the stored decisions are still `like` / `dislike` (DB compatibility).
 - One screen set, two layouts: `viewport.compact` (≤760px) switches Cull/Home/Review to the phone layout
   (month calendar, card stack, round buttons). All logic is shared.
 - The scan computes no quality scores. The old scan-time sharpness score, soft-photo triage and burst compare
@@ -266,7 +266,7 @@ test-photos/DCIM/100TEST test-photos-v2/source test-photos-v2/set`. Dates are fi
   - `FsSource::excluding(svc.app_dirs())` (src-tauri `add_folder`): a picked folder that contains the app's own
     database or preview cache (home folder, whole disk) never lists them.
   - Export reads each keeper once, into a destination given as a full path only.
-- Nothing deletes, moves, renames or writes source files. Hate/Nope are rows in SQLite.
+- Nothing deletes, moves, renames or writes source files. Hate/Meh are rows in SQLite.
 - `CopyToDir` refuses destinations inside any source ever added (`known_source_ids`, symlinks resolved) and on
   the same card/external drive as a connected source (so not `SD/Keepers` next to `SD/DCIM`), never overwrites
   (exclusive temp file + `hard_link`; exFAT has neither hard links nor a no-overwrite rename, so there it claims the

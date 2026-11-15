@@ -2,7 +2,7 @@
   import { api, type Photo, type TriageItem } from '../api';
   import { formatTime } from '../format';
   import { dragSelect } from '../select';
-  import { ISSUE_LABELS, drawnItems, groupOf, stopOf, stripWindow, type Structure } from '../triage';
+  import { ISSUE_LABELS, drawnItems, groupOf, stopOf, stripPosition, stripWindow, type Structure } from '../triage';
   import Badge from './Badge.svelte';
 
   let {
@@ -34,6 +34,25 @@
   } = $props();
 
   const SLICES = 5;
+  const WHEEL_PX_PER_ITEM = 40;
+
+  // Trackpad panning moves the window, never the cursor; it snaps back when the cursor moves.
+  let pan = $state(0);
+  let wheelRemainder = 0;
+  $effect(() => {
+    idx;
+    pan = 0;
+    wheelRemainder = 0;
+  });
+
+  function onWheel(e: WheelEvent) {
+    e.preventDefault();
+    wheelRemainder += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    const steps = Math.trunc(wheelRemainder / WHEEL_PX_PER_ITEM);
+    wheelRemainder -= steps * WHEEL_PX_PER_ITEM;
+    const here = stripPosition(s, drawn, idx);
+    pan = Math.min(Math.max(pan + steps, -here), drawn.length - here);
+  }
 
   // Everything the strip draws, in capture order: a photo, a burst/group stack (at its first member), or
   // a thin red sliver for a set-aside photo. Other group members live inside their stack, so the window
@@ -42,7 +61,7 @@
   const kindOf = (i: number) => (s.setAside[i] ? ('sweep' as const) : s.groupAt[i] == null ? ('single' as const) : ('stack' as const));
 
   const items = $derived(
-    stripWindow(s, drawn, idx, back, forward).map((i, k, all) => {
+    stripWindow(s, drawn, idx, back, forward, pan).map((i, k, all) => {
       if (i === undefined) return { key: `empty${k}`, i: -1, p: null, kind: 'empty' as const, divider: false };
       const prev = all[k - 1];
       return { key: `p${i}`, i, p: photos[i], kind: kindOf(i), divider: prev !== undefined && momentOf[prev] !== momentOf[i] };
@@ -55,7 +74,7 @@
     `Set aside · ${triage[i]?.reasons.map((r) => ISSUE_LABELS[r]).join(', ') || 'looks bad'} · ${formatTime(photos[i].capturedAt)}. Click to open`;
 </script>
 
-<div class="strip" style:--ts="{size}px" role="group" aria-label="Filmstrip" use:dragSelect={{ onSelect, onClick: (i) => onJump(i) }}>
+<div class="strip" style:--ts="{size}px" role="group" aria-label="Filmstrip" onwheel={onWheel} use:dragSelect={{ onSelect, onClick: (i) => onJump(i) }}>
   {#each items as it (it.key)}
     {#if it.divider}<span class="div"></span>{/if}
     {#if it.kind === 'sweep'}

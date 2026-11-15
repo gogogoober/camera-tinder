@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import type { TriageItem } from './api/types.ts';
-import { burstStripLayout, drawnItems, firstUndecidedFrame, leaveNext, loopNext, loopPrev, stripWindow, isStop, matchesChips, nextRescueMark, nextStop, nextUndecidedFrame, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
+import { afterDecideInGroup, burstStripLayout, drawnItems, firstUndecidedFrame, loopNext, loopPrev, stripWindow, isStop, linearNext, linearPrev, matchesChips, nextRescueMark, nextStop, sameOrder, setAsideLeft, stepFrame, stopDone, stopOf, structure } from './triage.ts';
 
 const judge = (photoId: number): TriageItem => ({ photoId, question: 'judge', group: null, reasons: [], hints: [], score: null, analyzed: true });
 const sweep = (photoId: number): TriageItem => ({ ...judge(photoId), question: 'sweep', reasons: ['blurry'] });
@@ -37,12 +37,9 @@ test('nextStop skips set-aside photos and finished stops, wraps once, and ends w
   assert.equal(nextStop(s, photos([0, 2, 3, 4, 5]), 0), -1, 'set-aside photos alone never keep the cursor going');
 });
 
-test('frames: first undecided, next undecided inside the group, and stepping with [ ]', () => {
+test('frames: first undecided, and stepping with [ ]', () => {
   assert.equal(firstUndecidedFrame(s, photos([2]), 2), 3);
   assert.equal(firstUndecidedFrame(s, photos([2, 3, 4]), 2), 2, 'all decided: the first');
-  assert.equal(nextUndecidedFrame(s, photos([2]), 3), 4);
-  assert.equal(nextUndecidedFrame(s, photos([2]), 4), 3, 'wraps inside the group');
-  assert.equal(nextUndecidedFrame(s, photos([2, 3, 4]), 4), null);
   assert.equal(stepFrame(s, 2, -1), null);
   assert.equal(stepFrame(s, 2, 1), 3);
   assert.equal(stepFrame(s, 4, 1), null);
@@ -91,6 +88,8 @@ test('the filmstrip window counts drawn items, so a long burst is one slot, not 
   assert.deepEqual(stripWindow(st, drawn, 7, 1, 2), [0, 1, 21, 22], 'cursor on frame 7: the stack is centred, neighbours on both sides');
   assert.deepEqual(stripWindow(st, drawn, 0, 2, 1), [undefined, undefined, 0, 1], 'empty slots keep the first item centred');
   assert.deepEqual(stripWindow(st, drawn, items.length, 2, 1), [21, 22, undefined, undefined], 'past the end: last items stay in view');
+  assert.deepEqual(stripWindow(st, drawn, 0, 1, 1, 2), [1, 21, 22], 'panned two items ahead of the cursor');
+  assert.deepEqual(stripWindow(st, drawn, 0, 1, 1, -5), [undefined, 0, 1], 'panning stops at the first item');
 });
 
 test('burst strip: fits 10 frames, grows 15% per 5 more, then scrolls rather than shrinking to slivers', () => {
@@ -141,10 +140,20 @@ test('loopNext stays put when nothing else is left, and [ ] can wrap', () => {
   assert.equal(stepFrame(s, 0, 1, true), null);
 });
 
-test('leaveNext leaves the burst for the next undecided stop, wrapping to the start', () => {
-  assert.equal(leaveNext(s, photos(), 3), 5, 'out of the burst, from any frame');
-  assert.equal(leaveNext(s, photos(), 5), 0, 'wraps to the beginning');
-  assert.equal(leaveNext(s, photos([0, 5]), 5), 2, 'the burst left unrated comes round again, at its first undecided frame');
-  assert.equal(leaveNext(s, photos([2]), 0), 3);
-  assert.equal(leaveNext(s, photos([0, 2, 3, 4, 5]), 5), null);
+test('linear navigation: Shift+Enter / Shift+B step in capture order; deciding in a group cycles frames until all are decided', () => {
+  const rows: [string, number | null, number | null][] = [
+    ['next from the single, skipping the sweep', linearNext(s, 0), 2],
+    ['next leaves the burst from any frame', linearNext(s, 3), 5],
+    ['next has no wrap', linearNext(s, 5), null],
+    ['back lands on the last frame of the burst', linearPrev(s, 5), 4],
+    ['back steps one frame inside the burst', linearPrev(s, 3), 2],
+    ['back skips the sweep', linearPrev(s, 2), 0],
+    ['back has no wrap', linearPrev(s, 0), null],
+    ['decide moves to the next frame', afterDecideInGroup(s, photos([2]), 2), 3],
+    ['decide does not skip rated frames', afterDecideInGroup(s, photos([2, 3]), 2), 3],
+    ['decide cycles to the last frame', afterDecideInGroup(s, photos([2, 3]), 3), 4],
+    ['decide leaves once the group is done', afterDecideInGroup(s, photos([2, 3, 4]), 4), null],
+    ['decide on a single leaves', afterDecideInGroup(s, photos([0]), 0), null],
+  ];
+  for (const [name, got, want] of rows) assert.equal(got, want, name);
 });

@@ -8,9 +8,9 @@ export interface DecisionMeta {
   arrow: string;
 }
 
-/** ← nope · → keep (stored as `like`) · ↑ favorite · ↓ hate */
+/** ← meh (stored as `dislike`) · → keep (stored as `like`) · ↑ favorite · ↓ hate */
 export const DECISIONS: Record<Decision, DecisionMeta> = {
-  dislike: { label: 'Nope', stamp: 'NOPE', icon: '✕', key: 'ArrowLeft', arrow: '←' },
+  dislike: { label: 'Meh', stamp: 'MEH', icon: '–', key: 'ArrowLeft', arrow: '←' },
   like: { label: 'Keep', stamp: 'KEEP', icon: '✓', key: 'ArrowRight', arrow: '→' },
   favorite: { label: 'Favorite', stamp: 'FAVORITE', icon: '★', key: 'ArrowUp', arrow: '↑' },
   hate: { label: 'Hate', stamp: 'HATE', icon: '⊘', key: 'ArrowDown', arrow: '↓' },
