@@ -316,13 +316,24 @@ impl CullerService {
         let times: Vec<_> = photos.iter().map(|p| p.captured_at).collect();
         let ids: Vec<PhotoId> = photos.iter().map(|p| p.id).collect();
         let analyzers = self.analyzers.read().unwrap().clone();
-        let mut analyses = self.store.lock().unwrap().load_analyses(&ids, None)?;
+        let (mut analyses, learned) = {
+            let store = self.store.lock().unwrap();
+            (store.load_analyses(&ids, None)?, store.active_preference()?)
+        };
         analyses.values_mut().for_each(|a| a.retain_current(&analyzers));
-        let triage = crate::triage::build(&photos, &analyses);
+        // An approved learned model ranks the frames of a burst (and so picks the ★); without one, the hand-tuned score does.
+        let triage = match &learned {
+            Some(m) => crate::triage::build_with(&photos, &analyses, &|a| m.weights.score(a)),
+            None => crate::triage::build(&photos, &analyses),
+        };
+        let triage_version = match &learned {
+            Some(m) => format!("{}+pref{}", crate::triage::PLAN_VERSION, m.id),
+            None => crate::triage::PLAN_VERSION.to_string(),
+        };
         Ok(Plan {
             moments: group_by_gap(&times, MOMENT_GAP_SECS),
             triage,
-            triage_version: crate::triage::PLAN_VERSION.to_string(),
+            triage_version,
             photos,
         })
     }

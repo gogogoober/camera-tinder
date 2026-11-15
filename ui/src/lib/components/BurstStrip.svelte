@@ -58,7 +58,7 @@
   .fr { position: relative; flex: none; width: var(--fw, 54px); height: calc(var(--fw, 54px) * 0.74); padding: 0; border: 0; border-radius: 6px; background: none; opacity: 0.7; cursor: pointer; }
   .fr img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; pointer-events: none; }
   .fr.on { opacity: 1; outline: 2px solid var(--text); outline-offset: 2px; }
-  .star { position: absolute; right: 3px; top: 1px; font-size: 11px; font-style: normal; color: #fff; text-shadow: 0 0 3px #000; }
+  .star { position: absolute; right: 3px; top: 1px; font-size: 11px; font-style: normal; color: #ffc83d; text-shadow: 0 0 3px #000, 0 0 1px #000; }
   .underline { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; border-radius: 0 0 6px 6px; background: var(--hate); }
   .legend { font-size: 12px; text-align: center; }
 </style>
