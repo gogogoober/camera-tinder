@@ -19,7 +19,7 @@ in order, by someone who has not seen the design conversation.
   `CullerApi` + `tauriApi` + `mockApi`; Rust types crossing to the UI use `#[serde(rename_all = "camelCase")]`
   and are mirrored in `ui/src/lib/api/`.
 - **Analysis reads only cached previews, never original files** (the card is read only at scan and export).
-- One decision vocabulary everywhere: ✕ Nope (←, stored `dislike`), ⊘ Hate (↓), ★ Favorite (↑),
+- One decision vocabulary everywhere: – Meh (←, stored `dislike`), ⊘ Hate (↓), ★ Favorite (↑),
   ✓ Keep (→, stored `like`), Skip (space). Reuse `ui/src/lib/decisions.ts`; don't invent screen-only verbs.
 - End every phase with `cargo test --workspace` and `npm run check` green, then commit that phase on its own.
 - Don't change the scan's file-reading code or `source_safety.rs` rules except where a phase says so.
@@ -475,7 +475,7 @@ photos. Renders through `AppShell` like every screen.
 - Grid of square thumbnails (`minmax(104px, 1fr)`), neutral, reason pill bottom-left. Click cycles
   ✓ Keep → ★ Favorite → ⊘ Hate → clear (outline + badge). Space (Mac) / long-press (phone) enlarges the hovered or
   pressed photo in an overlay; Esc closes.
-- Footer: "Done: 2 Keep, 1 Favorite, 5 Nope" (counts over **all** set-aside photos, not just the filtered ones).
+- Footer: "Done: 2 Keep, 1 Favorite, 5 Meh" (counts over **all** set-aside photos, not just the filtered ones).
   Done → `decide_many` per decision (cleared ones as `dislike`), `logOutcomes` with `place: rescue` for all of them,
   then `onDone`. Leaving without Done decides nothing.
 

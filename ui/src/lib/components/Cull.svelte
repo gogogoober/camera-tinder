@@ -8,12 +8,13 @@
   import {
     ISSUE_LABELS,
     firstUndecidedFrame,
-    leaveNext,
+    afterDecideInGroup,
+    linearNext,
+    linearPrev,
     loopNext,
     loopPrev,
     groupOf,
     nextStop,
-    nextUndecidedFrame,
     sameOrder,
     setAsideLeft,
     stepFrame,
@@ -191,9 +192,9 @@
     coached = true;
   }
 
-  /** After deciding photo `at`: the next undecided frame of its group, else the next stop. */
+  /** After deciding photo `at`: the next frame of its group until all are decided, else the next stop. */
   function advanceFrom(at: number): number {
-    return nextUndecidedFrame(s, photos, at) ?? land(nextStop(s, photos, stopOf(s, at)));
+    return afterDecideInGroup(s, photos, at) ?? land(nextStop(s, photos, stopOf(s, at)));
   }
 
   function decide(d: Decision, from?: { x: number; y: number }) {
@@ -243,7 +244,7 @@
     }
   }
 
-  /** Next (Space): loops inside the current burst, or over the undecided photos; never leaves one unrated. */
+  /** Next (Space / Enter / S): loops inside the current burst, or over the undecided photos; never leaves one unrated. */
   function skip() {
     if (!current || opened !== null) return;
     const n = loopNext(s, photos, idx);
@@ -257,11 +258,21 @@
     if (n !== null) idx = n;
   }
 
-  /** Leave (Enter / S): out of the burst, or off this photo, to the next undecided one, leaving it unrated. */
-  function leave() {
-    if (!current || opened !== null) return;
-    const n = leaveNext(s, photos, idx);
-    if (n !== null) idx = n;
+  /** Shift+Enter / Shift+S: the next photo in capture order, rated or not. */
+  function stepForward() {
+    moveLinear(linearNext(s, shown));
+  }
+
+  /** Shift+B: exactly one photo back in capture order. */
+  function stepBack() {
+    moveLinear(linearPrev(s, shown));
+  }
+
+  function moveLinear(to: number | null) {
+    if (to === null) return;
+    opened = null;
+    selection = null;
+    idx = to;
   }
 
   /** A click on the filmstrip: set-aside photos open in place; anything else moves the cursor there. */
@@ -291,12 +302,18 @@
     } else if (e.key === ' ') {
       e.preventDefault();
       skip();
+    } else if (e.key.toLowerCase() === 'b' && e.shiftKey) {
+      e.preventDefault();
+      stepBack();
     } else if (e.key === 'b') {
       e.preventDefault();
       back();
+    } else if ((e.key === 'Enter' || e.key === 's' || e.key === 'S') && e.shiftKey) {
+      e.preventDefault();
+      stepForward();
     } else if (e.key === 'Enter' || e.key === 's') {
       e.preventDefault();
-      leave();
+      skip();
     } else if (e.key === '[' || e.key === ']') {
       const frame = opened === null ? stepFrame(s, idx, e.key === ']' ? 1 : -1, true) : null;
       if (frame !== null) idx = frame;
@@ -392,7 +409,7 @@
             {#if current.decision}<span style:color="var(--{current.decision})">{DECISIONS[current.decision].icon} {DECISIONS[current.decision].label}</span>{/if}
           </div>
           {#if compact && !coached}
-            <div class="coach">Swipe the photo<br /><small>← Nope · Keep → · ↑ Favorite · ↓ Hate</small></div>
+            <div class="coach">Swipe the photo<br /><small>← {DECISIONS.dislike.label} · Keep → · ↑ Favorite · ↓ Hate</small></div>
           {/if}
         {:else if !loading}
           <div class="done">
@@ -485,8 +502,8 @@
       </div>
     {:else}
       <div class="keys muted">
-        <span><kbd>←</kbd> ✕ nope</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
-        <span><kbd>space</kbd> next</span><span><kbd>b</kbd> back</span><span><kbd>enter</kbd> / <kbd>s</kbd> {members ? 'leave burst' : 'skip'}</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
+        <span><kbd>←</kbd> {DECISIONS.dislike.icon} {DECISIONS.dislike.label.toLowerCase()}</span><span><kbd>→</kbd> ✓ keep</span><span><kbd>↑</kbd> ★ favorite</span><span><kbd>↓</kbd> ⊘ hate</span>
+        <span><kbd>space</kbd> / <kbd>enter</kbd> next</span><span><kbd>b</kbd> back</span><span><kbd>⇧enter</kbd> next photo</span><span><kbd>⇧b</kbd> one back</span>{#if members}<span><kbd>[</kbd><kbd>]</kbd> frame</span>{/if}<span><kbd>⌫</kbd> undo</span><span><kbd>⇧</kbd>+arrow whole moment</span><span>drag to select</span>
       </div>
     {/if}
   </div>

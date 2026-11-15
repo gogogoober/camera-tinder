@@ -20,7 +20,7 @@
   const KINDS: { d: Decision; label: string; color: string }[] = [
     { d: 'favorite', label: '★ Favorites', color: 'var(--favorite)' },
     { d: 'like', label: '✓ Keep', color: 'var(--like)' },
-    { d: 'dislike', label: '✕ Nope', color: 'var(--muted)' },
+    { d: 'dislike', label: '– Meh', color: 'var(--muted)' },
     { d: 'hate', label: '⊘ Hate', color: 'var(--hate)' },
   ];
 
