@@ -15,6 +15,7 @@ pub mod model;
 pub mod moments;
 pub mod offload;
 pub mod ports;
+pub mod preference;
 pub mod preview;
 pub mod scan;
 pub mod store;

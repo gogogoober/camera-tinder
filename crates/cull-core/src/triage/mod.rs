@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::grouping::{Candidate, similar_groups};
+use crate::analysis::grouping::{Candidate, similar_groups_by};
 use crate::analysis::issues::{Issue, IssueKind, issues};
 use crate::analysis::ranking::quality_score;
 use crate::analysis::{AnalysisKind, GroupingOptions, PhotoAnalysis};
@@ -124,7 +124,10 @@ fn has_results(a: &PhotoAnalysis) -> bool {
     AnalysisKind::ALL.into_iter().any(|k| a.has(k))
 }
 
-fn single_item(photo: &Photo, analysis: Option<&PhotoAnalysis>, issues: &[Issue]) -> TriageItem {
+/// How frames are scored: higher = better. The hand-tuned `quality_score`, or an approved learned model.
+pub type Scorer<'a> = &'a dyn Fn(&PhotoAnalysis) -> f32;
+
+fn single_item(photo: &Photo, analysis: Option<&PhotoAnalysis>, issues: &[Issue], score: Scorer) -> TriageItem {
     let analysis = analysis.filter(|a| has_results(a));
     let (question, reasons) = route_single(issues);
     TriageItem {
@@ -133,7 +136,7 @@ fn single_item(photo: &Photo, analysis: Option<&PhotoAnalysis>, issues: &[Issue]
         group: None,
         hints: hint_kinds(issues, &reasons),
         reasons,
-        score: analysis.map(quality_score),
+        score: analysis.map(score),
         analyzed: analysis.is_some(),
     }
 }
@@ -147,7 +150,7 @@ fn group_kind(photos: &[&Photo]) -> GroupKind {
 }
 
 /// Group the photos that can be grouped and turn each member into a Pick.
-fn apply_groups(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>, issues: &[Vec<Issue>], items: &mut [TriageItem]) {
+fn apply_groups(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>, issues: &[Vec<Issue>], items: &mut [TriageItem], score: Scorer) {
     let index_of: HashMap<PhotoId, usize> = photos.iter().enumerate().map(|(i, p)| (p.id, i)).collect();
     // Accidental shots are swept even inside a burst, so they take no part in grouping.
     let candidates: Vec<Candidate> = photos
@@ -158,7 +161,7 @@ fn apply_groups(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>, is
         .collect();
     let options = GroupingOptions { burst_gap_secs: Some(BURST_GAP_SECS), ..Default::default() };
 
-    for group in similar_groups(&candidates, &options) {
+    for group in similar_groups_by(&candidates, &options, score) {
         let members: Vec<usize> = group.photo_ids.iter().map(|id| index_of[id]).collect(); // best first
         let member_photos: Vec<&Photo> = members.iter().map(|&i| &photos[i]).collect();
         let first = member_photos.iter().min_by_key(|p| (p.captured_at, p.id)).expect("groups have members");
@@ -176,9 +179,14 @@ fn apply_groups(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>, is
 /// One item per photo, in the same order. `analyses` must hold current results only
 /// (`PhotoAnalysis::retain_current`); photos without any are plain Judge items.
 pub fn build(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>) -> Vec<TriageItem> {
+    build_with(photos, analyses, &quality_score)
+}
+
+/// [`build`], ranking frames (and so choosing the ★) with `score`.
+pub fn build_with(photos: &[Photo], analyses: &HashMap<PhotoId, PhotoAnalysis>, score: Scorer) -> Vec<TriageItem> {
     let issues: Vec<Vec<Issue>> = photos.iter().map(|p| analyses.get(&p.id).map(issues).unwrap_or_default()).collect();
-    let mut items: Vec<TriageItem> = photos.iter().zip(&issues).map(|(p, iss)| single_item(p, analyses.get(&p.id), iss)).collect();
-    apply_groups(photos, analyses, &issues, &mut items);
+    let mut items: Vec<TriageItem> = photos.iter().zip(&issues).map(|(p, iss)| single_item(p, analyses.get(&p.id), iss, score)).collect();
+    apply_groups(photos, analyses, &issues, &mut items, score);
     items
 }
 

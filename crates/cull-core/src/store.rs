@@ -220,6 +220,7 @@ impl Store {
             conn.execute_batch("ALTER TABLE sources ADD COLUMN in_session INTEGER NOT NULL DEFAULT 1")?;
         }
         conn.execute_batch(crate::offload::journal::SCHEMA)?;
+        conn.execute_batch(crate::preference::history::SCHEMA)?;
         Ok(Self { conn })
     }
 

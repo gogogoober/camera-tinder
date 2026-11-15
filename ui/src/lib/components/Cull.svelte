@@ -384,7 +384,7 @@
           <div class="chips-over mono">
             <span>{formatTime(current.capturedAt)}</span>
             {#if item?.group && members}<span>{item.group.kind === 'burst' ? 'burst' : 'similar'} {groupPos}/{item.group.size}</span>{/if}
-            {#if item?.group?.suggested && members}<span>★ suggested</span>{/if}
+            {#if item?.group?.suggested && members}<span class="gold">★ suggested</span>{/if}
             {#if item}
               {#each item.reasons as r (r)}<span class="bad">{ISSUE_LABELS[r]}</span>{/each}
               {#each item.hints as h (h)}<span class="hint">{ISSUE_LABELS[h]}</span>{/each}
@@ -512,6 +512,7 @@
   .chips-over span { background: #000a; border-radius: 5px; padding: 2px 7px; }
   .chips-over span.hint { background: color-mix(in srgb, var(--favorite) 80%, #000); color: #1a1200; }
   .chips-over span.bad { background: var(--hate); }
+  .chips-over span.gold { color: #ffc83d; }
   .banner { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; font-size: 13px; padding: 8px 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--hate) 50%, var(--border)); background: color-mix(in srgb, var(--hate) 9%, var(--panel)); }
   .banner.pick { border-color: color-mix(in srgb, var(--pick) 50%, var(--border)); background: color-mix(in srgb, var(--pick) 9%, var(--panel)); }
 

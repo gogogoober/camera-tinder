@@ -126,6 +126,11 @@ fn linked(a: &Candidate, b: &Candidate, opts: &GroupingOptions) -> bool {
 
 /// Groups of 2+ similar photos. `candidates` must be in capture-time order (as `plan` returns).
 pub fn similar_groups(candidates: &[Candidate], opts: &GroupingOptions) -> Vec<SimilarGroup> {
+    similar_groups_by(candidates, opts, &quality_score)
+}
+
+/// Like [`similar_groups`], ranking each group's frames with `score` (higher = better) instead of `quality_score`.
+pub fn similar_groups_by(candidates: &[Candidate], opts: &GroupingOptions, score: &dyn Fn(&PhotoAnalysis) -> f32) -> Vec<SimilarGroup> {
     let n = candidates.len();
     let mut parent: Vec<usize> = (0..n).collect();
     for i in 0..n {
@@ -147,7 +152,7 @@ pub fn similar_groups(candidates: &[Candidate], opts: &GroupingOptions) -> Vec<S
         .into_values()
         .filter(|g| g.len() >= 2)
         .map(|g| {
-            let mut scored: Vec<(PhotoId, f32)> = g.iter().map(|i| (candidates[*i].analysis.photo_id, quality_score(candidates[*i].analysis))).collect();
+            let mut scored: Vec<(PhotoId, f32)> = g.iter().map(|i| (candidates[*i].analysis.photo_id, score(candidates[*i].analysis))).collect();
             scored.sort_by(|a, b| b.1.total_cmp(&a.1));
             SimilarGroup { best: scored[0].0, photo_ids: scored.iter().map(|s| s.0).collect(), scores: scored.iter().map(|s| s.1).collect() }
         })
