@@ -1,16 +1,6 @@
-//! Learn from your decisions: propose new ranking weights, approve them, look back, undo.
-//!
-//!   cargo run --release -p cull-platform-apple --example preferences -- train [--db PATH] [--yes]
-//!   cargo run --release -p cull-platform-apple --example preferences -- history [--db PATH]
-//!   cargo run --release -p cull-platform-apple --example preferences -- revert <id> [--db PATH]
-//!   cargo run --release -p cull-platform-apple --example preferences -- off [--db PATH]
-//!
-//! `train` only reads your decisions and photo analysis. It prints how well the proposed weights predict your
-//! newest decisions and what would move, then asks. Your answer (approved or declined) is recorded in the
-//! `preference_models` / `preference_events` tables with the weights and the moves, so any model can be restored
-//! with `revert` and the history can be studied later. Photos, decisions and analysis are never touched.
-//! The ★ in a burst is picked by the approved model from the next time the app builds a plan; `off` goes back
-//! to the hand-tuned ranking.
+//! Learn from your decisions: `train` proposes weights (it only reads), asks, and records your answer; `history`,
+//! `revert <id>` and `off` go back. Photos, decisions and analysis are never touched.
+//! `cargo run --release -p cull-platform-apple --example preferences -- train|history|revert <id>|off [--db PATH]`
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -31,8 +21,8 @@ fn ask(question: &str) -> bool {
     matches!(line.trim().to_lowercase().as_str(), "y" | "yes")
 }
 
-fn auc_of(v: &serde_json::Value, which: &str) -> String {
-    v.get("metrics").and_then(|m| m.get(which)).and_then(|e| e.get("auc")).and_then(|a| a.as_f64()).map_or("n/a".into(), |a| format!("{a:.3}"))
+fn auc_text(auc: Option<f32>) -> String {
+    auc.map_or("n/a".into(), |a| format!("{a:.3}"))
 }
 
 fn print_history(models: &[StoredModel]) {
@@ -45,15 +35,14 @@ fn print_history(models: &[StoredModel]) {
         let metrics: Option<Metrics> = serde_json::from_value(m.metrics.clone()).ok();
         let changes: Vec<cull_core::preference::WeightChange> = serde_json::from_value(m.changes.clone()).unwrap_or_default();
         let moves: Vec<String> = changes.iter().take(3).map(|c| format!("{} {:+.2}", c.name, c.delta)).collect();
-        let wrapped = serde_json::json!({ "metrics": m.metrics });
         println!(
             "{:<4} {:<20} {:<9} {:>9} {:>9} {:>8}  {}{}",
             m.id,
             m.created_at,
             m.status,
-            metrics.map_or(0, |x| x.decisions),
-            auc_of(&wrapped, "candidate"),
-            auc_of(&wrapped, "current"),
+            metrics.as_ref().map_or(0, |x| x.decisions),
+            auc_text(metrics.as_ref().and_then(|x| x.candidate.auc)),
+            auc_text(metrics.as_ref().and_then(|x| x.current.auc)),
             moves.join(", "),
             m.note.as_deref().map(|n| format!("  [{n}]")).unwrap_or_default()
         );
@@ -86,7 +75,7 @@ fn main() {
             let analyzers = cull_platform_apple::vision::analyzers();
             let samples = store.preference_samples(&analyzers).unwrap();
             let active = store.active_preference().unwrap();
-            let proposal = match propose(&samples, active.as_ref().map(|m| &m.weights), &Config::default()) {
+            let proposal = match propose(&samples, active.as_ref().map(|m| (&m.weights, m.created_at.as_str())), &Config::default()) {
                 Ok(p) => p,
                 Err(why) => {
                     println!("No proposal: {why}.");

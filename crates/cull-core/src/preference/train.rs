@@ -1,11 +1,6 @@
-//! Fit the model on the user's decisions and measure it honestly.
-//!
-//! The measurement trains on the older decisions and tests on the newest ones. Frames of one burst are
-//! kept together (they look alike, so splitting them would flatter the model). Two numbers are compared
-//! on the same held-out decisions, for the proposed model, the model in use now, and the hand-tuned
-//! `quality_score`:
-//! - **AUC**: pick a random Keep and a random Nope; how often does the Keep score higher? (0.5 = coin flip)
-//! - **Burst picks**: in a group where you kept exactly one frame, how often was that frame ranked first?
+//! Fit the model and measure it honestly: train on older decisions, test on the newest (whole bursts together), and
+//! compare with the hand-tuned score by AUC (a Keep outranks a Meh) and by burst picks (the kept frame ranked first).
+//! `cross_validate` repeats the test over every burst you judged.
 
 use std::collections::HashMap;
 
@@ -23,7 +18,7 @@ use crate::moments::BURST_GAP_SECS;
 pub struct Sample {
     pub photo_id: PhotoId,
     pub captured_at: Option<NaiveDateTime>,
-    /// Keep or Favorite (true); Nope or Hate (false).
+    /// Keep or Favorite (true); Meh or Hate (false).
     pub keep: bool,
     pub favorite: bool,
     pub decided_at: String,
@@ -37,7 +32,7 @@ pub struct Config {
     pub iterations: usize,
     /// Share of the newest decisions kept out of fitting, to test on.
     pub holdout_fraction: f32,
-    /// Fewer Keeps or Nopes than this and no model is proposed.
+    /// Fewer Keeps or Mehs than this and no model is proposed.
     pub min_per_class: usize,
     /// How much more a Favorite counts than a Keep when fitting.
     pub favorite_weight: f32,
@@ -74,7 +69,7 @@ pub struct Metrics {
     pub favorites: u32,
     pub trained_on: u32,
     pub held_out: u32,
-    /// Groups (bursts) with a Keep and a Nope that taught the within-burst choices.
+    /// Groups (bursts) with a Keep and a Meh that taught the within-burst choices.
     #[serde(default)]
     pub pair_groups: u32,
     /// Decisions on photos with people (faces), and how many of those were Keeps.
@@ -84,13 +79,17 @@ pub struct Metrics {
     pub people_keeps: u32,
     /// The proposed model, fitted without the held-out decisions.
     pub candidate: Eval,
-    /// The model in use now, or the hand-tuned score when none is approved.
+    /// The model in use now, or the hand-tuned score when none is approved. A model in use is scored only on
+    /// held-out decisions made after it was approved, so it is never tested on what it learned from.
     pub current: Eval,
+    /// How many held-out decisions `current` was scored on.
+    #[serde(default)]
+    pub current_tested_on: u32,
     /// The hand-tuned `quality_score`, always.
     pub hand_tuned: Eval,
 }
 
-/// A feature's difference between Keeps and Nopes, in standard deviations (Cohen's d; + = Keeps have more).
+/// A feature's difference between Keeps and Mehs, in standard deviations (Cohen's d; + = Keeps have more).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Separation {
@@ -113,7 +112,7 @@ pub struct Proposal {
 /// Fit on `rows` of (standardized-later raw features, label, weight).
 type Row = (Vec<Option<f32>>, f32, f32);
 
-/// A Keep and a Nope from the same group: the Keep should score higher. Weight sums to 1 per group.
+/// A Keep and a Meh from the same group: the Keep should score higher. Weight sums to 1 per group.
 type Pair = (Vec<Option<f32>>, Vec<Option<f32>>, f32);
 
 fn fit(rows: &[Row], pairs: &[Pair], cfg: &Config) -> Weights {
@@ -162,7 +161,7 @@ fn fit(rows: &[Row], pairs: &[Pair], cfg: &Config) -> Weights {
     Weights { bias: b, features: (0..n).map(|j| FeatureWeight { name: names()[j].clone(), weight: w[j], mean: mean[j], std: std[j] }).collect() }
 }
 
-/// Rows for fitting: Nopes and Keeps weigh the same in total, a Favorite counts extra.
+/// Rows for fitting: Mehs and Keeps weigh the same in total, a Favorite counts extra.
 fn rows_of(samples: &[&Sample], cfg: &Config) -> Vec<Row> {
     let keeps = samples.iter().filter(|s| s.keep).count().max(1) as f32;
     let nopes = samples.iter().filter(|s| !s.keep).count().max(1) as f32;
@@ -176,7 +175,7 @@ fn rows_of(samples: &[&Sample], cfg: &Config) -> Vec<Row> {
         .collect()
 }
 
-/// Every (Keep, Nope) pair inside a group, among `groups` made only of photos in `allowed`.
+/// Every (Keep, Meh) pair inside a group, among `groups` made only of photos in `allowed`.
 fn pairs_of(samples: &[Sample], groups: &[Vec<usize>], allowed: &std::collections::HashSet<usize>) -> (Vec<Pair>, u32) {
     let (mut out, mut used) = (Vec::new(), 0);
     for g in groups.iter().filter(|g| g.iter().all(|i| allowed.contains(i))) {
@@ -196,7 +195,7 @@ fn pairs_of(samples: &[Sample], groups: &[Vec<usize>], allowed: &std::collection
     (out, used)
 }
 
-/// Probability that a random Keep outranks a random Nope (ties count half).
+/// Probability that a random Keep outranks a random Meh (ties count half).
 fn auc(scored: &[(f32, bool)]) -> Option<f32> {
     let pos = scored.iter().filter(|s| s.1).count();
     let neg = scored.len() - pos;
@@ -245,7 +244,7 @@ fn evaluate(samples: &[Sample], held_out: &[usize], groups: &[Vec<usize>], score
     Eval { auc: auc(&scored), burst_hits: hits, burst_groups: counted, burst_chance: chance }
 }
 
-/// Which feature values differ most between Keeps and Nopes.
+/// Which feature values differ most between Keeps and Mehs.
 fn separation(samples: &[Sample]) -> Vec<Separation> {
     let mut out = Vec::new();
     for (j, name) in names().iter().enumerate() {
@@ -353,12 +352,12 @@ pub fn cv_report(rows: &[CvRow], folds: usize) -> String {
 }
 
 /// Fit a model, measure it on the newest decisions, and describe what it would change.
-/// `current` is the approved model in use (None = the hand-tuned ranking).
-pub fn propose(samples: &[Sample], current: Option<&Weights>, cfg: &Config) -> Result<Proposal, String> {
+/// `current` is the approved model in use with the time it was approved (None = the hand-tuned ranking).
+pub fn propose(samples: &[Sample], current: Option<(&Weights, &str)>, cfg: &Config) -> Result<Proposal, String> {
     let keeps = samples.iter().filter(|s| s.keep).count();
     let nopes = samples.len() - keeps;
     if keeps < cfg.min_per_class || nopes < cfg.min_per_class {
-        return Err(format!("not enough decisions yet: {keeps} Keeps and {nopes} Nopes (need {} of each)", cfg.min_per_class));
+        return Err(format!("not enough decisions yet: {keeps} Keeps and {nopes} Mehs (need {} of each)", cfg.min_per_class));
     }
 
     // Hold out the newest decisions, whole groups at a time.
@@ -380,9 +379,12 @@ pub fn propose(samples: &[Sample], current: Option<&Weights>, cfg: &Config) -> R
 
     let candidate = evaluate(samples, &hold_idx, &groups, &|a| tested.score(a));
     let hand_tuned = evaluate(samples, &hold_idx, &groups, &quality_score);
-    let in_use = match current {
-        Some(w) => evaluate(samples, &hold_idx, &groups, &|a| w.score(a)),
-        None => hand_tuned,
+    let (in_use, in_use_tested_on) = match current {
+        Some((w, approved_at)) => {
+            let unseen: Vec<usize> = hold_idx.iter().copied().filter(|&i| samples[i].decided_at.as_str() > approved_at).collect();
+            (evaluate(samples, &unseen, &groups, &|a| w.score(a)), unseen.len() as u32)
+        }
+        None => (hand_tuned, hold_idx.len() as u32),
     };
 
     let all_refs: Vec<&Sample> = samples.iter().collect();
@@ -401,9 +403,10 @@ pub fn propose(samples: &[Sample], current: Option<&Weights>, cfg: &Config) -> R
         people_keeps: samples.iter().filter(|s| s.keep && is_people(&s.analysis) == Some(true)).count() as u32,
         candidate,
         current: in_use,
+        current_tested_on: in_use_tested_on,
         hand_tuned,
     };
-    Ok(Proposal { changes: weight_changes(current, &weights), separation: separation(samples), weights, metrics })
+    Ok(Proposal { changes: weight_changes(current.map(|c| c.0), &weights), separation: separation(samples), weights, metrics })
 }
 
 fn pct(hits: u32, of: u32) -> String {
@@ -421,7 +424,7 @@ impl Proposal {
         let m = &self.metrics;
         let mut s = String::new();
         s += &format!(
-            "Decisions used: {} ({} Keep incl. {} Favorite, {} Nope/Hate). Tested on the newest {} (whole bursts), fitted on the older {}.{}\n\n",
+            "Decisions used: {} ({} Keep incl. {} Favorite, {} Meh/Hate). Tested on the newest {} (whole bursts), fitted on the older {}.{}\n\n",
             m.decisions, m.keeps, m.favorites, m.nopes, m.held_out, m.trained_on,
             if m.pair_groups > 0 { format!(" {} bursts taught it your within-burst choices.", m.pair_groups) } else { String::new() }
         );
@@ -434,12 +437,12 @@ impl Proposal {
         s += "How well each ranking predicts your newest decisions (higher is better; AUC 0.5 = guessing):\n";
         s += &eval_line("hand-tuned score", &m.hand_tuned);
         if has_current {
-            s += &eval_line("model in use now", &m.current);
+            s += &eval_line(&format!("model in use ({} newer decisions)", m.current_tested_on), &m.current);
         }
         s += &eval_line("proposed model", &m.candidate);
-        s += "\nWhat separates your Keeps from your Nopes (effect in standard deviations; + = Keeps have more):\n";
+        s += "\nWhat separates your Keeps from your Mehs (effect in standard deviations; + = Keeps have more):\n";
         for x in self.separation.iter().take(8) {
-            s += &format!("  {:<20} {:+.2}   (Keep avg {:.2}, Nope avg {:.2})\n", x.name, x.effect, x.keep_mean, x.nope_mean);
+            s += &format!("  {:<20} {:+.2}   (Keep avg {:.2}, Meh avg {:.2})\n", x.name, x.effect, x.keep_mean, x.nope_mean);
         }
         s += "\nWeights that would move (per standard deviation of the feature; + = pushes toward Keep):\n";
         for c in self.changes.iter().filter(|c| c.delta.abs() >= 0.02).take(12) {
@@ -535,6 +538,23 @@ mod tests {
         assert!(w("aesthetics") > 1.0, "things: aesthetics matters");
         assert!(w("people·aesthetics") < -0.5, "...and the people adjustment cancels it for people");
         assert!(p.metrics.candidate.auc.unwrap() > 0.85);
+    }
+
+    /// A model in use is scored only on decisions made after it was approved.
+    #[test]
+    fn the_model_in_use_is_not_tested_on_what_it_learned_from() {
+        let samples: Vec<Sample> = (0..400)
+            .map(|i| {
+                let keep = i % 3 == 0;
+                sample(i, keep, if keep { 0.6 } else { -0.4 } + ((i * 7919) % 100) as f32 / 500.0, 50)
+            })
+            .collect();
+        let first = propose(&samples, None, &Config::default()).unwrap();
+        let after_all = propose(&samples, Some((&first.weights, "2099-01-01T00:00:00")), &Config::default()).unwrap();
+        assert_eq!((after_all.metrics.current_tested_on, after_all.metrics.current.auc), (0, None), "approved after every decision: nothing unseen");
+        let before_all = propose(&samples, Some((&first.weights, "2000-01-01T00:00:00")), &Config::default()).unwrap();
+        assert_eq!(before_all.metrics.current_tested_on, before_all.metrics.held_out);
+        assert!(before_all.metrics.current.auc.is_some());
     }
 
     #[test]

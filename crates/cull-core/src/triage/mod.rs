@@ -75,7 +75,7 @@ pub struct TriageItem {
     pub reasons: Vec<IssueKind>,
     /// Every other issue found: badges only.
     pub hints: Vec<IssueKind>,
-    /// `quality_score`, kept so outcomes can be compared with what was suggested.
+    /// The ranking score (`quality_score`, or the approved learned model's logit), kept so outcomes can be compared with what was suggested.
     pub score: Option<f32>,
     /// False until the photo has at least one current analysis result; such a photo is just a Judge.
     pub analyzed: bool,

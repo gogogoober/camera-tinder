@@ -1,9 +1,5 @@
-//! The record of every model the app proposed: what it was, what it replaced, what the user decided.
-//!
-//! Append-only in spirit: a model's weights are never edited. Approving makes a model the active one
-//! (the previous active becomes `retired`), declining keeps it as `declined`, and reverting just
-//! re-activates an older row. `preference_events` is the timeline of those choices. Both tables are
-//! plain data, so they can be studied like any other part of the database.
+//! Every proposed model: what it replaced and what the user decided (active, retired or declined; the timeline is in
+//! `preference_events`). Weights are never edited; reverting re-activates an older row, so any change can be undone.
 
 use rusqlite::{OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -12,8 +8,8 @@ use super::Weights;
 use super::train::Proposal;
 use crate::analysis::{AnalysisKind, Analyzers};
 use crate::error::{CoreError, Result};
-use crate::model::PhotoId;
-use crate::store::Store;
+use crate::model::{Decision, PhotoId};
+use crate::store::{Store, TIME_FMT, now};
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS preference_models (
@@ -34,8 +30,6 @@ CREATE TABLE IF NOT EXISTS preference_events (
     previous_id INTEGER                                  -- the active model before this event
 );
 "#;
-
-const TIME_FMT: &str = "%Y-%m-%dT%H:%M:%S";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,7 +100,7 @@ impl Store {
         if verdict == Verdict::Approve {
             tx.execute("UPDATE preference_models SET status = 'retired' WHERE status = 'active'", [])?;
         }
-        let at = chrono::Local::now().naive_local().format(TIME_FMT).to_string();
+        let at = now();
         tx.execute(
             "INSERT INTO preference_models (created_at, parent_id, status, weights, metrics, changes, note) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -139,15 +133,21 @@ impl Store {
         }
         tx.execute("UPDATE preference_models SET status = 'retired' WHERE status = 'active'", [])?;
         tx.execute("UPDATE preference_models SET status = 'active' WHERE id = ?", [id])?;
-        let at = chrono::Local::now().naive_local().format(TIME_FMT).to_string();
+        let at = now();
         tx.execute("INSERT INTO preference_events (at, action, model_id, previous_id) VALUES (?, 'revert', ?, ?)", params![at, id, previous])?;
         tx.commit()?;
         Ok(())
     }
 
-    /// Stop using any learned model: the app goes back to the hand-tuned ranking. History stays.
+    /// Stop using any learned model: the app goes back to the hand-tuned ranking. History stays, and the event is recorded.
     pub fn deactivate_preference(&self) -> Result<()> {
-        self.conn.execute("UPDATE preference_models SET status = 'retired' WHERE status = 'active'", [])?;
+        let tx = self.conn.unchecked_transaction()?;
+        let Some(active): Option<i64> = tx.query_row("SELECT id FROM preference_models WHERE status = 'active'", [], |r| r.get(0)).optional()? else {
+            return Ok(());
+        };
+        tx.execute("UPDATE preference_models SET status = 'retired' WHERE id = ?", [active])?;
+        tx.execute("INSERT INTO preference_events (at, action, model_id, previous_id) VALUES (?, 'off', ?, ?)", params![now(), active, active])?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -160,6 +160,7 @@ impl Store {
         let mut analyses = self.load_analyses(&ids, None)?;
         let mut out = Vec::new();
         for (id, decision, decided_at, captured) in rows {
+            let Some(decision) = Decision::parse(&decision) else { continue };
             let Some(mut analysis) = analyses.remove(&id) else { continue };
             analysis.retain_current(analyzers);
             if !AnalysisKind::ALL.into_iter().any(|k| analysis.has(k)) {
@@ -168,8 +169,8 @@ impl Store {
             out.push(super::train::Sample {
                 photo_id: id,
                 captured_at: captured.and_then(|s| chrono::NaiveDateTime::parse_from_str(&s, TIME_FMT).ok()),
-                keep: matches!(decision.as_str(), "like" | "favorite"),
-                favorite: decision == "favorite",
+                keep: decision.is_keeper(),
+                favorite: decision == Decision::Favorite,
                 decided_at,
                 analysis,
             });
@@ -190,7 +191,7 @@ mod tests {
         Proposal {
             changes: weight_changes(None, &weights),
             weights,
-            metrics: Metrics { decisions: 10, keeps: 5, nopes: 5, favorites: 0, trained_on: 8, held_out: 2, pair_groups: 0, people_decisions: 0, people_keeps: 0, candidate: e, current: e, hand_tuned: e },
+            metrics: Metrics { decisions: 10, keeps: 5, nopes: 5, favorites: 0, trained_on: 8, held_out: 2, pair_groups: 0, people_decisions: 0, people_keeps: 0, current_tested_on: 0, candidate: e, current: e, hand_tuned: e },
             separation: Vec::new(),
         }
     }
@@ -221,5 +222,10 @@ mod tests {
 
         store.deactivate_preference().unwrap();
         assert!(store.active_preference().unwrap().is_none());
+        let off: i64 = store.conn.query_row("SELECT COUNT(*) FROM preference_events WHERE action = 'off' AND model_id = ?", [first], |r| r.get(0)).unwrap();
+        assert_eq!(off, 1, "turning the model off is recorded");
+        store.deactivate_preference().unwrap();
+        let events: i64 = store.conn.query_row("SELECT COUNT(*) FROM preference_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(events, 5, "turning off when nothing is active records nothing");
     }
 }

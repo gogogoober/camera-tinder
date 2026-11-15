@@ -57,7 +57,7 @@ crates/cull-core/          Pure Rust, NO Tauri/platform deps.
                            year/trip or month), three-thread copy with read-back verification, journal
   preference/              Learned taste: logistic model of "will I Keep it" from decisions + stored analysis. People photos
                            (≥1 face, `PEOPLE_MIN_FACES`) get their own `people·…` weights on top of the shared ones; the model
-                           also learns from Keep-vs-Nope choices inside bursts (pairs). `propose`
+                           also learns from Keep-vs-Meh choices inside bursts (pairs). `propose`
                            (train.rs) fits and tests on the newest decisions; history.rs keeps every model (approved /
                            declined / reverted) in `preference_models` + `preference_events`. An approved model ranks the
                            frames of a burst (picks the gold ★) via `plan()`; none approved = hand-tuned `quality_score`.

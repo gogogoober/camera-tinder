@@ -16,7 +16,7 @@ use crate::error::{CoreError, Result};
 use crate::model::*;
 use crate::triage::OutcomeEntry;
 
-const TIME_FMT: &str = "%Y-%m-%dT%H:%M:%S";
+pub(crate) const TIME_FMT: &str = "%Y-%m-%dT%H:%M:%S";
 
 const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -136,7 +136,7 @@ pub struct Store {
     pub(crate) conn: Connection,
 }
 
-fn now() -> String {
+pub(crate) fn now() -> String {
     Local::now().naive_local().format(TIME_FMT).to_string()
 }
 

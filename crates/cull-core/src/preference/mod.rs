@@ -1,14 +1,6 @@
-//! Learned taste: a small logistic model of "how likely is the user to Keep this photo", fitted
-//! from their own decisions and the stored photo analysis.
-//!
-//! - [`features`]: the numbers taken from a photo's analysis (missing results are skipped).
-//! - [`Weights`]: the model. `score` is a logit; only comparisons between photos matter, so it can stand in for
-//!   `ranking::quality_score` when ranking the frames of a burst (that is how the ★ is chosen).
-//! - [`train`]: fit on decisions, evaluate on the newest ones, compare with the current ranking.
-//! - [`history`]: every proposal is stored (approved, declined, reverted) so changes can be undone and studied.
-//!
-//! Nothing here changes behaviour until the user approves a proposal. With no approved model the app
-//! ranks exactly as before.
+//! Learned taste: a small logistic model of how likely the user is to Keep a photo, fitted from their decisions and
+//! the stored analysis (`train`), recorded in `history`, and used by `plan()` to rank a burst's frames once approved.
+//! Nothing changes behaviour until a proposal is approved; with none approved, ranking is the hand-tuned score.
 
 pub mod history;
 pub mod train;
