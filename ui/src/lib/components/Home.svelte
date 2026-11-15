@@ -6,7 +6,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { api, type CalendarStatus, type DaySummary, type ErrorLogView, type LibrarySource, type PreviewCacheStatus, type SavedTag, type ScanReport, type ScanRequest, type SourceInfo, type Stats, type TagSuggestion } from '../api';
-  import { minutesFor, rangeForBudget, shortRange } from '../days';
+  import { minutesFor, rangeForBudget, shortRange, suggestionsInView } from '../days';
   import { formatBytes, formatCount } from '../format';
   import { viewport } from '../viewport.svelte';
   import Heatmap from './Heatmap.svelte';
@@ -114,6 +114,7 @@
   async function loadCache() {
     try {
       cache = await api.previewCacheStatus();
+      sources = await api.listSources(); // a card plugged in or pulled out flips its "offline" label
       if (cache.connectedSources.length) confirmClear = false;
     } catch {
       cache = null;
@@ -226,6 +227,9 @@
     }
     selected = next;
   }
+  const offlineNote = (s: SourceInfo) => (s.connected ? '' : ' · offline, previews only');
+  let visibleMonths = $state<Set<string> | null>(null);
+  const shownSuggestions = $derived(suggestionsInView(suggestions, visibleMonths, (s) => pickState(s) !== 'none'));
   /** Every day that has photos, undated ones included: what the "All" row selects. */
   const allDays = $derived(days.filter((d) => d.stats.total > 0).map((d) => d.day ?? 'unknown'));
   const allPick = $derived.by((): 'none' | 'some' | 'all' => {
@@ -330,7 +334,7 @@
       if (!scansInFlight) {
         stopping = false;
         await refresh();
-        applyBudget();
+        if (!selected.size) applyBudget();
       }
     }
   }
@@ -408,7 +412,7 @@
       <div class="src">
         <div>
           <strong>{s.name}</strong>
-          <div class="muted small">{formatCount(s.photoCount)} photos</div>
+          <div class="muted small">{formatCount(s.photoCount)} photos{offlineNote(s)}</div>
         </div>
         <span class="src-btns">
           <button class="ghost" title="Remove or forget this folder" aria-expanded={menuFor === s.id} onclick={() => ((menuFor = menuFor === s.id ? null : s.id), (forgetArmed = null))}>✕</button>
@@ -588,7 +592,7 @@
 
       <div class="group heat">
         <span class="eyebrow">Calendar · click or drag to pick days</span>
-        <Heatmap {days} {selected} onChange={(next) => (selected = next)} />
+        <Heatmap {days} {selected} onChange={(next) => (selected = next)} onVisibleMonths={(months) => (visibleMonths = new Set(months))} />
         <div class="legend muted small">
           Photos still to triage: <i class="sw none"></i>none <i class="sw l1"></i><i class="sw l2"></i><i class="sw l3"></i><i class="sw l4"></i>many <i class="sw done"></i>all done
         </div>
@@ -643,13 +647,13 @@
             </div>
             <hr class="alldiv" />
           {/if}
-          {#if suggestions.length}<span class="eyebrow">Suggestions · {suggestions.length}</span>{/if}
+          {#if shownSuggestions.length}<span class="eyebrow">Suggestions · {shownSuggestions.length}</span>{/if}
           {#snippet sugRow(s: TagSuggestion, child: boolean)}
             {@const open = expanded.has(s.id)}
             {@const pick = pickState(s)}
             <div class="sug" class:child>
               <span class="nm">
-                {#if !s.children.length && !child && suggestions.some((x) => x.children.length)}
+                {#if !s.children.length && !child && shownSuggestions.some((x) => x.children.length)}
                   <span class="chev" aria-hidden="true"></span>
                 {:else if s.children.length}
                   <button class="plain chev" onclick={() => toggle(s)} aria-expanded={open} aria-label={open ? 'Collapse' : 'Expand'}>{open ? '▾' : '▸'}</button>
@@ -669,7 +673,7 @@
               </span>
             </div>
           {/snippet}
-          {#each suggestions as s (s.id)}
+          {#each shownSuggestions as s (s.id)}
             {@render sugRow(s, false)}
             {#if expanded.has(s.id)}
               {#each s.children as c (c.id)}

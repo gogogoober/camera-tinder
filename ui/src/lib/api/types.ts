@@ -22,6 +22,8 @@ export interface SourceInfo {
   id: string;
   name: string;
   photoCount: number;
+  /** False when the card or drive is unplugged (its photos stay in the session). */
+  connected: boolean;
 }
 
 export interface Stats {
@@ -103,6 +105,22 @@ export interface ExportReport {
   failed: [string, string][];
   /** Copies succeeded but could not be recorded as exported (they may be copied again next time). */
   notMarked?: string | null;
+  /** Unplugged sources whose photos were left for later. */
+  waiting?: ExportSourceCount[];
+}
+
+export interface ExportSourceCount {
+  sourceId: string;
+  name: string;
+  count: number;
+  connected: boolean;
+}
+
+/** `ready` is on connected sources, `waiting` on unplugged ones; one row per source with matching photos. */
+export interface ExportCount {
+  ready: number;
+  waiting: number;
+  sources: ExportSourceCount[];
 }
 
 export type CoreEvent =

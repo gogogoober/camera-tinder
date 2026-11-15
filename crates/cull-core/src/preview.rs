@@ -28,6 +28,8 @@ pub const MAX_EDGE: u32 = 4096;
 pub const MASTER_EDGE: u32 = 2048;
 /// Made alongside the master: filmstrip / grid thumbnails.
 pub const THUMB_EDGE: u32 = 256;
+/// Name suffix of the empty marker left for a photo that failed to decode.
+const UNDECODABLE: &str = "undecodable";
 
 pub struct PreviewCache {
     dir: PathBuf,
@@ -85,6 +87,11 @@ impl PreviewCache {
         f.read_exact(&mut head).is_ok() && f.seek(SeekFrom::End(-2)).is_ok() && f.read_exact(&mut tail).is_ok() && is_complete_jpeg_ends(head, tail)
     }
 
+    /// True once a decode of this photo failed, so the card is not read again just to fail again.
+    pub fn is_undecodable(&self, fingerprint: &str) -> bool {
+        self.dir.join(format!("{fingerprint}_{UNDECODABLE}")).exists()
+    }
+
     /// A cached preview, if it's there and complete.
     fn read_cached(&self, path: &Path) -> Option<Vec<u8>> {
         fs::read(path).ok().filter(|b| b.len() >= 4 && is_complete_jpeg_ends([b[0], b[1]], [b[b.len() - 2], b[b.len() - 1]]))
@@ -108,7 +115,10 @@ impl PreviewCache {
     /// Scan time: store the master and thumbnail made from the original's bytes (one decode).
     /// Returns false, storing nothing, when the original can't be decoded.
     pub fn store_from_original(&self, fingerprint: &str, original: &[u8]) -> Result<bool> {
-        let Ok(rendered) = self.render(original, &[MASTER_EDGE, THUMB_EDGE]) else { return Ok(false) };
+        let Ok(rendered) = self.render(original, &[MASTER_EDGE, THUMB_EDGE]) else {
+            self.write_cached(&self.dir.join(format!("{fingerprint}_{UNDECODABLE}")), &[])?;
+            return Ok(false);
+        };
         let [master, thumb] = <[Vec<u8>; 2]>::try_from(rendered).map_err(|_| CoreError::Other("preview maker returned the wrong number of sizes".into()))?;
         self.write_cached(&self.path(fingerprint, MASTER_EDGE), &master)?;
         self.write_cached(&self.path(fingerprint, THUMB_EDGE), &thumb)?;
@@ -135,6 +145,9 @@ impl PreviewCache {
             return Ok(bytes);
         }
         if !self.has_master(&photo.fingerprint) {
+            if self.is_undecodable(&photo.fingerprint) {
+                return Err(CoreError::Other(format!("can't decode {}", photo.file_name)));
+            }
             let Some(source) = source else {
                 return Err(CoreError::Other(format!("no preview cached for {} and its source is not connected", photo.file_name)));
             };
@@ -170,16 +183,22 @@ fn is_preview_name(name: &str) -> bool {
     fp.len() == 32 && fp.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && is_digits(edge)
 }
 
-/// Only names this cache creates: previews, and `.<preview name>.<pid>.<n>.tmp` leftovers
-/// from `write_cached` (e.g. after a crash). Anything else is not ours and is never deleted.
+/// `<32 lowercase hex>_undecodable`: the marker `store_from_original` leaves.
+fn is_marker_name(name: &str) -> bool {
+    let Some((fp, rest)) = name.split_once('_') else { return false };
+    rest == UNDECODABLE && fp.len() == 32 && fp.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Previews and markers, and `.<name>.<pid>.<n>.tmp` leftovers from `write_cached` (e.g. after a
+/// crash). Anything else is not ours and is never deleted.
 fn is_cache_file(name: &str) -> bool {
-    if is_preview_name(name) {
+    if is_preview_name(name) || is_marker_name(name) {
         return true;
     }
     let Some(inner) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".tmp")) else { return false };
     let mut parts = inner.rsplitn(3, '.');
-    let (Some(n), Some(pid), Some(preview)) = (parts.next(), parts.next(), parts.next()) else { return false };
-    is_digits(n) && is_digits(pid) && is_preview_name(preview)
+    let (Some(n), Some(pid), Some(base)) = (parts.next(), parts.next(), parts.next()) else { return false };
+    is_digits(n) && is_digits(pid) && (is_preview_name(base) || is_marker_name(base))
 }
 
 impl PreviewCache {
@@ -214,8 +233,8 @@ impl PreviewCache {
             return Ok(0);
         }
         let set: std::collections::HashSet<&str> = fingerprints.iter().map(String::as_str).collect();
-        // Previews are `<fingerprint>_<edge>.jpg`; temp files are left to `clear`.
-        self.remove_where(|name| is_preview_name(name) && name.split_once('_').is_some_and(|(fp, _)| set.contains(fp)))
+        // Previews are `<fingerprint>_<edge>.jpg`, markers `<fingerprint>_undecodable`; temp files are left to `clear`.
+        self.remove_where(|name| (is_preview_name(name) || is_marker_name(name)) && name.split_once('_').is_some_and(|(fp, _)| set.contains(fp)))
     }
 
     /// Delete this cache's own files whose name passes `pick`. See `clear` for the rules.
@@ -236,6 +255,38 @@ impl PreviewCache {
             }
         }
         Ok(freed)
+    }
+}
+
+/// Serves the cached masters as if they were files, so a preview export can go through an `ExportTarget`.
+/// `open` takes the photo's id (as text) and never touches the original's source.
+pub struct PreviewSource<'a> {
+    cache: &'a PreviewCache,
+    photos: std::collections::HashMap<String, &'a Photo>,
+}
+
+impl<'a> PreviewSource<'a> {
+    pub fn new(cache: &'a PreviewCache, photos: &'a [Photo]) -> Self {
+        Self { cache, photos: photos.iter().map(|p| (p.id.to_string(), p)).collect() }
+    }
+}
+
+impl MediaSource for PreviewSource<'_> {
+    fn id(&self) -> &str {
+        "previews"
+    }
+
+    fn display_name(&self) -> &str {
+        "Cached previews"
+    }
+
+    fn list(&self) -> Result<Vec<crate::ports::MediaEntry>> {
+        Ok(Vec::new())
+    }
+
+    fn open(&self, rel_path: &str) -> Result<Box<dyn crate::ports::ReadSeek>> {
+        let photo = self.photos.get(rel_path).ok_or_else(|| CoreError::Other(format!("no cached preview for {rel_path}")))?;
+        Ok(Box::new(Cursor::new(self.cache.get(photo, None, MASTER_EDGE)?)))
     }
 }
 
@@ -280,7 +331,20 @@ pub(crate) fn encode(img: &DynamicImage) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_cache_file;
+    use super::{PreviewCache, is_cache_file};
+
+    #[test]
+    fn a_photo_that_fails_to_decode_is_remembered_and_cleared_with_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = PreviewCache::new(dir.path().join("p")).unwrap();
+        let fp = "0123456789abcdef0123456789abcdef";
+        assert!(!cache.is_undecodable(fp));
+        assert!(!cache.store_from_original(fp, b"not a jpeg").unwrap());
+        assert!(cache.is_undecodable(fp));
+        assert!(is_cache_file(&format!("{fp}_undecodable")));
+        cache.clear().unwrap();
+        assert!(!cache.is_undecodable(fp));
+    }
 
     #[test]
     fn only_our_own_files_count_as_cache() {

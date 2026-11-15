@@ -8,6 +8,7 @@ import type {
   Decision,
   ExportOptions,
   SavedTag,
+  ExportCount,
   ExportReport,
   Filter,
   GroupingOptions,
@@ -88,8 +89,10 @@ export interface CullerApi {
   clearPreviews(): Promise<number>;
 
   exportKeepers(dest: string, options: ExportOptions): Promise<ExportReport>;
-  /** How many photos `exportKeepers` would copy for these options. */
-  exportCount(options: ExportOptions): Promise<number>;
+  /** Copies the cached 2048 px previews (not the originals) into <dest>/Previews as *_preview.jpg. Works with drives unplugged; never marks photos exported. */
+  exportPreviews(dest: string, options: ExportOptions): Promise<ExportReport>;
+  /** How many photos `exportKeepers` would copy (`ready`) or leave waiting for these options. */
+  exportCount(options: ExportOptions): Promise<ExportCount>;
 
   /** Saved tags: a name for a set of days. Kept across restarts. */
   listTags(): Promise<SavedTag[]>;

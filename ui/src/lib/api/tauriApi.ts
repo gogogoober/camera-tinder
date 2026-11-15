@@ -39,6 +39,7 @@ export const tauriApi: CullerApi = {
   clearPreviews: () => invoke('clear_previews'),
 
   exportKeepers: (dest, options) => invoke('export_keepers', { dest, options }),
+  exportPreviews: (dest, options) => invoke('export_previews', { dest, options }),
   exportCount: (options) => invoke('export_count', { options }),
   listTags: () => invoke('list_tags'),
   saveTag: (name, days) => invoke('save_tag', { name, days }),

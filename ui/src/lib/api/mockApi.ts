@@ -1,5 +1,5 @@
 import type { CullerApi } from './CullerApi';
-import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, LibrarySource, Photo, Plan, SavedTag, ScanRequest, SourceInfo, Stats, TagSuggestion } from './types';
+import type { CalendarStatus, CoreEvent, DaySummary, Decision, Filter, Group, LibrarySource, Photo, Plan, ExportSourceCount, SavedTag, ScanRequest, SourceInfo, Stats, TagSuggestion } from './types';
 import { photoDay } from '../days';
 import { mockOffload } from './mockOffload';
 import type { PhotoAnalysis } from './analysisTypes';
@@ -20,7 +20,9 @@ const EMPTY = {
 };
 
 const listeners = new Set<(e: CoreEvent) => void>();
-const sources: SourceInfo[] = [];
+const sources: Omit<SourceInfo, 'connected'>[] = [];
+/** Source ids pretending to be unplugged (see mockUnplug / mockPlug). */
+const unplugged = new Set<string>();
 /** Every folder ever added (removing one from the session keeps it here, with its photos). */
 const known = new Map<string, string>();
 let scanBusy = false;
@@ -147,6 +149,13 @@ const exportedIds = new Set<number>();
 let nextTagId = 1;
 
 /** The photos an export with these options would copy. */
+async function emitExportProgress(total: number) {
+  for (let i = 1; i <= total; i += 50) {
+    listeners.forEach((cb) => cb({ type: 'exportProgress', done: Math.min(i, total), total }));
+    await sleep(5);
+  }
+}
+
 function exportSelection(o: import('./types').ExportOptions): Photo[] {
   return active().filter((p) => {
     if (o.includeExported === false && exportedIds.has(p.id)) return false;
@@ -246,7 +255,7 @@ export const mockApi: CullerApi = {
     const info = { id: path, name: path.split('/').pop() ?? path, photoCount: 0 };
     if (!sources.some((s) => s.id === path)) sources.push(info);
     known.set(path, info.name);
-    return info;
+    return { ...info, connected: true };
   },
   async removeSource(id) {
     const i = sources.findIndex((s) => s.id === id);
@@ -270,7 +279,7 @@ export const mockApi: CullerApi = {
       .filter((s) => s.photoCount > 0 || s.inSession);
   },
   async listSources() {
-    return sources.map((s) => ({ ...s, photoCount: photos.filter((p) => p.sourceId === s.id).length }));
+    return sources.map((s) => ({ ...s, connected: !unplugged.has(s.id), photoCount: photos.filter((p) => p.sourceId === s.id).length }));
   },
   async scan(request = {}) {
     // Like the real backend: one scan at a time; a request made meanwhile joins the running one.
@@ -406,7 +415,15 @@ export const mockApi: CullerApi = {
   },
 
   async exportCount(options) {
-    return exportSelection(options).length;
+    const counts = new Map<string, ExportSourceCount>();
+    for (const p of exportSelection(options)) {
+      const row = counts.get(p.sourceId) ?? { sourceId: p.sourceId, name: known.get(p.sourceId) ?? p.sourceId, count: 0, connected: !unplugged.has(p.sourceId) };
+      row.count++;
+      counts.set(p.sourceId, row);
+    }
+    const rows = [...counts.values()];
+    const total = (connected: boolean) => rows.filter((r) => r.connected === connected).reduce((n, r) => n + r.count, 0);
+    return { ready: total(true), waiting: total(false), sources: rows };
   },
 
   async listTags() {
@@ -426,13 +443,17 @@ export const mockApi: CullerApi = {
   },
 
   async exportKeepers(dest, options) {
-    const keep = exportSelection(options);
-    for (let i = 1; i <= keep.length; i += 50) {
-      listeners.forEach((cb) => cb({ type: 'exportProgress', done: Math.min(i, keep.length), total: keep.length }));
-      await sleep(5);
-    }
+    const selected = exportSelection(options);
+    const keep = selected.filter((p) => !unplugged.has(p.sourceId));
+    await emitExportProgress(keep.length);
     keep.forEach((p) => exportedIds.add(p.id));
-    return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [] };
+    const waiting = (await mockApi.exportCount(options)).sources.filter((s) => !s.connected);
+    return { destination: dest, copied: keep.length, alreadyThere: 0, failed: [], waiting };
+  },
+  async exportPreviews(dest, options) {
+    const copies = exportSelection(options);
+    await emitExportProgress(copies.length);
+    return { destination: dest + '/Previews', copied: copies.length, alreadyThere: 0, failed: [] };
   },
 
   async stopAnalysis() {
@@ -516,3 +537,10 @@ export const mockApi: CullerApi = {
     return () => listeners.delete(cb);
   },
 };
+
+// Manual testing in the browser console (mock mode only): mockUnplug() / mockPlug() (no id = first source).
+if (import.meta.env.MODE === 'mock') {
+  const globals = globalThis as unknown as Record<string, (id?: string) => unknown>;
+  globals.mockUnplug = (id = sources[0]?.id) => unplugged.add(id);
+  globals.mockPlug = (id = sources[0]?.id) => unplugged.delete(id);
+}

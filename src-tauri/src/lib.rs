@@ -1,6 +1,7 @@
 //! Tauri adapter: a thin layer mapping commands/events to `CullerService`.
 //! No culling logic lives here — it's all in `cull-core`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use cull_core::*;
@@ -197,7 +198,17 @@ async fn export_keepers(app: AppHandle, state: State<'_, AppState>, dest: String
 }
 
 #[tauri::command]
-async fn export_count(state: State<'_, AppState>, options: ExportOptions) -> CmdResult<usize> {
+async fn export_previews(app: AppHandle, state: State<'_, AppState>, dest: String, options: ExportOptions) -> CmdResult<ExportReport> {
+    let svc = state.0.clone();
+    blocking(move || {
+        let roots = svc.known_source_ids()?;
+        svc.export_previews(&CopyToDir::new(PathBuf::from(dest).join("Previews")).protecting(roots), options, &TauriSink(app))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_count(state: State<'_, AppState>, options: ExportOptions) -> CmdResult<ExportCount> {
     let svc = state.0.clone();
     blocking(move || svc.export_count(options)).await
 }
@@ -349,7 +360,6 @@ fn handle_preview(app: &AppHandle, uri: &tauri::http::Uri) -> Response<Vec<u8>> 
     .expect("valid response")
 }
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// The app used to be "Camera Tinder" (identifier `app.cameratinder.desktop`, `camera-tinder.db`). On the first
 /// launch under the new name, move its database (with its `-wal`/`-shm` files) and preview cache over, so decisions
 /// and previews survive. Runs only while the new database doesn't exist; each file moves only if its target is free,
@@ -377,6 +387,7 @@ fn move_data_from_camera_tinder(db: &std::path::Path, cache: &std::path::Path) {
     }
 }
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -398,13 +409,14 @@ pub fn run() {
             svc.set_preview_maker(Arc::new(cull_platform_apple::imageio::ImageIoPreviewMaker));
             // Background errors (analysis) go to a rotating file in the app's log folder, for troubleshooting.
             svc.set_error_log(app.path().app_log_dir()?.join("errors.log"));
-            // Reconnect the folders that were in the session last time, when they're there (a card may be out).
+            // Reconnect the folders that were in the session last time; one that is not there stays as offline (a card may be out).
             for id in svc.saved_session_sources()? {
-                if let Ok(src) = FsSource::new(&id) {
-                    if src.id() == id {
-                        svc.add_source(Arc::new(src.excluding(svc.app_dirs())))?;
-                    }
-                }
+                let src = match FsSource::new(&id) {
+                    Ok(src) if src.id() == id => src,
+                    Ok(_) => continue,
+                    Err(_) => FsSource::offline(&id),
+                };
+                svc.add_source(Arc::new(src.excluding(svc.app_dirs())))?;
             }
             // Analyse every photo in the background as the scan saves it (and resume unfinished work now).
             svc.start_analysis_worker(Arc::new(TauriSink(app.handle().clone())));
@@ -440,6 +452,7 @@ pub fn run() {
             connect_calendar,
             export_keepers,
             export_count,
+            export_previews,
             list_tags,
             save_tag,
             delete_tag,

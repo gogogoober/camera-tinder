@@ -17,7 +17,7 @@ use crate::error::{CoreError, Result};
 use crate::model::*;
 use crate::moments::{MOMENT_GAP_SECS, group_by_gap};
 use crate::ports::{CalendarSource, EventSink, ExportItem, ExportTarget, MediaSource};
-use crate::preview::{MASTER_EDGE, PreviewCache};
+use crate::preview::{MASTER_EDGE, PreviewCache, PreviewSource};
 use crate::scan::scan_source;
 use crate::store::Store;
 use crate::suggest;
@@ -79,6 +79,15 @@ fn merge_scans(a: ScanRequest, b: &ScanRequest) -> ScanRequest {
         }
         _ => ScanRequest { source_ids: None },
     }
+}
+
+/// Exactly `YYYY-MM-DD` or "unknown" (chrono alone accepts "2026-7-1", which would silently match no photo).
+fn check_day(day: &str) -> Result<()> {
+    let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
+    if day != "unknown" && canonical.as_deref() != Ok(day) {
+        return Err(CoreError::Other(format!("not a day (YYYY-MM-DD or \"unknown\"): {day:?}")));
+    }
+    Ok(())
 }
 
 impl CullerService {
@@ -190,6 +199,7 @@ impl CullerService {
             id: s.id().to_string(),
             name: s.display_name().to_string(),
             photo_count: self.store.lock().unwrap().source_photo_count(s.id())?,
+            connected: s.is_available(),
         })
     }
 
@@ -268,6 +278,7 @@ impl CullerService {
             .unwrap()
             .iter()
             .filter(|s| req.source_ids.as_ref().is_none_or(|ids| ids.iter().any(|id| id == s.id())))
+            .filter(|s| s.is_available())
             .cloned()
             .collect();
         let sink = &WakeOnSaved { inner: sink, svc: self };
@@ -321,13 +332,7 @@ impl CullerService {
     /// triaged or analysed again from scratch (mainly for testing). Database only: photos, previews and
     /// the original files are never touched. An empty `days` does nothing.
     pub fn reset_days(&self, req: &ResetRequest) -> Result<ResetReport> {
-        for day in &req.days {
-            // Exactly YYYY-MM-DD (chrono alone accepts "2026-7-1", which would silently match no photo).
-            let canonical = chrono::NaiveDate::parse_from_str(day, "%Y-%m-%d").map(|d| d.format("%Y-%m-%d").to_string());
-            if day != "unknown" && canonical.as_deref() != Ok(day.as_str()) {
-                return Err(CoreError::Other(format!("not a day (YYYY-MM-DD or \"unknown\"): {day:?}")));
-            }
-        }
+        req.days.iter().try_for_each(|day| check_day(day))?;
         if req.days.is_empty() || !(req.decisions || req.analysis) {
             return Ok(ResetReport::default());
         }
@@ -407,6 +412,11 @@ impl CullerService {
         let status = self.preview_cache_status(is_connected)?;
         if !status.connected_sources.is_empty() {
             return Err(CoreError::Other(format!("disconnect these first: {}", status.connected_sources.join(", "))));
+        }
+        // An unplugged folder in the session is culled from these previews alone: they are its only copy here.
+        let offline: Vec<String> = self.sources.read().unwrap().iter().filter(|s| !s.is_available()).map(|s| s.display_name().to_string()).collect();
+        if !offline.is_empty() {
+            return Err(CoreError::Other(format!("these are unplugged and their previews are all you have; plug them in or remove them from the session first: {}", offline.join(", "))));
         }
         self.previews.clear()
     }
@@ -678,9 +688,24 @@ impl CullerService {
             .collect())
     }
 
-    /// How many photos `export` would copy for `opts`.
-    pub fn export_count(&self, opts: ExportOptions) -> Result<usize> {
-        Ok(self.keepers(opts)?.len())
+    /// How many photos `export` would copy now (`ready`) and how many wait for an unplugged source.
+    pub fn export_count(&self, opts: ExportOptions) -> Result<ExportCount> {
+        let sources = self.count_by_source(&self.keepers(opts)?);
+        let ready = sources.iter().filter(|s| s.connected).map(|s| s.count).sum();
+        let waiting = sources.iter().filter(|s| !s.connected).map(|s| s.count).sum();
+        Ok(ExportCount { ready, waiting, sources })
+    }
+
+    /// One row per live source that holds at least one of `photos`.
+    fn count_by_source(&self, photos: &[Photo]) -> Vec<ExportSourceCount> {
+        let sources = self.sources.read().unwrap().clone();
+        sources
+            .iter()
+            .filter_map(|s| {
+                let count = photos.iter().filter(|p| p.source_id == s.id()).count() as u64;
+                (count > 0).then(|| ExportSourceCount { source_id: s.id().to_string(), name: s.display_name().to_string(), count, connected: s.is_available() })
+            })
+            .collect()
     }
 
     // ---- saved tags ---------------------------------------------------
@@ -691,9 +716,7 @@ impl CullerService {
 
     /// Create the tag `name` or replace the days of the existing one. Days must be `YYYY-MM-DD` or `"unknown"`.
     pub fn save_tag(&self, name: &str, days: &[String]) -> Result<SavedTag> {
-        if let Some(bad) = days.iter().find(|d| *d != "unknown" && chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").is_err()) {
-            return Err(CoreError::Other(format!("not a day: {bad}")));
-        }
+        days.iter().try_for_each(|day| check_day(day))?;
         let mut days = days.to_vec();
         days.sort();
         days.dedup();
@@ -704,25 +727,59 @@ impl CullerService {
         self.store.lock().unwrap().delete_tag(id)
     }
 
+    /// Copies the originals of the selected photos on connected sources. The rest are listed in `report.waiting`.
     pub fn export(&self, target: &dyn ExportTarget, opts: ExportOptions, sink: &dyn EventSink) -> Result<ExportReport> {
         let photos = self.keepers(opts)?;
         let sources = self.sources.read().unwrap().clone();
-        // Keepers are only listed for sources in this session. If one of those has been
-        // unplugged, `open` fails and the copy is reported in `failed`, never dropped silently.
+        let (connected, waiting): (Vec<_>, Vec<_>) = self.count_by_source(&photos).into_iter().partition(|s| s.connected);
         let items: Vec<ExportItem> = photos
             .iter()
+            .filter(|p| connected.iter().any(|s| s.source_id == p.source_id))
             .filter_map(|p| {
                 let source = sources.iter().find(|s| s.id() == p.source_id)?;
                 Some(ExportItem { photo: p, source: source.as_ref() })
             })
             .collect();
         let mut report = target.export(&items, sink)?;
+        report.waiting = waiting;
         // Remember what is now in the destination, so a later export can skip it. The copies are done
         // either way, so a failure here is reported alongside them, never instead of them.
         if let Err(e) = self.store.lock().unwrap().mark_exported(&report.delivered, &report.destination) {
             self.log_error("export", &format!("copied {} photos to {} but could not mark them exported: {e}", report.delivered.len(), report.destination));
             report.not_marked = Some(e.to_string());
         }
+        Ok(report)
+    }
+
+    /// Copies the cached 2048 px previews (`<name>_preview.jpg`) of the selected photos. Never reads a
+    /// source, so it works with every card unplugged. They are not originals: nothing is marked exported.
+    pub fn export_previews(&self, target: &dyn ExportTarget, opts: ExportOptions, sink: &dyn EventSink) -> Result<ExportReport> {
+        let photos = self.keepers(opts)?;
+        let mut failed = Vec::new();
+        let mut preview_photos = Vec::new();
+        for photo in &photos {
+            let master = self.previews.get(photo, None, MASTER_EDGE).and_then(|bytes| {
+                let fingerprint = crate::identity::fingerprint(&mut std::io::Cursor::new(&bytes), bytes.len() as u64)?;
+                Ok((bytes.len() as u64, fingerprint))
+            });
+            match master {
+                Ok((size, fingerprint)) => {
+                    let stem = Path::new(&photo.file_name).file_stem().unwrap_or_default().to_string_lossy();
+                    preview_photos.push(Photo { rel_path: photo.id.to_string(), file_name: format!("{stem}_preview.jpg"), size, fingerprint, ..photo.clone() });
+                }
+                Err(e) => failed.push((photo.file_name.clone(), e.to_string())),
+            }
+        }
+        let source = PreviewSource::new(&self.previews, &photos);
+        let items: Vec<ExportItem> = preview_photos.iter().map(|photo| ExportItem { photo, source: &source }).collect();
+        let mut report = target.export(&items, sink)?;
+        report.delivered.clear();
+        // CopyToDir names a failed copy by its rel_path, which here is the photo id: say the file name instead.
+        let name_of = |key: &str| photos.iter().find(|p| p.id.to_string() == key).map_or(key.to_string(), |p| p.file_name.clone());
+        for entry in &mut report.failed {
+            entry.0 = name_of(&entry.0);
+        }
+        report.failed.extend(failed);
         Ok(report)
     }
 }

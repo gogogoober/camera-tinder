@@ -28,6 +28,10 @@ pub trait MediaSource: Send + Sync {
     /// Stable identifier (e.g. canonical root path).
     fn id(&self) -> &str;
     fn display_name(&self) -> &str;
+    /// Whether the files can be read right now (a card may be unplugged).
+    fn is_available(&self) -> bool {
+        true
+    }
     fn list(&self) -> Result<Vec<MediaEntry>>;
     /// Like `list`, but fails if any folder can't be read, instead of skipping it. An offload may only
     /// say "everything on the card is backed up" when it saw everything.

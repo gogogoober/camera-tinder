@@ -31,6 +31,14 @@ impl FsSource {
         Ok(Self { root, id, name, excluded: Vec::new() })
     }
 
+    /// A remembered folder (`id` is its canonical path) that may not be there now, e.g. an unplugged card.
+    /// Touches nothing on disk; it becomes available again once the folder is back.
+    pub fn offline(id: &str) -> Self {
+        let root = PathBuf::from(id);
+        let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| id.to_string());
+        Self { root, id: id.to_string(), name, excluded: Vec::new() }
+    }
+
     /// Never list anything in these folders. Pass the app's own folders
     /// (`CullerService::app_dirs`), so a picked folder that contains them (a home folder, a
     /// whole disk) doesn't index the app's previews as photos.
@@ -121,6 +129,10 @@ impl MediaSource for FsSource {
 
     fn display_name(&self) -> &str {
         &self.name
+    }
+
+    fn is_available(&self) -> bool {
+        self.root.is_dir()
     }
 
     fn list(&self) -> Result<Vec<MediaEntry>> {

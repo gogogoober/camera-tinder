@@ -439,14 +439,114 @@ fn culling_works_with_the_card_unplugged_and_export_reports_what_it_could_not_re
     // ...and decisions still record.
     svc.decide_many(&q.iter().map(|p| p.id).collect::<Vec<_>>(), Decision::Like).unwrap();
 
-    // Export can't reach the card: every keeper is listed as failed, none silently dropped.
+    // Export can't reach the card: every keeper is listed as waiting, none silently dropped.
     fn dest_is_empty(d: &Path) -> bool {
         fs::read_dir(d).map(|mut r| r.next().is_none()).unwrap_or(true)
     }
     let r = svc.export(&CopyToDir::new(tmp.path().join("keepers")), ExportOptions::default(), &NullSink).unwrap();
     assert_eq!(r.copied, 0);
-    assert_eq!(r.failed.len(), 4, "{:?}", r.failed);
+    assert!(r.failed.is_empty(), "{:?}", r.failed);
+    assert_eq!(r.waiting.iter().map(|w| w.count).sum::<u64>(), 4, "{:?}", r.waiting);
     assert!(dest_is_empty(&tmp.path().join("keepers")), "no partial files left behind");
+}
+
+#[test]
+fn an_unplugged_saved_folder_stays_in_the_session_and_a_scan_keeps_its_photos() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    let away = tmp.path().join("card-away");
+    make_card(&card);
+    let db = tmp.path().join("darkroom.db");
+    let cache = tmp.path().join("cache");
+    let card_id = {
+        let svc = CullerService::open(&db, &cache).unwrap();
+        let source = FsSource::new(&card).unwrap();
+        let id = source.id().to_string();
+        svc.add_source(Arc::new(source)).unwrap();
+        svc.scan(&Default::default(), &NullSink).unwrap();
+        id
+    };
+
+    // A new launch with the card unplugged: the saved folder comes back as an offline source.
+    fs::rename(&card, &away).unwrap();
+    let svc = CullerService::open(&db, &cache).unwrap();
+    svc.add_source(Arc::new(FsSource::offline(&card_id))).unwrap();
+
+    let sources = svc.sources().unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!((sources[0].photo_count, sources[0].connected), (4, false));
+    assert_eq!(svc.days().unwrap().iter().map(|d| d.stats.total).sum::<u64>(), 4);
+    assert_eq!(svc.queue(&Filter::default()).unwrap().len(), 4);
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    assert_eq!(svc.sources().unwrap()[0].photo_count, 4, "a scan never forgets an unplugged source's photos");
+    // Their previews are all that's left of them here, so clearing them is refused.
+    assert!(svc.clear_previews(&|_: &str| false).is_err());
+
+    fs::rename(&away, &card).unwrap();
+    assert!(svc.sources().unwrap()[0].connected);
+}
+
+#[test]
+fn export_copies_what_is_connected_and_reports_the_rest_per_drive() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (card_a, card_b) = (tmp.path().join("card-a"), tmp.path().join("card-b"));
+    make_card(&card_a);
+    write_jpeg(&card_b.join("DCIM/100TEST/IMG_0001.JPG"), 1600, 1200, 90);
+    write_jpeg(&card_b.join("DCIM/100TEST/IMG_0002.JPG"), 1200, 1600, 150);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card_a).unwrap())).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card_b).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let q = svc.queue(&Filter::default()).unwrap();
+    svc.decide_many(&q.iter().map(|p| p.id).collect::<Vec<_>>(), Decision::Like).unwrap();
+    fs::rename(&card_b, tmp.path().join("card-b-away")).unwrap();
+
+    let count = svc.export_count(ExportOptions::default()).unwrap();
+    assert_eq!((count.ready, count.waiting), (4, 2));
+    let mut rows: Vec<_> = count.sources.iter().map(|s| (s.name.as_str(), s.count, s.connected)).collect();
+    rows.sort();
+    assert_eq!(rows, [("card-a", 4, true), ("card-b", 2, false)]);
+
+    let keepers = tmp.path().join("keepers");
+    let report = svc.export(&CopyToDir::new(&keepers).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink).unwrap();
+    assert_eq!(report.copied, 4, "{:?}", report.failed);
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert_eq!(report.waiting.len(), 1);
+    assert_eq!((report.waiting[0].name.as_str(), report.waiting[0].count), ("card-b", 2));
+
+    let after = svc.export_count(ExportOptions { include_exported: false, ..Default::default() }).unwrap();
+    assert_eq!((after.ready, after.waiting), (0, 2));
+}
+
+#[test]
+fn preview_export_works_with_the_card_unplugged_and_never_marks_photos_exported() {
+    let tmp = tempfile::tempdir().unwrap();
+    let card = tmp.path().join("card");
+    make_card(&card);
+    let before = snapshot(&card);
+    let svc = CullerService::in_memory(&tmp.path().join("cache")).unwrap();
+    svc.add_source(Arc::new(FsSource::new(&card).unwrap())).unwrap();
+    svc.scan(&Default::default(), &NullSink).unwrap();
+    let q = svc.queue(&Filter::default()).unwrap();
+    svc.decide_many(&q.iter().map(|p| p.id).collect::<Vec<_>>(), Decision::Like).unwrap();
+    fs::rename(&card, tmp.path().join("card-away")).unwrap();
+
+    let out = tmp.path().join("out/Previews");
+    let report = svc.export_previews(&CopyToDir::new(&out).protecting(svc.known_source_ids().unwrap()), ExportOptions::default(), &NullSink).unwrap();
+    assert!(report.failed.is_empty(), "{:?}", report.failed);
+    assert!(report.delivered.is_empty());
+
+    let files: Vec<_> = fs::read_dir(&out).unwrap().map(|e| e.unwrap().path()).collect();
+    assert_eq!(files.len(), 4);
+    for f in &files {
+        assert!(f.file_name().unwrap().to_string_lossy().ends_with("_preview.jpg"), "{f:?}");
+        assert_eq!(fs::read(f).unwrap()[..2], [0xFF, 0xD8], "{f:?}");
+    }
+    let count = svc.export_count(ExportOptions { include_exported: false, ..Default::default() }).unwrap();
+    assert_eq!(count.ready + count.waiting, 4);
+
+    fs::rename(tmp.path().join("card-away"), &card).unwrap();
+    assert_eq!(snapshot(&card), before);
 }
 
 #[test]
