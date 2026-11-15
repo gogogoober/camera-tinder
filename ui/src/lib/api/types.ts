@@ -82,7 +82,7 @@ export interface ScanRequest {
 export interface ExportOptions {
   includeLikes: boolean;
   includeFavorites: boolean;
-  /** Nope (stored as `dislike`). */
+  /** Meh (stored as `dislike`). */
   includeDislikes?: boolean;
   includeHates?: boolean;
   /** Also export photos exported before (any earlier export). Omitted = true; the Export screen sends false by default. */

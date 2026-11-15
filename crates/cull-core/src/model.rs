@@ -241,7 +241,7 @@ pub struct ExportCount {
 pub struct ExportOptions {
     pub include_likes: bool,
     pub include_favorites: bool,
-    /// Nope (stored as `dislike`).
+    /// Meh (stored as `dislike`).
     pub include_dislikes: bool,
     pub include_hates: bool,
     /// Also export photos that were exported before (any earlier export, any folder). The UI default is off.

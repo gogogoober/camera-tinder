@@ -27,7 +27,7 @@
     ['all', 'All'],
     ['favorite', '★ Favorite'],
     ['like', '✓ Keep'],
-    ['dislike', '✕ Nope'],
+    ['dislike', '– Meh'],
     ['hate', '⊘ Hate'],
     ['todo', 'Not yet'],
   ];

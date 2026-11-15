@@ -6,7 +6,7 @@ Wireframes of the four options considered: https://claude.ai/artifact/DAwoVDSgqF
 
 ## One vocabulary
 
-Every screen uses the app's four decisions with the same words, icons and keys: ✕ Nope (←), ⊘ Hate (↓),
+Every screen uses the app's four decisions with the same words, icons and keys: – Meh (←), ⊘ Hate (↓),
 ★ Favorite (↑), ✓ Keep (→), plus Skip (space). Never invent screen-specific verbs ("keep none", "toggle",
 "rescue" as an action) for the same decision.
 
@@ -52,13 +52,13 @@ Pick days → Cull queue in timeline order:
 2. **Burst sub-timeline.** When a burst is current, the stage shows the selected frame plus a small
    second timeline of the burst's frames, between the photo and the main filmstrip. **Nothing is
    pre-selected**: every frame starts undecided. The big photo is the selected frame and takes the same
-   decisions as any photo (← Nope, ↓ Hate, space Skip, ↑ Favorite, → Keep); deciding moves to the next
+   decisions as any photo (← Meh, ↓ Hate, space Skip, ↑ Favorite, → Keep); deciding moves to the next
    frame, and after the last frame the cursor leaves the burst. Click a frame (or `[` `]`) to jump.
    ★ = suggested best (a hint only), red underline = frame has an issue, each frame shows its decision badge.
    No burst-only buttons (no "keep none", "toggle" or "done").
 3. **Red set-aside sliver.** A swept photo stays in its timeline position as a thin red rectangle.
    Swiping skips it automatically. Clicking it forces it open with a "Set aside · <reason>" banner:
-   Nope / Hate / Favorite / Keep decides it there and removes it from Rescue; `esc` leaves it for Rescue and
+   Meh / Hate / Favorite / Keep decides it there and removes it from Rescue; `esc` leaves it for Rescue and
    returns to the cursor. Decided slivers turn dashed (or green if kept). The outcome log records that
    it was opened early, which is a rescue signal.
 
@@ -71,7 +71,7 @@ Pick days → Cull queue in timeline order:
   - top row: calendar events / days
   - bottom row: issue reasons (blurry, motion, dark, bright, pocket, cut off, …)
   - **all chips deselected = everything.** Selecting chips narrows (e.g. "these two days, blurry only").
-- Final button: "Done: 2 Keep, 1 Favorite, 5 Nope" — only then are the cleared ones recorded as Nope
+- Final button: "Done: 2 Keep, 1 Favorite, 5 Meh" — only then are the cleared ones recorded as Meh
   (never deleted). Quitting before this leaves them undecided.
 
 ### Analysis timing
@@ -87,5 +87,5 @@ Start analysis as soon as days are picked, in timeline order, staying ahead of t
    near-duplicates), rank, ★, question and reasons per photo. Fast enough to recompute every time.
 3. **Outcomes** (new table) — one row per decision on a suggested photo: the suggestion snapshot, plan version,
    final decision and where it was decided (timeline / opened early / Rescue). Used to measure Sweep rescue rate
-   per issue, how often the ★ frame is kept, Nopes on photos with no issues, and pace. Path to Option D:
+   per issue, how often the ★ frame is kept, Mehs on photos with no issues, and pace. Path to Option D:
    auto-accept suggestion types whose measured accuracy is high enough.

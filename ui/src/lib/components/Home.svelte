@@ -461,7 +461,7 @@
               <div class="confirm" role="alertdialog" aria-labelledby="clear-q">
                 <b id="clear-q">Clear {size} of preview copies?</b>
                 <p><span class="lbl">Removed</span>The screen-sized copies Darkroom made so you can browse quickly.</p>
-                <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Nope decisions.</p>
+                <p><span class="lbl">Not touched</span>Every photo, on cards, drives and this Mac. Your Keep / Meh decisions.</p>
                 <p class="muted">Previews are made again the next time you scan a card.</p>
                 <div class="row">
                   <button class="small primary" disabled={clearing || scanning} onclick={clearPreviews}>{clearing ? 'Clearing…' : `Clear ${size}`}</button>

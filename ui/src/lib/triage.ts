@@ -85,17 +85,6 @@ export function firstUndecidedFrame(s: Structure, photos: Decided[], i: number):
   return g.find((m) => !photos[m].decision) ?? g[0];
 }
 
-/** The next undecided member of `i`'s group after `i`, wrapping inside the group; null when none is left. */
-export function nextUndecidedFrame(s: Structure, photos: Decided[], i: number): number | null {
-  const g = groupOf(s, i);
-  const at = g.indexOf(i);
-  for (let k = 1; k < g.length; k++) {
-    const m = g[(at + k) % g.length];
-    if (!photos[m].decision) return m;
-  }
-  return null;
-}
-
 /** The previous (-1) or next (+1) member of the group; null at the ends, or when it is a single. With `wrap`, the ends loop. */
 export function stepFrame(s: Structure, i: number, dir: 1 | -1, wrap = false): number | null {
   const g = groupOf(s, i);
@@ -134,13 +123,24 @@ export function loopPrev(s: Structure, i: number): number | null {
 }
 
 /**
- * Enter / S ("leave"): out of the current group (or off this single) to the next stop that still has
- * something to decide, leaving what is here unrated. Wraps to the start of the list; the group it left
- * comes round again. null when nothing is left to decide.
+ * Shift+Enter ("next photo"): the next photo in capture order after the current group, rated or not.
+ * A group is entered at its first frame. Set-aside photos are skipped; null at the end (no wrap).
  */
-export function leaveNext(s: Structure, photos: Decided[], i: number): number | null {
-  const stop = nextStop(s, photos, groupOf(s, i).at(-1)!);
-  return stop < 0 ? null : firstUndecidedFrame(s, photos, stop);
+export function linearNext(s: Structure, i: number): number | null {
+  // From i + 1, not the group's last frame: a group can have other photos between its frames.
+  for (let j = i + 1; j < s.setAside.length; j++) if (isStop(s, j)) return j;
+  return null;
+}
+
+/** Shift+B ("one back"): exactly one photo back in capture order, group frames included; null at the start (no wrap). */
+export function linearPrev(s: Structure, i: number): number | null {
+  for (let j = i - 1; j >= 0; j--) if (!s.setAside[j]) return j;
+  return null;
+}
+
+/** After deciding frame `i`: the next frame of its group (wrapping, rated or not) until all are decided; else null. */
+export function afterDecideInGroup(s: Structure, photos: Decided[], i: number): number | null {
+  return stopDone(s, photos, i) ? null : stepFrame(s, i, 1, true);
 }
 
 /** Set-aside photos nobody has decided yet. */
@@ -175,15 +175,19 @@ export function drawnItems(s: Structure, count: number): number[] {
   return Array.from({ length: count }, (_, i) => i).filter((i) => s.setAside[i] || stopOf(s, i) === i);
 }
 
+/** Where photo `shown` sits among the drawn items; past the end (everything done) is `drawn.length`. */
+export function stripPosition(s: Structure, drawn: number[], shown: number): number {
+  const at = drawn.indexOf(s.setAside[shown] ? shown : stopOf(s, shown));
+  return at >= 0 ? at : drawn.length;
+}
+
 /**
- * The filmstrip window: `back` drawn items before the shown one and `forward` after, counted in drawn
- * items (a 20-frame burst is one item). `undefined` = an empty slot, so the shown item stays centred.
- * `shown` past the end (everything done) keeps the last items in view.
+ * The filmstrip window: `back` drawn items before the anchor and `forward` after, counted in drawn
+ * items (a 20-frame burst is one item). `undefined` = an empty slot, so the anchor stays centred.
+ * The anchor is the shown photo, moved `pan` drawn items (clamped to the list) when the strip is panned.
  */
-export function stripWindow(s: Structure, drawn: number[], shown: number, back: number, forward: number): (number | undefined)[] {
-  const anchor = s.setAside[shown] ? shown : stopOf(s, shown);
-  const at = drawn.indexOf(anchor);
-  const pos = at >= 0 ? at : drawn.length;
+export function stripWindow(s: Structure, drawn: number[], shown: number, back: number, forward: number, pan = 0): (number | undefined)[] {
+  const pos = Math.min(Math.max(stripPosition(s, drawn, shown) + pan, 0), drawn.length);
   return Array.from({ length: back + forward + 1 }, (_, k) => drawn[pos - back + k]);
 }
 
